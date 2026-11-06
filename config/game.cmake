@@ -47,7 +47,9 @@ else()
     message(WARNING "analysis/ not found: mod-pack interpreter ranges are empty (retail runs unaffected)")
     file(WRITE "${NFL2K5_FUNC_RANGES}" "#include <stdint.h>\nconst uint32_t g_nfl2k5_func_ranges[1][2] = {{0, 0}};\nconst unsigned g_nfl2k5_func_range_count = 0;\n")
   endif()
-  find_package(OpenSSL REQUIRED)
+  if(NOT EMSCRIPTEN)
+    find_package(OpenSSL REQUIRED)
+  endif()
   add_executable(NFL2K5 src/main.c src/recomp_manual.c src/nfl2k5_input_hle.c src/nfl2k5_controls.c
     src/nfl2k5_controller_setup.c src/nfl2k5_controller_art.cpp src/nfl2k5_texture_packs.cpp src/nfl2k5_teams.c
     src/nfl2k5_team_files.c src/nfl2k5_video_menu.c src/nfl2k5_mod_packs.c src/nfl2k5_local_music.cpp
@@ -57,6 +59,12 @@ else()
     src/platform/posix/win32_game_compat.c src/platform/posix/stb_impl.c src/platform/posix/presentation_stub.cpp
     ${NFL2K5_GENERATED})
   target_include_directories(NFL2K5 PRIVATE src/platform/posix "${NFL2K5_GEN_DIR}" src external/xemu-src/util/miniz)
+  if(EMSCRIPTEN)
+    # ---- Web (Emscripten), see docs/WEB.md ---------------------------------
+    # The POSIX build above plus an OpenSSL stand-in (SHA-256, HMAC-SHA1).
+    target_sources(NFL2K5 PRIVATE src/platform/web/web_crypto.c)
+    target_include_directories(NFL2K5 BEFORE PRIVATE src/platform/web)
+  endif()
 endif()
 # The XBE the generated code came from (empty: retail). A pack build runs that
 # XBE and finds its installed pack by this hash (src/main.c).
@@ -105,7 +113,24 @@ if(NOT NFL2K5_OPTIMIZE)
 endif()
 target_link_options(NFL2K5 PRIVATE /DEBUG /LARGEADDRESSAWARE /STACK:16777216)
 else()
-  target_link_libraries(NFL2K5 PRIVATE xboxrecomp OpenSSL::Crypto)
+  if(EMSCRIPTEN)
+    # pthreads on SharedArrayBuffer with the guest main on a worker (blocking
+    # waits are not allowed on the browser main thread), wasm setjmp/longjmp
+    # for the guest SEH bridge, and WasmFS for the disc and saves.
+    target_link_libraries(NFL2K5 PRIVATE xboxrecomp)
+    set(NFL2K5_WEB_INITIAL_MEMORY "1073741824" CACHE STRING "Web: initial wasm memory in bytes")
+    set(NFL2K5_WEB_PTHREAD_POOL "16" CACHE STRING "Web: workers created before main() (guest + runtime threads)")
+    target_link_options(NFL2K5 PRIVATE
+      -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=${NFL2K5_WEB_PTHREAD_POOL}
+      -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=${NFL2K5_WEB_INITIAL_MEMORY} -sMAXIMUM_MEMORY=4GB
+      -sSTACK_SIZE=16MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB
+      -sSUPPORT_LONGJMP=wasm -sWASMFS -sFORCE_FILESYSTEM=1
+      -sEXIT_RUNTIME=0 -sENVIRONMENT=web,worker
+      -sERROR_ON_UNDEFINED_SYMBOLS=1)
+    set_target_properties(NFL2K5 PROPERTIES SUFFIX ".js")
+  else()
+    target_link_libraries(NFL2K5 PRIVATE xboxrecomp OpenSSL::Crypto)
+  endif()
   # Optimisation level for the game target (recompiled code included).
   # GCC spends its time parsing the 220 MB of generated C, not optimising
   # it: the largest file (30 MB) takes ~30 s and ~2 GB of RAM at -O1 and -O2

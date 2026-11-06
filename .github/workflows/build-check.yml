@@ -93,3 +93,37 @@ jobs:
 
       - name: Build Linux runtime (no game)
         run: cmake --build build --parallel
+
+  # WebAssembly (docs/WEB.md). Every push compiles the runtime and the
+  # hand-written game sources; the full game link (220 MB of generated C)
+  # runs only on manual dispatch because it takes far longer than the rest.
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 7.0.0   # the version tools/build-web.sh was verified with
+
+      - name: Runtime and game sources (no generated code)
+        run: tools/build-web.sh --no-gen
+
+      - name: Full game link
+        if: github.event_name == 'workflow_dispatch'
+        run: JOBS=3 tools/build-web.sh
+
+      - name: Upload web build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfl2k5-web
+          path: |
+            build-web/NFL2K5.js
+            build-web/NFL2K5.wasm
