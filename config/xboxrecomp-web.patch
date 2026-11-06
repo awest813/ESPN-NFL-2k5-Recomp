@@ -360,6 +360,19 @@ index 7f2db68..fef2056 100644
  
  static int sg_vp_worker_start(void)
  {
+diff --git a/src/platform/CMakeLists.txt b/src/platform/CMakeLists.txt
+index bb3d822..f56fae5 100644
+--- a/src/platform/CMakeLists.txt
++++ b/src/platform/CMakeLists.txt
+@@ -24,7 +24,7 @@ if(WIN32)
+     target_include_directories(platform PUBLIC ${XBOXRECOMP_SRC_DIR})
+ else()
+     add_library(platform STATIC win32_compat.c)
+-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
++    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR EMSCRIPTEN)
+         target_sources(platform PRIVATE guest_memory.c)
+     endif()
+     target_include_directories(platform PUBLIC
 diff --git a/src/platform/guest_memory.c b/src/platform/guest_memory.c
 index 2324386..4afbfc0 100644
 --- a/src/platform/guest_memory.c
@@ -429,3 +442,30 @@ index 2324386..4afbfc0 100644
  #else
      (void)base; (void)address; (void)size; (void)writable;
      return false;
+diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
+index 6caf7ee..b45d45d 100644
+--- a/src/platform/win32_compat.c
++++ b/src/platform/win32_compat.c
+@@ -39,6 +39,8 @@ size_t view_take(const void *addr);
+ #include <sys/stat.h>
+ #include <mach/mach.h>
+ #include <mach/mach_vm.h>
++#elif defined(__EMSCRIPTEN__)
++#include <emscripten/heap.h>
+ #else
+ #include <sys/sysinfo.h>
+ #endif
+@@ -2038,6 +2040,13 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
+     b->ullAvailPhys     = avail;
+     b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
+     b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;
++#elif defined(__EMSCRIPTEN__)
++    /* No sysinfo(2) in the browser. The memory a wasm module can ever have is
++     * its declared maximum; what it has not grown into yet counts as free. */
++    b->ullTotalPhys     = (ULONGLONG)emscripten_get_heap_max();
++    b->ullAvailPhys     = b->ullTotalPhys - (ULONGLONG)emscripten_get_heap_size();
++    b->ullTotalPageFile = b->ullTotalPhys;
++    b->ullAvailPageFile = b->ullAvailPhys;
+ #else
+     struct sysinfo si;
+     if (sysinfo(&si) != 0) return FALSE;

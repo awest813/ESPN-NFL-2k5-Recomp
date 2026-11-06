@@ -231,6 +231,12 @@ static LONG CALLBACK crash_report(EXCEPTION_POINTERS *ep)
     RECOMP_ICALL_FEEDBACK_DUMP();
     return EXCEPTION_EXECUTE_HANDLER;
 }
+#elif defined(__EMSCRIPTEN__)
+/* WebAssembly has no page protection and no SIGSEGV/SIGTRAP: guest stores to
+ * the APU and AC97 apertures land in plain memory instead of trapping. The
+ * device models must be driven another way there (docs/WEB-PORT-PLAN.md, "AC97
+ * write trap"); until then there is nothing to install. */
+static bool install_audio_mmio_handler(void) { return true; }
 #else
 static struct sigaction g_prev_segv_sa;
 static struct sigaction g_prev_trap_sa;

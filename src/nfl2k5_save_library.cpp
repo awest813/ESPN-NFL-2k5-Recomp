@@ -546,6 +546,9 @@ static std::string new_container_id(const std::string &udata)
     for (;;) {
 #ifdef _WIN32
         if (BCryptGenRandom(NULL, random, sizeof random, BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+#elif defined(__EMSCRIPTEN__)
+        /* Emscripten declares getrandom() but its libc does not provide it. */
+        if (getentropy(random, sizeof random) != 0) {
 #else
         if (getrandom(random, sizeof random, 0) != (ssize_t)sizeof random) {
 #endif

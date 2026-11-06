@@ -118,7 +118,7 @@ Each milestone has an exit check that can be run in CI or by hand.
   Clang on Linux (`CC=clang`), which catches GCC-only constructs before
   `emcc` does.
 
-**M1: it compiles and links**
+**M1: it compiles and links** (done 2026-11-06; see [WEB.md](WEB.md))
 - Add an `EMSCRIPTEN` branch to `CMakeLists.txt` and xboxrecomp's
   `CMakeLists.txt` (link SDL3's Emscripten port with `-sUSE_SDL=3` or a
   pinned SDL build, and drop OpenSSL in favour of the existing

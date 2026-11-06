@@ -118,13 +118,16 @@ else()
     # waits are not allowed on the browser main thread), wasm setjmp/longjmp
     # for the guest SEH bridge, and WasmFS for the disc and saves.
     target_link_libraries(NFL2K5 PRIVATE xboxrecomp)
+    # The C++ sources (save library, texture packs, ...) use exceptions; wasm
+    # has native ones, which the guest setjmp bridge uses too.
+    target_compile_options(NFL2K5 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fwasm-exceptions>)
     set(NFL2K5_WEB_INITIAL_MEMORY "1073741824" CACHE STRING "Web: initial wasm memory in bytes")
     set(NFL2K5_WEB_PTHREAD_POOL "16" CACHE STRING "Web: workers created before main() (guest + runtime threads)")
     target_link_options(NFL2K5 PRIVATE
       -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=${NFL2K5_WEB_PTHREAD_POOL}
       -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=${NFL2K5_WEB_INITIAL_MEMORY} -sMAXIMUM_MEMORY=4GB
       -sSTACK_SIZE=16MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB
-      -sSUPPORT_LONGJMP=wasm -sWASMFS -sFORCE_FILESYSTEM=1
+      -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASMFS -sFORCE_FILESYSTEM=1
       -sEXIT_RUNTIME=0 -sENVIRONMENT=web,worker
       -sERROR_ON_UNDEFINED_SYMBOLS=1)
     set_target_properties(NFL2K5 PROPERTIES SUFFIX ".js")
