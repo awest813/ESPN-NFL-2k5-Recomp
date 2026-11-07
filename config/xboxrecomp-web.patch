@@ -1,3 +1,15 @@
+diff --git a/src/apu/CMakeLists.txt b/src/apu/CMakeLists.txt
+index d9ddea6..3f02de2 100644
+--- a/src/apu/CMakeLists.txt
++++ b/src/apu/CMakeLists.txt
+@@ -11,6 +11,7 @@ add_library(xbox_apu STATIC
+     apu_dsp.c
+     apu_mmio_hook.c
+     apu_xaudio2.c
++    apu_web_audio.c   # Emscripten only (empty elsewhere)
+ )
+ 
+ target_include_directories(xbox_apu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 diff --git a/src/apu/apu_mmio_hook.c b/src/apu/apu_mmio_hook.c
 index 9a38a07..37e78bc 100644
 --- a/src/apu/apu_mmio_hook.c
@@ -32,6 +44,263 @@ index 9a38a07..37e78bc 100644
 +    g_apu_mmio_write_count++;
 +    return 1;
 +}
+diff --git a/src/apu/apu_web_audio.c b/src/apu/apu_web_audio.c
+new file mode 100644
+index 0000000..8ee742d
+--- /dev/null
++++ b/src/apu/apu_web_audio.c
+@@ -0,0 +1,118 @@
++/* WebAssembly audio output through an AudioWorklet. See apu_web_audio.h. */
++#ifdef __EMSCRIPTEN__
++#include "apu_web_audio.h"
++
++#include <emscripten/em_asm.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define RING_FRAMES 16384u   /* 341 ms at 48 kHz; the producer keeps ~150 ms */
++
++typedef struct {
++    _Atomic uint32_t write;
++    _Atomic uint32_t read;
++    uint32_t capacity;
++    uint32_t reserved;
++    int16_t data[RING_FRAMES * 2];
++} WebAudioRing;
++
++static WebAudioRing *s_ring;
++
++int web_audio_open(void)
++{
++    if (s_ring)
++        return 1;
++    WebAudioRing *ring = (WebAudioRing *)aligned_alloc(16, sizeof *ring);
++    if (!ring)
++        return 0;
++    memset(ring, 0, sizeof *ring);
++    ring->capacity = RING_FRAMES;
++
++    /* On the page's thread: find the AudioContext (the page made one in the
++     * Play click and handed it over as Module.SDL3.audioContext, see
++     * web/launch.js), load the processor and connect it. Loading is
++     * asynchronous; frames written meanwhile wait in the ring. */
++    int ok = MAIN_THREAD_EM_ASM_INT({
++        var C = globalThis.AudioContext || globalThis.webkitAudioContext;
++        var ctx = (Module['SDL3'] && Module['SDL3'].audioContext) || Module['nfl2k5AudioContext'];
++        if (!ctx) {
++            if (!C) return 0;
++            try { ctx = new C({ latencyHint: 'interactive', sampleRate: 48000 }); }
++            catch (e) { ctx = new C({ latencyHint: 'interactive' }); }
++        }
++        if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') return 0;
++        Module['nfl2k5AudioContext'] = ctx;
++        /* Parenthesised: a comma outside parentheses would split this
++         * macro argument (braces do not protect it). */
++        var stats = Module['nfl2k5Audio'] = ({ state: 'loading', contextRate: ctx.sampleRate,
++                                                played: 0, underruns: 0, peak: 0, frequency: 0 });
++        var url = Module['nfl2k5AudioWorklet'] || 'audio-worklet.js';
++        ctx.audioWorklet.addModule(url).then(function() {
++            var node = new AudioWorkletNode(ctx, 'nfl2k5-output', {
++                numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
++                processorOptions: { memory: HEAPU8.buffer, ring: $0, rate: 48000 }
++            });
++            node.port.onmessage = function(e) { Object.assign(stats, e.data); };
++            node.connect(ctx.destination);
++            stats.node = node;
++            stats.state = 'running';
++        }).catch(function(e) {
++            stats.state = 'failed';
++            err('[AUDIO] AudioWorklet could not start (' + url + '): ' + e);
++        });
++        return 1;
++    }, ring);
++    if (!ok) {
++        free(ring);
++        return 0;
++    }
++    s_ring = ring;
++    fprintf(stderr, "[AUDIO] AudioWorklet output (48000 Hz stereo 16-bit, %u-frame ring)\n",
++            RING_FRAMES);
++    return 1;
++}
++
++void web_audio_close(void)
++{
++    if (!s_ring)
++        return;
++    MAIN_THREAD_EM_ASM({
++        var s = Module['nfl2k5Audio'];
++        if (s && s.node) { s.node.disconnect(); s.node.port.postMessage('stop'); }
++        if (s) s.state = 'closed';
++    });
++    /* The worklet may still hold the ring's address; leave it allocated. */
++    s_ring = NULL;
++}
++
++uint32_t web_audio_queued(void)
++{
++    if (!s_ring)
++        return 0;
++    uint32_t w = atomic_load_explicit(&s_ring->write, memory_order_relaxed);
++    uint32_t r = atomic_load_explicit(&s_ring->read, memory_order_acquire);
++    return w - r;
++}
++
++uint32_t web_audio_put(const int16_t *frames, uint32_t count)
++{
++    if (!s_ring)
++        return 0;
++    uint32_t w = atomic_load_explicit(&s_ring->write, memory_order_relaxed);
++    uint32_t r = atomic_load_explicit(&s_ring->read, memory_order_acquire);
++    uint32_t space = RING_FRAMES - (w - r);
++    if (count > space)
++        count = space;
++    for (uint32_t done = 0; done < count; ) {
++        uint32_t at = (w + done) & (RING_FRAMES - 1);
++        uint32_t run = RING_FRAMES - at;
++        if (run > count - done) run = count - done;
++        memcpy(&s_ring->data[at * 2], frames + done * 2, run * 2 * sizeof(int16_t));
++        done += run;
++    }
++    atomic_store_explicit(&s_ring->write, w + count, memory_order_release);
++    return count;
++}
++#endif
+diff --git a/src/apu/apu_web_audio.h b/src/apu/apu_web_audio.h
+new file mode 100644
+index 0000000..f2bf1e7
+--- /dev/null
++++ b/src/apu/apu_web_audio.h
+@@ -0,0 +1,32 @@
++#ifndef APU_WEB_AUDIO_H
++#define APU_WEB_AUDIO_H
++/* WebAssembly audio output: an AudioWorklet reading a ring in shared memory.
++ *
++ * The APU's mixer thread writes 48 kHz 16-bit stereo frames into a
++ * single-producer, single-consumer ring in wasm memory. The page's
++ * AudioWorkletProcessor (web/audio-worklet.js in the game) reads the same
++ * memory -- wasm memory is a SharedArrayBuffer, which a cross-origin
++ * isolated page may hand to its audio worklet -- on the browser's audio
++ * rendering thread. No wasm runs in the worklet and nothing passes through
++ * the page's main thread, unlike SDL's Emscripten backend
++ * (ScriptProcessorNode, which pulls samples on the main thread).
++ *
++ * Ring layout (byte offsets): 0 write index, 4 read index (frame counters,
++ * wrapping at 2^32), 8 capacity in frames (a power of two), 12 reserved,
++ * 16.. capacity * 2 int16 samples. The producer publishes with a release
++ * store of the write index; the consumer with a release store of the read
++ * index (Atomics in the worklet). */
++#ifdef __EMSCRIPTEN__
++#include <stdint.h>
++
++/* Start the worklet. Returns 0 when the browser has no AudioWorklet (the
++ * caller then uses SDL's audio); 1 means the ring accepts frames, though the
++ * worklet may still be loading. */
++int  web_audio_open(void);
++void web_audio_close(void);
++/* Frames written and not yet played. */
++uint32_t web_audio_queued(void);
++/* Append frames (interleaved stereo); returns how many fit. */
++uint32_t web_audio_put(const int16_t *frames, uint32_t count);
++#endif
++#endif
+diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
+index 1fb4ce3..00bbe4d 100644
+--- a/src/apu/apu_xaudio2.c
++++ b/src/apu/apu_xaudio2.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "apu_xaudio2.h"
++#include "apu_web_audio.h"
+ #include <SDL3/SDL.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -21,6 +22,9 @@
+ #define XA2_MAX_QUEUED_BYTES (XA2_NUM_BUFS * XA2_BUF_SAMPLES * XA2_FRAME_BYTES)
+ 
+ static SDL_AudioStream *g_sdl_stream = NULL;
++/* WebAssembly: frames go to an AudioWorklet's ring instead of SDL's stream
++ * when the browser has AudioWorklet (apu_web_audio.h). */
++static int              g_web_audio = 0;
+ static int              g_xa2_initialized = 0;
+ static int              g_xa2_frames_written = 0;
+ 
+@@ -54,6 +58,16 @@ int xa2_init(void)
+ 
+     if (g_xa2_initialized)
+         return 1;
++#ifdef __EMSCRIPTEN__
++    if (!getenv("RECOMP_WEB_SDL_AUDIO") && web_audio_open()) {
++        if (!g_tap_mutex)
++            g_tap_mutex = SDL_CreateMutex();
++        g_web_audio = 1;
++        g_xa2_initialized = 1;
++        g_xa2_frames_written = 0;
++        return 1;
++    }
++#endif
+ 
+     if (!SDL_WasInit(SDL_INIT_AUDIO)) {
+         if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+@@ -87,6 +101,12 @@ int xa2_init(void)
+ 
+ void xa2_shutdown(void)
+ {
++#ifdef __EMSCRIPTEN__
++    if (g_web_audio) {
++        web_audio_close();
++        g_web_audio = 0;
++    }
++#endif
+     if (g_sdl_stream) {
+         SDL_DestroyAudioStream(g_sdl_stream);
+         g_sdl_stream = NULL;
+@@ -106,7 +126,7 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+     int queued_bytes;
+     int copy_samples;
+ 
+-    if (!g_xa2_initialized || !g_sdl_stream || num_samples <= 0)
++    if (!g_xa2_initialized || !(g_sdl_stream || g_web_audio) || num_samples <= 0)
+         return 0;
+ 
+     /* RECOMP_AUDIO_WAV=<path>: record up to 10 minutes of speaker output */
+@@ -185,6 +205,11 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+         }
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    if (g_web_audio)
++        queued_bytes = (int)web_audio_queued() * XA2_FRAME_BYTES;
++    else
++#endif
+     queued_bytes = SDL_GetAudioStreamQueued(g_sdl_stream);
+     if (queued_bytes < 0)
+         queued_bytes = 0;
+@@ -209,10 +234,21 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+     /* Cushion against underruns when queue drops below 1 buffer (~4KB) */
+     if (queued_bytes <= (XA2_BUF_SAMPLES * XA2_FRAME_BYTES)) {
+         static const int16_t silence[XA2_BUF_SAMPLES][2] = { 0 };
++#ifdef __EMSCRIPTEN__
++        if (g_web_audio)
++            web_audio_put(&silence[0][0], XA2_BUF_SAMPLES);
++        else
++#endif
+         SDL_PutAudioStreamData(g_sdl_stream, silence, sizeof(silence));
+     }
+ 
+     copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
++#ifdef __EMSCRIPTEN__
++    if (g_web_audio) {
++        if (web_audio_put(samples, (uint32_t)copy_samples) != (uint32_t)copy_samples)
++            return 0;
++    } else
++#endif
+     if (!SDL_PutAudioStreamData(g_sdl_stream, samples, copy_samples * XA2_FRAME_BYTES))
+         return 0;
+ 
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 index 101118c..119c0dc 100644
 --- a/src/kernel/CMakeLists.txt

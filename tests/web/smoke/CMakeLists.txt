@@ -10,6 +10,10 @@ target_link_options(web_smoke PRIVATE -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL
     -sMODULARIZE=1 -sEXPORT_NAME=createSmoke -sEXPORTED_RUNTIME_METHODS=ENV
     -sENVIRONMENT=web,worker -sEXIT_RUNTIME=0 -sERROR_ON_UNDEFINED_SYMBOLS=0)
 set_target_properties(web_smoke PROPERTIES SUFFIX ".js")
-add_custom_command(TARGET web_smoke POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E copy "${NFL2K5_ROOT}/web/launch.js" "${CMAKE_CURRENT_SOURCE_DIR}/smoke.html" "${CMAKE_BINARY_DIR}"
+# On every build, not only when the module relinks: the page and scripts
+# change on their own.
+add_custom_target(web_smoke_page ALL
+  COMMAND "${CMAKE_COMMAND}" -E copy "${NFL2K5_ROOT}/web/launch.js" "${NFL2K5_ROOT}/web/audio-worklet.js"
+          "${CMAKE_CURRENT_SOURCE_DIR}/smoke.html" "${CMAKE_BINARY_DIR}"
   VERBATIM)
+add_dependencies(web_smoke web_smoke_page)

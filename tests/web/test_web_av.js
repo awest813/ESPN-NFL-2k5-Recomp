@@ -5,7 +5,10 @@
 //   1. Start (a click) -> the guest framebuffer reaches the canvas (left half
 //      red, right half blue) through the presenter on its worker thread;
 //   2. the AudioContext the page created in the click is running, and the
-//      APU output's 440 Hz tone reaches Web Audio's output buffers;
+//      APU output's 440 Hz tone plays through the AudioWorklet
+//      (web/audio-worklet.js): right pitch and level, no underruns once
+//      started, SDL's audio not used; at 44.1 kHz it is resampled to the same
+//      pitch; with RECOMP_WEB_SDL_AUDIO=1 it falls back to SDL's output;
 //   3. keys go to the game while the canvas has focus, and not otherwise;
 //   4. a controller that appears after startup (Gamepad API connect event)
 //      is seen and its buttons read;
@@ -61,6 +64,27 @@ const AUTOPLAY_BLOCK = () => {
   };
 };
 
+// The worklet's own report (apu_web_audio.c keeps it as Module.nfl2k5Audio).
+async function checkWorklet(page, rate, label) {
+  const audio = () => window.nfl2k5Module && window.nfl2k5Module.nfl2k5Audio;
+  const st = await until(page, (f) => { const s = new Function('return ' + f)()(); return s && s.played > 48000 ? s : null; },
+                         20000, audio.toString());
+  check(!!st && st.state === 'running', `${label}: AudioWorklet output running`);
+  if (!st) return;
+  check(st.contextRate === rate, `${label}: AudioContext at ${st.contextRate} Hz`);
+  check(Math.abs(st.frequency - 440) < 440 * 0.02, `${label}: tone at ${st.frequency.toFixed(1)} Hz (440 expected)`);
+  check(st.peak > 0.33 && st.peak < 0.40, `${label}: level ${st.peak.toFixed(3)} (0.366 expected)`);
+  const u0 = st.underruns, p0 = st.played;
+  await page.waitForTimeout(3000);
+  const st2 = await page.evaluate(() => window.nfl2k5Module.nfl2k5Audio);
+  check(st2.played - p0 > 48000 * 2, `${label}: kept playing (${st2.played - p0} frames in 3 s)`);
+  check(st2.underruns - u0 <= 1, `${label}: no underruns while fed (${st2.underruns - u0} in 3 s)`);
+  check(await page.evaluate(() => !(window.nfl2k5Module.SDL3 && window.nfl2k5Module.SDL3.audio_playback)),
+        `${label}: SDL's ScriptProcessor output not used`);
+  check(await page.evaluate(() => window.nfl2k5Module.nfl2k5AudioContext === window.smokeAudio),
+        `${label}: plays through the page's AudioContext`);
+}
+
 async function until(page, fn, ms, arg) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -96,16 +120,7 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       check(!!px, 'video: guest framebuffer on the canvas (red | blue)');
 
       check((await page.evaluate(() => window.smokeAudio.state)) === 'running', 'sound: AudioContext running after the click');
-      check(!!(await until(page, () => window.nfl2k5Module.SDL3.audioContext === window.smokeAudio, 2000)),
-            'sound: SDL uses the page\'s AudioContext');
-      const peak = await until(page, () => {
-        const b = window.nfl2k5Module.SDL3.audio_playback && window.nfl2k5Module.SDL3.audio_playback.currentPlaybackBuffer;
-        if (!b) return null;
-        let m = 0;
-        for (const v of b.getChannelData(0)) m = Math.max(m, Math.abs(v));
-        return m > 0.2 ? m : null;
-      }, 15000);
-      check(!!peak, `sound: the tone reaches Web Audio (peak ${peak && peak.toFixed(2)})`);
+      await checkWorklet(page, 48000, 'sound');
 
       await page.focus('#start');
       await page.keyboard.press('KeyB');
@@ -120,6 +135,28 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       check(!!(await hasLog(page, /^\[SMOKE\] opened /, 5000)), 'controller: opens as a gamepad');
       await page.evaluate(() => window.__pressPad(0, true));
       check(!!(await hasLog(page, /^\[SMOKE\] pad A down$/, 5000)), 'controller: button press read');
+      await page.close();
+    }
+    {
+      const page = await (await browser.newContext()).newPage();
+      await page.goto('http://127.0.0.1:18767/smoke.html?rate=44100');
+      await page.click('#start');
+      await checkWorklet(page, 44100, 'sound at 44.1 kHz');
+      await page.close();
+    }
+    {
+      const page = await (await browser.newContext()).newPage();
+      await page.goto('http://127.0.0.1:18767/smoke.html?env=RECOMP_WEB_SDL_AUDIO=1');
+      await page.click('#start');
+      const peak = await until(page, () => {
+        const a = window.nfl2k5Module && window.nfl2k5Module.SDL3 && window.nfl2k5Module.SDL3.audio_playback;
+        const b = a && a.currentPlaybackBuffer;
+        if (!b) return null;
+        let m = 0;
+        for (const v of b.getChannelData(0)) m = Math.max(m, Math.abs(v));
+        return m > 0.2 ? m : null;
+      }, 15000);
+      check(!!peak, `SDL fallback: the tone reaches Web Audio through SDL (peak ${peak && peak.toFixed(2)})`);
       await page.close();
     }
     {

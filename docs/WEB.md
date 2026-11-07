@@ -148,9 +148,26 @@ The game's own SDL code runs unchanged; on the web it runs on workers
   `await` (Safari requires that), and hands it to SDL as
   `Module.SDL3.audioContext`. If sound is still blocked, for example after
   `?autoplay=1`, a "Sound is off" prompt shows over the game and the next
-  click or key press anywhere turns sound on. SDL's Emscripten audio
-  pulls samples on the page's thread (`ScriptProcessorNode`) from the APU
-  output's `SDL_AudioStream`.
+  click or key press anywhere turns sound on. The context runs at 48 kHz,
+  the APU's own rate.
+- **Sound output: an AudioWorklet.** SDL's Emscripten audio pulls samples
+  through a `ScriptProcessorNode` on the page's main thread, which is
+  deprecated and stalls whenever that thread is busy. So the APU output
+  (`apu/apu_xaudio2.c`) bypasses SDL on the web:
+  - it writes its 48 kHz 16-bit stereo frames into a lock-free ring in
+    wasm's shared memory (`apu/apu_web_audio.c`);
+  - `web/audio-worklet.js`, an `AudioWorkletProcessor` on the browser's
+    audio rendering thread, reads them straight from that memory, which a
+    cross-origin isolated page may share with its worklet. Indices go
+    through `Atomics`, and no wasm runs in the worklet;
+  - if the browser runs the context at another rate, the worklet resamples
+    linearly;
+  - queue limits are unchanged from SDL's path: about 128 ms, with the
+    1024-frame underrun cushion;
+  - the worklet reports frames played, underruns, peak level and an
+    estimated frequency, kept as `Module.nfl2k5Audio`;
+  - browsers without `AudioWorklet`, or `?env=RECOMP_WEB_SDL_AUDIO=1`, use
+    SDL's output as before.
 
 Bug found on the way, affecting Linux too: the presenter's software
 fallback called the GPU presenter function pointer in the branch where it
@@ -163,8 +180,11 @@ input and APU audio output without the game. It needs no generated code,
 so CI runs it on every push. It checks:
 
 - a guest framebuffer reaches the canvas;
-- SDL uses the page's `AudioContext`, and a 440 Hz tone reaches Web Audio's
-  output buffers;
+- the APU output's 440 Hz tone plays through the AudioWorklet on the page's
+  `AudioContext`, at 48 kHz and resampled at 44.1 kHz, with the right
+  pitch (within 2%) and level, no underruns over 3 s, and SDL's output
+  unused;
+- with `RECOMP_WEB_SDL_AUDIO=1`, the tone goes through SDL's output instead;
 - keys reach the game only while the canvas has focus;
 - a controller connected after startup is seen and its button read (a
   Gamepad API stand-in fires the browser's real connect event);
@@ -273,9 +293,8 @@ These compile today but are inert or wrong at run time:
 - **Not booted with the retail disc.** Past the XBE check, expect whatever
   stalls the browser's thread scheduling brings out. Video is the
   software path, and its speed in a browser is unmeasured.
-- **Audio uses `ScriptProcessorNode`** (SDL 3.2's Emscripten backend), which
-  is deprecated and runs on the page's thread. An `AudioWorklet` output
-  reading a shared ring is the plan's later step.
+- **Audio latency** is the native build's: about 128 ms queued, which is
+  generous for a browser. It hasn't been tuned against real game load.
 - **Not tried on the web yet:** fullscreen, pointer lock for "mouse as
   controller", rumble, and a remapping of F1/F2 away from browser
   shortcuts. Keys still work while the canvas has focus.

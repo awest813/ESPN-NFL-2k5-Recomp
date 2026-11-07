@@ -140,6 +140,7 @@ jobs:
             build-web/index.html
             build-web/app.js
             build-web/launch.js
+            build-web/audio-worklet.js
             build-web/import-worker.js
             build-web/coi-sw.js
             build-web/NFL2K5.js

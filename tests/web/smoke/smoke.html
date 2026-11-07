@@ -4,7 +4,9 @@
 <style>body{margin:0;background:#111;color:#ddd;font:13px monospace}#canvas{display:block}</style></head>
 <body>
 <!-- tests/web/test_web_av.js: Start runs the same launcher as the page's Play.
-     ?auto=1 starts without a click, to test the "sound is off" path. -->
+     ?auto=1 starts without a click, to test the "sound is off" path;
+     ?rate=N runs the AudioContext at N Hz, to test resampling;
+     ?env=NAME=VALUE sets an environment variable for the module. -->
 <button id="start">Start</button>
 <button id="sound" hidden>Sound is off</button>
 <canvas id="canvas" tabindex="-1"></canvas>
@@ -12,11 +14,13 @@
 <script>
   window.smokeLog = [];
   function go() {
-    const audio = NFL2K5Launch.createAudio();
+    const rate = Number(new URLSearchParams(location.search).get('rate')) || undefined;
+    const audio = NFL2K5Launch.createAudio(rate);
     window.smokeAudio = audio;
     NFL2K5Launch.watchSound(audio, document.getElementById('sound'));
     NFL2K5Launch.start({ script: 'web_smoke.js', factory: 'createSmoke',
       canvas: document.getElementById('canvas'), audioContext: audio,
+      env: new URLSearchParams(location.search).getAll('env'),
       print: (t) => { smokeLog.push(t); console.log(t); },
       printErr: (t) => { smokeLog.push(t); console.log(t); } });
   }

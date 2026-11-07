@@ -13,11 +13,15 @@
 'use strict';
 
 window.NFL2K5Launch = (() => {
-  // Call synchronously from the click/key handler, before any await.
-  function createAudio() {
+  // Call synchronously from the click/key handler, before any await. 48 kHz
+  // is the APU's own rate, so the game's sound plays without resampling
+  // (web/audio-worklet.js resamples if the browser picks another rate).
+  function createAudio(sampleRate = 48000) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return null;
-    const ctx = new Ctx({ latencyHint: 'interactive' });
+    let ctx;
+    try { ctx = new Ctx({ latencyHint: 'interactive', sampleRate }); }
+    catch { ctx = new Ctx({ latencyHint: 'interactive' }); }
     if (ctx.state !== 'running') ctx.resume().catch(() => {});
     return ctx;
   }
