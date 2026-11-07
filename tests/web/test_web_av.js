@@ -12,6 +12,11 @@
 //   3. keys go to the game while the canvas has focus, and not otherwise;
 //   4. a controller that appears after startup (Gamepad API connect event)
 //      is seen and its buttons read;
+//   6. with WebGPU (a second browser, SwiftShader), a GPU presenter written as
+//      the SDL GPU renderer's takes the window over through the WebGPU shim:
+//      the overlay canvas shows its frame, paced by animation frames; the
+//      first browser has no WebGPU, so everything above ran the software
+//      fallback;
 //   5. started without a click (under a stand-in for the autoplay block, see
 //      AUTOPLAY_BLOCK), the "sound is off" prompt shows and the next click
 //      turns sound on and hides it.
@@ -172,8 +177,35 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       check(!!(await until(page, () => document.getElementById('sound').hidden, 5000)), 'after a click: prompt hidden');
       await page.close();
     }
-  } finally {
     await browser.close();
+    // 6. WebGPU: SwiftShader's Vulkan, and ANGLE so WebGPU canvases composite.
+    const gpu = await chromium.launch({ channel: 'chromium', args: ['--enable-unsafe-webgpu', '--use-gl=angle',
+      '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'] });
+    try {
+      const page = await (await gpu.newContext()).newPage();
+      await page.goto('http://127.0.0.1:18767/smoke.html?env=SMOKE_GPU=1');
+      await page.click('#start');
+      check(!!(await hasLog(page, /^\[SMOKE\] gpu present claimed$/, 30000)), 'WebGPU: presenter claimed the window');
+      const view = await until(page, () => {
+        const c = document.getElementById('gpucanvas');
+        const k = document.createElement('canvas'); k.width = c.width; k.height = c.height;
+        const g = k.getContext('2d'); g.drawImage(c, 0, 0);
+        const l = Array.from(g.getImageData(c.width / 4, c.height / 2, 1, 1).data);
+        const r = Array.from(g.getImageData(c.width * 3 / 4, c.height / 2, 1, 1).data);
+        return !c.hidden && l[1] === 192 && l[0] === 0 && r[0] === 192 && r[2] === 192 ? { l, r } : null;
+      }, 10000);
+      check(!!view, 'WebGPU: overlay canvas shows the presented frame (green | magenta)');
+      check(await page.evaluate(() => window.gpuPresent === true), 'WebGPU: page told the GPU presents (onGpuPresent)');
+      await page.waitForTimeout(2500);
+      const rates = (await page.evaluate(() => window.smokeLog.slice()))
+        .map((l) => /presents\/s: (\d+)/.exec(l)).filter(Boolean).map((m) => +m[1]).slice(1);
+      const last = rates[rates.length - 1];
+      check(last >= 20 && last <= 130, `WebGPU: presents paced by animation frames (${rates.join(', ')}/s)`);
+    } finally {
+      await gpu.close();
+    }
+  } finally {
+    await browser.close().catch(() => {});
     server.kill();
   }
   console.log(failures ? `${failures} failure(s)` : 'web audio/video: all checks passed');

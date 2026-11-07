@@ -155,7 +155,10 @@ offset need no change.
 - Exit: a Quick Game can be played to the end on the software path. Record
   fps in `docs/BENCHMARKS.md`.
 
-**M4: WebGPU renderer**
+**M4: WebGPU renderer**. Built, untried on the game: the SDL GPU renderer
+runs unchanged on an SDL_GPU-on-WebGPU layer, not a port of `sdlgpu/`
+(see [WEB.md](WEB.md), "Hardware rendering: WebGPU"). The exit check needs
+the retail disc.
 - Port `sdlgpu/` to `webgpu.h` behind the five-function contract, converting
   the shaders to WGSL at build time. Present directly from the GPU texture to
   the canvas (the same design as the latest xboxrecomp "present from the GPU"

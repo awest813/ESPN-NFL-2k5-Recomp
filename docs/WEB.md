@@ -6,7 +6,8 @@ the guest address space ([below](#guest-address-space)) and APU/AC97
 register routing without faults ([below](#audio-registers-without-faults)),
 the page itself, with game files in the browser's private file system
 ([below](#playing-in-a-browser)), and video, input and sound in the browser
-([below](#video-input-and-sound)). In a browser, the module mounts the
+([below](#video-input-and-sound)), and the hardware renderer on WebGPU
+([below](#hardware-rendering-webgpu)). In a browser, the module mounts the
 imported disc and reads `default.xbe` from it. Booting further needs the
 retail disc, which this has not been tried with yet.
 
@@ -194,6 +195,90 @@ The last check emulates the autoplay block at the API, because Playwright's
 navigation itself counts as user activation, so a real block cannot be
 produced.
 
+## Hardware rendering: WebGPU
+
+The native builds' hardware renderer (xboxrecomp `src/kernel/sdlgpu/`, design
+in its `docs/sdl-gpu-renderer.md`) draws through SDL 3's GPU API. SDL has no
+WebGPU backend for that API (not in 3.2.20, and not on SDL's main branch as
+of 2026-11-06). So the web build implements the part of the API the
+renderer uses, 46 functions on SDL's own types, on WebGPU: Dawn's
+`webgpu.h`, through Emscripten's `emdawnwebgpu` port.
+`sdlgpu/webgpu/sdl_gpu_webgpu.h` redirects the renderer's calls there. The
+renderer itself is unchanged except that it loads WGSL; 2D, 3D, the texture
+cache, pipelines and presenting all come along.
+
+- **One GPU thread.** A WebGPU device belongs to the JavaScript context that
+  made it, and it only makes progress when that context returns to its event
+  loop, which none of the game's threads do. So a server thread owns the
+  device and stays in its event loop, and every call runs there through
+  Emscripten's proxying queue. That makes the renderer's two caller threads
+  (the pushbuffer executor and the window presenter) safe.
+- **Commands.**
+  - Command buffers are recorded on the caller's side and replayed into a
+    `GPUCommandEncoder` at submit.
+  - Submits are synchronous: upload data is copied into WebGPU before they
+    return, and they wait for any downloads in them through `mapAsync`.
+  - Queue writes run ahead of encoded commands, so an upload that follows
+    GPU work splits the submission. That keeps SDL's ordering.
+- **Binding layout.** Bind groups follow SDL's convention:
+  - group 1: vertex uniforms;
+  - group 2: four textures at bindings 0–3, their samplers at 4–7;
+  - group 3: fragment uniforms;
+  - uniforms are dynamic offsets into one buffer per submit.
+- **Blits and mipmaps,** which WebGPU doesn't have, are small fullscreen
+  render passes.
+- **Shaders.** `tools/gen-wgsl.py` (in xboxrecomp) translates the four GLSL
+  shaders with naga into `sdlgpu/webgpu/sg_wgsl.h`, which is committed.
+  Rerun it after changing a shader (`cargo install naga-cli`). It splits
+  combined samplers, rewrites the alpha-test switches as `if` chains (naga
+  refuses `return` in a case), and turns off WGSL's derivative-uniformity
+  check, since the per-stage branches are uniform per draw. Vertex programs
+  compiled at run time need glslang, which the web build doesn't have, so
+  they stay on the CPU, as on any Linux build without glslang.
+- **Presenting.** The page has a `<canvas id="gpucanvas">` over SDL's canvas
+  (with `pointer-events: none`, so input stays with SDL's).
+  - `-sOFFSCREENCANVASES_TO_PTHREAD=#gpucanvas` hands it to the program's
+    main thread at startup, and `wg_server_start()` passes it on to the GPU
+    thread (by bare id: that's how a thread keys a canvas it holds).
+  - Claiming the window shows it.
+  - A frame appears when the GPU thread returns to its event loop after the
+    submit that drew it. The canvas's texture is fetched in that same task,
+    since it expires at the end of the task.
+  - Acquiring a swapchain texture waits for the next animation frame, which
+    paces the presenter at the display rate where natively it waits for
+    vsync.
+- **On by default.** At startup `src/platform/web/web_sdl.c` starts the GPU
+  thread. With a device, `RECOMP_SDLGPU=1` is the default; without WebGPU
+  the game draws in software. `?env=RECOMP_SDLGPU=0` forces software.
+
+Every page that loads a module with this kernel needs a `#gpucanvas`, and the
+module links with em++, because the WebGPU port's library is C++.
+
+Tests, in headless Chromium with WebGPU on SwiftShader (flags in the tests):
+
+- `external/xboxrecomp/tests/sdlgpu_web` drives the redirected API as the
+  renderer does: the generated WGSL, its vertex layout and formats, its pass
+  structure. 20 checks:
+  - clear and download, byte for byte;
+  - unaligned upload/download;
+  - flat 2D orientation, texturing with point sampling and wrap, alpha
+    test, blending, scissor including out-of-range rectangles;
+  - depth load and clear ops and the depth test;
+  - mipmap generation;
+  - the 3D pipeline with stencil;
+  - presenting, with the canvas read back;
+  - no WebGPU validation errors.
+- `tests/web/test_web_av.js` registers a presenter written like the
+  renderer's in the smoke module. `fb_present.c` hands it the window, the
+  overlay shows its frame, and presents run at 60 per second, paced by
+  animation frames.
+
+The renderer's own test (`tests/sdlgpu_posix`) no longer compiles against
+the renderer upstream: the renderer reads executor state (`s_vp`,
+`s_stage`, `Texture`, `VP_CONSTS`, …) that the test doesn't stand in for.
+So the renderer's logic on WebGPU is tested only through the game, once it
+boots.
+
 ## Guest address space
 
 A native host maps each guest region at `base + guest address` and turns a
@@ -288,11 +373,12 @@ These compile today but are inert or wrong at run time:
 - **Audio has not been heard.** The APU routing is tested against a fake
   APU, and the layout init with the APU path runs under Node. The real
   DirectSound handshake can only be exercised once the game boots.
-- **Renderer.** SDL_GPU 3.2.20 has no WebGPU backend, so `RECOMP_SDLGPU`
-  finds no device and drawing stays on the software rasterizer.
 - **Not booted with the retail disc.** Past the XBE check, expect whatever
-  stalls the browser's thread scheduling brings out. Video is the
-  software path, and its speed in a browser is unmeasured.
+  stalls the browser's thread scheduling brings out. Neither renderer's
+  speed in a browser has been measured. The WebGPU renderer has run the
+  API checks above but not a game frame. Every create and submit is a
+  round trip to the GPU thread (about 80 µs), which may matter with many
+  small submits.
 - **Audio latency** is the native build's: about 128 ms queued, which is
   generous for a browser. It hasn't been tuned against real game load.
 - **Not tried on the web yet:** fullscreen, pointer lock for "mouse as

@@ -6,6 +6,8 @@
 #   recomp_web_dev    the APU device accessors (under node)
 #   wasm_fixed        fixed-address claims and the host heap ceiling
 #   wasm_layout       the real xbox_MemoryLayoutInit on a minimal XBE
+#   sdlgpu web        the SDL GPU renderer's API on WebGPU, in headless
+#                     Chromium with SwiftShader (needs Playwright)
 #   web audio/video   the presenter, input and sound paths in headless
 #                     Chromium via tests/web/smoke (needs Playwright)
 #   web page          the page in headless Chromium: disc import into OPFS,
@@ -36,7 +38,11 @@ node -e "require('playwright')" 2>/dev/null && HAVE_PW=1
 emcmake cmake -S "$ROOT/tests/web/smoke" -B "$OUT/smoke" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DSDL3_DIR="$SDL_DIR" -DCMAKE_C_FLAGS="-pthread -msimd128" >/dev/null
 cmake --build "$OUT/smoke" -j "${JOBS:-$(nproc)}"
+emcmake cmake -S "$ROOT/external/xboxrecomp/tests/sdlgpu_web" -B "$OUT/sdlgpu_web" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DSDL3_DIR="$SDL_DIR" -DCMAKE_C_FLAGS="-pthread" -DCMAKE_CXX_FLAGS="-pthread" >/dev/null
+cmake --build "$OUT/sdlgpu_web" -j "${JOBS:-$(nproc)}"
 if [ "$HAVE_PW" = 1 ]; then
+  node "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
   node "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
 else
   echo "web audio/video test skipped (needs Playwright)"

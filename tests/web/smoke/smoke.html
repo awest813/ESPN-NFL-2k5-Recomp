@@ -9,7 +9,10 @@
      ?env=NAME=VALUE sets an environment variable for the module. -->
 <button id="start">Start</button>
 <button id="sound" hidden>Sound is off</button>
-<canvas id="canvas" tabindex="-1"></canvas>
+<div style="position:relative;display:inline-block">
+  <canvas id="canvas" tabindex="-1"></canvas>
+  <canvas id="gpucanvas" hidden style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas>
+</div>
 <script src="launch.js"></script>
 <script>
   window.smokeLog = [];
@@ -21,6 +24,7 @@
     NFL2K5Launch.start({ script: 'web_smoke.js', factory: 'createSmoke',
       canvas: document.getElementById('canvas'), audioContext: audio,
       env: new URLSearchParams(location.search).getAll('env'),
+      onGpuPresent: (on) => { window.gpuPresent = on; },
       print: (t) => { smokeLog.push(t); console.log(t); },
       printErr: (t) => { smokeLog.push(t); console.log(t); } });
   }

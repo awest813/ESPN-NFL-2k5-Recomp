@@ -42,8 +42,12 @@
   #progress-text { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
   #stage { position: relative; background: #000; border-radius: 8px; overflow: hidden;
            margin-bottom: 16px; display: flex; justify-content: center; }
-  /* SDL sizes the canvas to the game's window; never wider than the page. */
+  /* SDL sizes the canvas to the game's window; never wider than the page.
+     #gpucanvas, the WebGPU renderer's output, lies exactly over it once the
+     renderer presents; input stays with #canvas underneath. */
+  #screen { position: relative; display: inline-block; max-width: 100%; }
   #canvas { display: block; max-width: 100%; height: auto; outline: none; }
+  #gpucanvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   #sound { position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
            background: rgba(0,0,0,.75); color: #fff; border: 1px solid rgba(255,255,255,.35);
            border-radius: 6px; padding: 8px 14px; cursor: pointer; }
@@ -103,7 +107,10 @@
   </section>
 
   <div id="stage" hidden>
-    <canvas id="canvas" tabindex="-1"></canvas>
+    <div id="screen">
+      <canvas id="canvas" tabindex="-1"></canvas>
+      <canvas id="gpucanvas" hidden></canvas>
+    </div>
     <button id="sound" hidden>Sound is off: click here or press a key to turn it on</button>
   </div>
 

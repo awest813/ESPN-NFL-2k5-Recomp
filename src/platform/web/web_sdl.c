@@ -1,4 +1,6 @@
-/* Web build: a thread that owns SDL's gamepad subsystem.
+/* Web build: SDL and WebGPU start-up. nfl2k5_web_sdl_start() starts the
+ * WebGPU renderer's server (xboxrecomp kernel/sdlgpu/webgpu/) and a thread
+ * that owns SDL's gamepad subsystem.
  *
  * Browsers report a gamepad only after one of its buttons is pressed while
  * the page has focus, through a "gamepadconnected" event. SDL subscribes to
@@ -18,6 +20,8 @@
 #ifdef __EMSCRIPTEN__
 #include <SDL3/SDL.h>
 #include <emscripten/threading.h>
+#include <stdlib.h>
+#include "kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h"
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdio.h>
@@ -42,6 +46,14 @@ static void *web_sdl_pump(void *arg)
 int nfl2k5_web_sdl_start(void)
 {
     pthread_t thread;
+    /* The WebGPU renderer's server thread, before anything else: it takes
+     * over the page's #gpucanvas, which only this (the main) thread holds.
+     * With a device, hardware rendering is the default on the web
+     * (?env=RECOMP_SDLGPU=0 turns it off); without one, software. */
+    if (wg_server_start("gpucanvas"))
+        setenv("RECOMP_SDLGPU", "1", 0);
+    else
+        printf("[WEB] No WebGPU: software rendering\n");
     if (sem_init(&s_ready, 0, 0) != 0 || pthread_create(&thread, NULL, web_sdl_pump, NULL) != 0) {
         fprintf(stderr, "[WEB] Could not start the SDL pump thread\n");
         return 0;

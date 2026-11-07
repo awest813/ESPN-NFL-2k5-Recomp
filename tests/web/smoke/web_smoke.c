@@ -7,8 +7,14 @@
  *   pads   the gamepad pump thread (src/platform/web/web_sdl.c); connects and
  *          the south button printed as "[SMOKE] gamepads: <n>", "pad A down"
  *   audio  a 440 Hz tone through the APU's SDL output (apu_xaudio2.c)
+ *   gpu    with SMOKE_GPU=1 and WebGPU: a GPU presenter written as the SDL
+ *          GPU renderer's (sdlgpu_present.inc.c) takes the window over --
+ *          claim, acquire, blit a green | magenta frame -- printing
+ *          "[SMOKE] gpu present claimed" and presents per second
  */
 #include <SDL3/SDL.h>
+#include <stdlib.h>
+#include "kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -24,6 +30,69 @@ void xbox_FramebufferSnapshot(uint32_t fb_va, uint32_t pitch);
 void xbox_FramebufferSetKeyHook(void (*hook)(unsigned vk));
 int  xa2_init(void);
 int  xa2_submit_samples(const int16_t *samples, int frames);
+void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
+
+static SDL_GPUDevice *g_dev;
+static SDL_GPUTexture *g_frame;
+static int g_claimed;
+static SDL_AtomicInt g_presents;
+
+/* fb_thread, as sdlgpu_present.inc.c's sg_present_window. */
+static int SDLCALL gpu_present(void *window, int letterbox)
+{
+    SDL_GPUCommandBuffer *cmd;
+    SDL_GPUTexture *swap = NULL;
+    Uint32 sw = 0, sh = 0;
+    if (letterbox < 0) return 1;
+    if (!g_claimed) {
+        if (!SDL_ClaimWindowForGPUDevice(g_dev, (SDL_Window *)window)) return 0;
+        g_claimed = 1;
+        printf("[SMOKE] gpu present claimed\n");
+    }
+    cmd = SDL_AcquireGPUCommandBuffer(g_dev);
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, (SDL_Window *)window, &swap, &sw, &sh)) {
+        SDL_CancelGPUCommandBuffer(cmd);
+        return 1;
+    }
+    SDL_GPUBlitInfo b = { .source = { .texture = g_frame, .w = 640, .h = 480 },
+                          .destination = { .texture = swap, .w = sw, .h = sh },
+                          .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 },
+                          .filter = SDL_GPU_FILTER_NEAREST };
+    SDL_BlitGPUTexture(cmd, &b);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_AddAtomicInt(&g_presents, 1);
+    return 1;
+}
+
+static void gpu_start(void)
+{
+    static uint32_t px[640 * 480];
+    SDL_GPUTextureCreateInfo ti = { .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+        .usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .width = 640, .height = 480, .layer_count_or_depth = 1, .num_levels = 1 };
+    SDL_GPUTransferBufferCreateInfo bi = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = sizeof px };
+    if (!(g_dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_WGSL, false, NULL))) {
+        printf("[SMOKE] gpu: no device (%s)\n", SDL_GetError());
+        return;
+    }
+    g_frame = SDL_CreateGPUTexture(g_dev, &ti);
+    for (int y = 0; y < 480; y++)
+        for (int x = 0; x < 640; x++)
+            px[y * 640 + x] = x < 320 ? 0xFF00C000u : 0xFFC000C0u;   /* BGRA bytes: green | magenta */
+    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(g_dev, &bi);
+    memcpy(SDL_MapGPUTransferBuffer(g_dev, tb, false), px, sizeof px);
+    SDL_UnmapGPUTransferBuffer(g_dev, tb);
+    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(g_dev);
+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
+    SDL_GPUTextureTransferInfo src = { .transfer_buffer = tb };
+    SDL_GPUTextureRegion dst = { .texture = g_frame, .w = 640, .h = 480, .d = 1 };
+    SDL_UploadToGPUTexture(cp, &src, &dst, false);
+    SDL_EndGPUCopyPass(cp);
+    SDL_SubmitGPUCommandBuffer(c);
+    SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+    xbox_FramebufferSetGpuPresenter(gpu_present);
+    printf("[SMOKE] gpu presenter registered\n");
+}
 
 #define FB_VA    0x00100000u
 #define FB_W     640u
@@ -78,7 +147,10 @@ int main(void)
     xbox_FramebufferWindowSet(FB_VA, FB_PITCH);
     xbox_FramebufferWindowForceStart();
     SDL_DetachThread(SDL_CreateThread(audio_thread, "smoke_audio", NULL));
+    if (getenv("SMOKE_GPU") && wg_available())
+        gpu_start();
     printf("[SMOKE] ready\n");
+    Uint64 last_report = SDL_GetTicks();
 
     for (;;) {
         xbox_FramebufferSnapshot(FB_VA, FB_PITCH);   /* what a flip does */
@@ -97,6 +169,10 @@ int main(void)
             SDL_UpdateGamepads();
             int a = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
             if (a != last_a) { printf("[SMOKE] pad A %s\n", a ? "down" : "up"); last_a = a; }
+        }
+        if (g_dev && SDL_GetTicks() - last_report >= 1000) {
+            printf("[SMOKE] gpu presents/s: %d\n", SDL_SetAtomicInt(&g_presents, 0));
+            last_report = SDL_GetTicks();
         }
         SDL_Delay(16);
     }

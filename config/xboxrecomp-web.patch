@@ -302,10 +302,10 @@ index 1fb4ce3..00bbe4d 100644
          return 0;
  
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
-index 101118c..119c0dc 100644
+index 101118c..19c7c01 100644
 --- a/src/kernel/CMakeLists.txt
 +++ b/src/kernel/CMakeLists.txt
-@@ -46,8 +46,14 @@ if(WIN32)
+@@ -46,8 +46,26 @@ if(WIN32)
      target_link_libraries(xbox_kernel PUBLIC platform kernel32 bcrypt)
  else()
      # Linux: platform layer (POSIX host primitives) + OpenSSL for crypto.
@@ -315,6 +315,18 @@ index 101118c..119c0dc 100644
 +    # The Emscripten build has no OpenSSL.)
 +    if(EMSCRIPTEN)
 +        target_link_libraries(xbox_kernel PUBLIC platform)
++        # The SDL GPU renderer on WebGPU (sdlgpu/webgpu/): Dawn's webgpu.h
++        # through Emscripten's emdawnwebgpu port, shaders as generated WGSL
++        # (so SG_HAVE_SHADERS without glslang), and the presentation canvas
++        # handed to a worker. The port's library is C++: link with em++.
++        target_sources(xbox_kernel PRIVATE sdlgpu/webgpu/sdl_gpu_webgpu.c)
++        target_compile_definitions(xbox_kernel PRIVATE SG_HAVE_SHADERS=1)
++        target_compile_options(xbox_kernel PRIVATE "--use-port=emdawnwebgpu")
++        # Every page that loads a module with this kernel must have a
++        # <canvas id="gpucanvas">: it is transferred to the main pthread at
++        # startup (the default would take SDL's #canvas instead).
++        target_link_options(xbox_kernel INTERFACE "--use-port=emdawnwebgpu" "-sOFFSCREENCANVAS_SUPPORT=1"
++                            "-sOFFSCREENCANVASES_TO_PTHREAD=#gpucanvas")
 +    else()
 +        find_package(OpenSSL REQUIRED)
 +        target_link_libraries(xbox_kernel PUBLIC platform OpenSSL::Crypto)
@@ -323,19 +335,24 @@ index 101118c..119c0dc 100644
      # SDL3 GPU renderer shaders (sdlgpu/shaders): GLSL compiled to SPIR-V at
      # build time and embedded as C arrays. Without glslangValidator the
 diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
-index e733e56..3ad0786 100644
+index e733e56..3473701 100644
 --- a/src/kernel/nv2a_gpu_sdl3.inc.c
 +++ b/src/kernel/nv2a_gpu_sdl3.inc.c
-@@ -6,7 +6,7 @@
+@@ -5,8 +5,12 @@
+  */
  
  #include <SDL3/SDL.h>
++#ifdef __EMSCRIPTEN__
++/* The SDL GPU calls below and in sdlgpu/ run on WebGPU (sdlgpu/webgpu/). */
++#include "sdlgpu/webgpu/sdl_gpu_webgpu.h"
++#endif
  #include "../input/xinput_xbox.h"
 -#if defined(__linux__)
 +#if defined(__linux__) || defined(__EMSCRIPTEN__)
  #include "../platform/guest_memory.h"
  #endif
  
-@@ -288,7 +288,7 @@ static struct {
+@@ -288,7 +292,7 @@ static struct {
      SDL_GPUTexture       *fb_tex;
      SDL_GPUTransferBuffer*fb_tbuf;
      uint32_t              fb_w, fb_h;
@@ -344,7 +361,7 @@ index e733e56..3ad0786 100644
      uint8_t              *fb_staging;
      size_t                fb_staging_capacity;
  #endif
-@@ -350,7 +350,7 @@ static void sdl_pr_flip(void)
+@@ -350,7 +354,7 @@ static void sdl_pr_flip(void)
       * allocation or guest-address arithmetic can wrap. */
      if (row_bytes > pitch || height > UINT32_MAX / row_bytes) return;
      size_t frame_bytes = (size_t)(row_bytes * height);
@@ -353,7 +370,7 @@ index e733e56..3ad0786 100644
      if (s_sdl_pr.fb_staging_capacity < frame_bytes) {
          uint8_t *replacement = (uint8_t *)realloc(s_sdl_pr.fb_staging, frame_bytes);
          if (!replacement) return;
-@@ -396,7 +396,7 @@ static void sdl_pr_flip(void)
+@@ -396,7 +400,7 @@ static void sdl_pr_flip(void)
  
      uint8_t *mapped = (uint8_t *)SDL_MapGPUTransferBuffer(s_sdl_pr.gpu, s_sdl_pr.fb_tbuf, true);
      if (!mapped) return;
@@ -642,6 +659,67 @@ index 9ceb0a5..ada59d4 100644
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
+diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
+index 0c46e27..d16bbe8 100644
+--- a/src/kernel/sdlgpu/sdlgpu.inc.c
++++ b/src/kernel/sdlgpu/sdlgpu.inc.c
+@@ -246,7 +246,11 @@ static int sg_ready(void) {
+     if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
+         return 0;
+     s_sg.tried = 1;
++#ifdef __EMSCRIPTEN__
++    s_sg.dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_WGSL,       /* sdlgpu/webgpu/ */
++#else
+     s_sg.dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV,
++#endif
+                                getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
+                                NULL);
+     if (!s_sg.dev) {
+diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw.inc.c
+index 2a21170..c7eda36 100644
+--- a/src/kernel/sdlgpu/sdlgpu_draw.inc.c
++++ b/src/kernel/sdlgpu/sdlgpu_draw.inc.c
+@@ -19,7 +19,9 @@
+  *                  may differ from the software integer blend by up to 2/255.
+  */
+ 
+-#ifdef SG_HAVE_SHADERS
++#if defined(SG_HAVE_SHADERS) && defined(__EMSCRIPTEN__)
++#include "webgpu/sg_wgsl.h"       /* WGSL, from shaders/ by tools/gen-wgsl.py */
++#elif defined(SG_HAVE_SHADERS)
+ #include "flat2d_vert.h"
+ #include "flat2d_frag.h"
+ #include "xf_vert.h"
+@@ -54,7 +56,11 @@ static SDL_GPUShader *sg_shader(const void *code, size_t size, SDL_GPUShaderStag
+                                 Uint32 samplers) {
+     SDL_GPUShaderCreateInfo info = {
+         .code = (const Uint8 *) code, .code_size = size, .entrypoint = "main",
++#ifdef __EMSCRIPTEN__
++        .format = SDL_GPU_SHADERFORMAT_WGSL, .stage = stage,
++#else
+         .format = SDL_GPU_SHADERFORMAT_SPIRV, .stage = stage,
++#endif
+         .num_samplers = samplers, .num_uniform_buffers = 1,
+     };
+     return SDL_CreateGPUShader(s_sg.dev, &info);
+@@ -78,10 +84,17 @@ static int sg_draw_init(void) {
+     if (s_sg.draw_ready || tried)
+         return s_sg.draw_ready;
+     tried = 1;
++#ifdef __EMSCRIPTEN__
++    s_sg.flat2d_vs = sg_shader(k_sg_flat2d_vert_wgsl, strlen(k_sg_flat2d_vert_wgsl), SDL_GPU_SHADERSTAGE_VERTEX, 0);
++    s_sg.flat2d_fs = sg_shader(k_sg_flat2d_frag_wgsl, strlen(k_sg_flat2d_frag_wgsl), SDL_GPU_SHADERSTAGE_FRAGMENT, 1);
++    s_sg.xf_vs = sg_shader(k_sg_xf_vert_wgsl, strlen(k_sg_xf_vert_wgsl), SDL_GPU_SHADERSTAGE_VERTEX, 0);
++    s_sg.xf_fs = sg_shader(k_sg_xf_frag_wgsl, strlen(k_sg_xf_frag_wgsl), SDL_GPU_SHADERSTAGE_FRAGMENT, 4);
++#else
+     s_sg.flat2d_vs = sg_shader(k_sg_flat2d_vert, sizeof k_sg_flat2d_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0);
+     s_sg.flat2d_fs = sg_shader(k_sg_flat2d_frag, sizeof k_sg_flat2d_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 1);
+     s_sg.xf_vs = sg_shader(k_sg_xf_vert, sizeof k_sg_xf_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0);
+     s_sg.xf_fs = sg_shader(k_sg_xf_frag, sizeof k_sg_xf_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 4);
++#endif
+     s_sg.point = SDL_CreateGPUSampler(s_sg.dev, &point);
+     s_sg.white = SDL_CreateGPUTexture(s_sg.dev, &white);
+     if (!s_sg.flat2d_vs || !s_sg.flat2d_fs || !s_sg.xf_vs || !s_sg.xf_fs || !s_sg.point || !s_sg.white) {
 diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
 index 7f2db68..fef2056 100644
 --- a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
@@ -663,6 +741,2867 @@ index 7f2db68..fef2056 100644
  
  static int sg_vp_worker_start(void)
  {
+diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
+new file mode 100644
+index 0000000..8e624ca
+--- /dev/null
++++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
+@@ -0,0 +1,1273 @@
++/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
++ * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
++#ifdef __EMSCRIPTEN__
++#define SDL_GPU_WEBGPU_IMPLEMENTATION
++#include "sdl_gpu_webgpu.h"
++
++#include <emscripten/em_js.h>
++#include <emscripten/emscripten.h>
++#include <emscripten/html5.h>
++#include <emscripten/proxying.h>
++#include <emscripten/threading.h>
++#include <pthread.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <webgpu/webgpu.h>
++
++/* OFFSCREENCANVAS_SUPPORT (the presentation canvas) needs Emscripten's GL
++ * object even though nothing here uses WebGL. */
++EM_JS_DEPS(sdl_gpu_webgpu, "$GL");
++
++#define WG_VS_UNIFORM_BYTES 4096u   /* binding size of vertex uniforms (group 1) */
++#define WG_FS_UNIFORM_BYTES 1024u   /* binding size of fragment uniforms (group 3) */
++#define WG_UNIFORM_ALIGN    256u    /* minUniformBufferOffsetAlignment */
++#define WG_MAX_SAMPLERS     4u      /* texture i at binding i, its sampler at 4 + i */
++
++/* ── Objects ──────────────────────────────────────────────────────────────
++ * Each SDL handle is one of these, owned by the caller; the WebGPU handles in
++ * it are only touched on the server thread. */
++struct SDL_GPUDevice { int unused; };
++struct SDL_GPUTexture {
++    WGPUTexture tex;
++    WGPUTextureView view;         /* all levels: sampling */
++    WGPUTextureView *level_views; /* one per level: render targets, mip generation */
++    WGPUTextureFormat format;
++    uint32_t w, h, levels;
++    int swapchain;                /* the canvas's current texture, resolved at replay */
++};
++struct SDL_GPUBuffer { WGPUBuffer buf; uint32_t size; };
++struct SDL_GPUTransferBuffer { uint8_t *mem; uint32_t size; };
++struct SDL_GPUSampler { WGPUSampler s; };
++struct SDL_GPUShader { WGPUShaderModule mod; SDL_GPUShaderStage stage; };
++struct SDL_GPUGraphicsPipeline { WGPURenderPipeline pipe; };
++struct SDL_GPUFence { int unused; };
++
++/* Recorded commands, replayed on the server at submit. */
++typedef enum {
++    OP_UPLOAD_BUFFER, OP_UPLOAD_TEXTURE, OP_DOWNLOAD_TEXTURE, OP_COPY_TEXTURE,
++    OP_MIPMAPS, OP_BLIT, OP_BEGIN_PASS, OP_END_PASS, OP_VIEWPORT, OP_SCISSOR,
++    OP_BLEND_CONSTANT, OP_STENCIL_REF, OP_PIPELINE, OP_VERTEX_BUFFER,
++    OP_INDEX_BUFFER, OP_SAMPLERS, OP_UNIFORM, OP_DRAW, OP_DRAW_INDEXED,
++} OpKind;
++
++typedef struct {
++    OpKind kind;
++    union {
++        struct { SDL_GPUTransferBuffer *src; uint32_t src_off; SDL_GPUBuffer *dst; uint32_t dst_off, size; } ub;
++        struct { SDL_GPUTransferBuffer *src; uint32_t src_off, row_px, rows; SDL_GPUTexture *dst;
++                 uint32_t level, x, y, w, h; } ut;
++        struct { SDL_GPUTexture *src; uint32_t level, x, y, w, h; SDL_GPUTransferBuffer *dst;
++                 uint32_t dst_off, row_px; } dt;
++        struct { SDL_GPUTexture *src, *dst; uint32_t sl, sx, sy, dl, dx, dy, w, h; } ct;
++        struct { SDL_GPUTexture *tex; } mip;
++        struct { SDL_GPUTexture *src, *dst; uint32_t dx, dy, dw, dh; int linear, clear; SDL_FColor clear_color; } blit;
++        struct { SDL_GPUColorTargetInfo color; int has_color; SDL_GPUDepthStencilTargetInfo depth; int has_depth; } pass;
++        SDL_GPUViewport viewport;
++        SDL_Rect scissor;
++        SDL_FColor blend;
++        uint8_t stencil_ref;
++        SDL_GPUGraphicsPipeline *pipeline;
++        struct { SDL_GPUBuffer *buf; uint32_t off; } vb;
++        struct { SDL_GPUTexture *tex[WG_MAX_SAMPLERS]; SDL_GPUSampler *smp[WG_MAX_SAMPLERS]; uint32_t first, n; } samplers;
++        struct { int fragment; uint32_t off; } uniform;
++        struct { uint32_t count, instances, first, first_instance; int32_t vertex_offset; } draw;
++    };
++} Op;
++
++struct SDL_GPUCommandBuffer {
++    Op *ops; uint32_t n, cap;
++    uint8_t *uniforms; uint32_t ubytes, ucap;   /* pushed uniform data, 256-aligned */
++    int has_download;
++};
++
++static WGPUInstance s_inst;
++static WGPUAdapter s_adapter;
++static WGPUDevice s_dev;
++static WGPUQueue s_queue;
++static WGPUSurface s_surface;
++static WGPUTextureFormat s_surface_format;
++static uint32_t s_surface_w, s_surface_h;
++static int s_has_d32s8, s_has_depth_clip;
++static pthread_t s_server;
++static atomic_int s_available;
++static struct SDL_GPUDevice s_device_obj;
++static struct SDL_GPUFence s_fence_obj;
++static char s_canvas_selector[64];
++
++/* Shared binding layout of every pipeline (SDL's set convention). */
++static WGPUBindGroupLayout s_bgl[4];
++static WGPUPipelineLayout s_layout;
++static WGPUTexture s_dummy_tex;
++static WGPUTextureView s_dummy_view;
++static WGPUSampler s_dummy_sampler, s_linear_sampler, s_nearest_sampler;
++static WGPUShaderModule s_blit_module;
++
++/* ── Proxying ─────────────────────────────────────────────────────────── */
++static em_proxying_queue *q(void) { return emscripten_proxy_get_system_queue(); }
++
++static void run_sync(void (*fn)(void *), void *arg)
++{
++    if (pthread_equal(pthread_self(), s_server)) fn(arg);
++    else emscripten_proxy_sync(q(), s_server, fn, arg);
++}
++static void run_sync_ctx(void (*fn)(em_proxying_ctx *, void *), void *arg)
++{
++    emscripten_proxy_sync_with_ctx(q(), s_server, fn, arg);
++}
++
++static WGPUStringView sv(const char *s) { WGPUStringView v = { s, WGPU_STRLEN }; return v; }
++
++static void report(const char *what, WGPUStringView msg)
++{
++    static int told;
++    if (told++ < 20)
++        fprintf(stderr, "  [WebGPU] %s: %.*s\n", what, (int)msg.length, msg.data ? msg.data : "");
++}
++
++/* ── Server thread and device ────────────────────────────────────────── */
++static void *server_main(void *arg)
++{
++    (void)arg;
++    emscripten_exit_with_live_runtime();   /* serve proxied calls from the event loop */
++    return NULL;
++}
++
++static void on_error(WGPUDevice const *d, WGPUErrorType type, WGPUStringView msg, void *u1, void *u2)
++{
++    (void)d; (void)u1; (void)u2;
++    char what[32];
++    snprintf(what, sizeof what, "device error %d", (int)type);
++    report(what, msg);
++}
++
++static void on_lost(WGPUDevice const *d, WGPUDeviceLostReason r, WGPUStringView msg, void *u1, void *u2)
++{
++    (void)d; (void)u1; (void)u2;
++    if (r != WGPUDeviceLostReason_Destroyed) report("device lost", msg);
++}
++
++static WGPUBindGroupLayout make_bgl(const WGPUBindGroupLayoutEntry *e, size_t n)
++{
++    WGPUBindGroupLayoutDescriptor d = { .entryCount = n, .entries = e };
++    return wgpuDeviceCreateBindGroupLayout(s_dev, &d);
++}
++
++/* Fullscreen triangle sampling binding 0/1 of group 0: blits and mipmaps. */
++static const char k_blit_wgsl[] =
++    "struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f }\n"
++    "@vertex fn vs(@builtin(vertex_index) i: u32) -> V {\n"
++    "  let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));\n"
++    "  return V(vec4f(uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0), uv);\n"
++    "}\n"
++    "@group(0) @binding(0) var t: texture_2d<f32>;\n"
++    "@group(0) @binding(1) var s: sampler;\n"
++    "@fragment fn fs(v: V) -> @location(0) vec4f { return textureSampleLevel(t, s, v.uv, 0.0); }\n";
++
++static void create_fixed_objects(void)
++{
++    WGPUBindGroupLayoutEntry vs_u = { .binding = 0, .visibility = WGPUShaderStage_Vertex,
++        .buffer = { .type = WGPUBufferBindingType_Uniform, .hasDynamicOffset = 1 } };
++    WGPUBindGroupLayoutEntry fs_u = { .binding = 0, .visibility = WGPUShaderStage_Fragment,
++        .buffer = { .type = WGPUBufferBindingType_Uniform, .hasDynamicOffset = 1 } };
++    WGPUBindGroupLayoutEntry tex[2 * WG_MAX_SAMPLERS];
++    for (uint32_t i = 0; i < WG_MAX_SAMPLERS; i++) {
++        tex[i] = (WGPUBindGroupLayoutEntry){ .binding = i, .visibility = WGPUShaderStage_Fragment,
++            .texture = { .sampleType = WGPUTextureSampleType_Float, .viewDimension = WGPUTextureViewDimension_2D } };
++        tex[WG_MAX_SAMPLERS + i] = (WGPUBindGroupLayoutEntry){ .binding = WG_MAX_SAMPLERS + i,
++            .visibility = WGPUShaderStage_Fragment, .sampler = { .type = WGPUSamplerBindingType_Filtering } };
++    }
++    s_bgl[0] = make_bgl(NULL, 0);
++    s_bgl[1] = make_bgl(&vs_u, 1);
++    s_bgl[2] = make_bgl(tex, 2 * WG_MAX_SAMPLERS);
++    s_bgl[3] = make_bgl(&fs_u, 1);
++    WGPUPipelineLayoutDescriptor pl = { .bindGroupLayoutCount = 4, .bindGroupLayouts = s_bgl };
++    s_layout = wgpuDeviceCreatePipelineLayout(s_dev, &pl);
++
++    WGPUTextureDescriptor td = { .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
++        .dimension = WGPUTextureDimension_2D, .size = { 1, 1, 1 }, .format = WGPUTextureFormat_RGBA8Unorm,
++        .mipLevelCount = 1, .sampleCount = 1 };
++    s_dummy_tex = wgpuDeviceCreateTexture(s_dev, &td);
++    s_dummy_view = wgpuTextureCreateView(s_dummy_tex, NULL);
++    WGPUSamplerDescriptor sd = { .addressModeU = WGPUAddressMode_ClampToEdge, .addressModeV = WGPUAddressMode_ClampToEdge,
++        .addressModeW = WGPUAddressMode_ClampToEdge, .magFilter = WGPUFilterMode_Nearest,
++        .minFilter = WGPUFilterMode_Nearest, .mipmapFilter = WGPUMipmapFilterMode_Nearest,
++        .lodMinClamp = 0, .lodMaxClamp = 32, .maxAnisotropy = 1 };
++    s_dummy_sampler = s_nearest_sampler = wgpuDeviceCreateSampler(s_dev, &sd);
++    sd.magFilter = sd.minFilter = WGPUFilterMode_Linear;
++    s_linear_sampler = wgpuDeviceCreateSampler(s_dev, &sd);
++
++    WGPUShaderSourceWGSL src = { .chain = { .sType = WGPUSType_ShaderSourceWGSL }, .code = sv(k_blit_wgsl) };
++    WGPUShaderModuleDescriptor md = { .nextInChain = &src.chain };
++    s_blit_module = wgpuDeviceCreateShaderModule(s_dev, &md);
++}
++
++static em_proxying_ctx *s_init_ctx;
++
++static void on_device(WGPURequestDeviceStatus st, WGPUDevice d, WGPUStringView msg, void *u1, void *u2)
++{
++    (void)u1; (void)u2;
++    if (st != WGPURequestDeviceStatus_Success) {
++        report("no device", msg);
++        emscripten_proxy_finish(s_init_ctx);
++        return;
++    }
++    s_dev = d;
++    s_queue = wgpuDeviceGetQueue(d);
++    create_fixed_objects();
++
++    WGPUEmscriptenSurfaceSourceCanvasHTMLSelector sel = {
++        .chain = { .sType = WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector },
++        .selector = sv(s_canvas_selector) };
++    WGPUSurfaceDescriptor sdesc = { .nextInChain = &sel.chain };
++    s_surface = wgpuInstanceCreateSurface(s_inst, &sdesc);
++    if (s_surface) {
++        WGPUSurfaceCapabilities caps = {0};
++        wgpuSurfaceGetCapabilities(s_surface, s_adapter, &caps);
++        s_surface_format = caps.formatCount ? caps.formats[0] : WGPUTextureFormat_BGRA8Unorm;
++    }
++    atomic_store(&s_available, 1);
++    emscripten_proxy_finish(s_init_ctx);
++}
++
++static void on_adapter(WGPURequestAdapterStatus st, WGPUAdapter a, WGPUStringView msg, void *u1, void *u2)
++{
++    (void)u1; (void)u2;
++    if (st != WGPURequestAdapterStatus_Success || !a) {
++        report("no adapter", msg);
++        emscripten_proxy_finish(s_init_ctx);
++        return;
++    }
++    s_adapter = a;
++    WGPUFeatureName want[2];
++    size_t n = 0;
++    if ((s_has_d32s8 = wgpuAdapterHasFeature(a, WGPUFeatureName_Depth32FloatStencil8)))
++        want[n++] = WGPUFeatureName_Depth32FloatStencil8;
++    if ((s_has_depth_clip = wgpuAdapterHasFeature(a, WGPUFeatureName_DepthClipControl)))
++        want[n++] = WGPUFeatureName_DepthClipControl;
++    WGPUDeviceDescriptor dd = {
++        .requiredFeatureCount = n, .requiredFeatures = want,
++        .deviceLostCallbackInfo = { .mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_lost },
++        .uncapturedErrorCallbackInfo = { .callback = on_error },
++    };
++    WGPURequestDeviceCallbackInfo ci = { .mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_device };
++    wgpuAdapterRequestDevice(a, &dd, ci);
++}
++
++static void do_init(em_proxying_ctx *ctx, void *arg)
++{
++    (void)arg;
++    s_init_ctx = ctx;
++    if (!EM_ASM_INT({ return !!(typeof navigator !== 'undefined' && navigator.gpu); })) {
++        fprintf(stderr, "  [WebGPU] not available in this browser\n");
++        emscripten_proxy_finish(ctx);
++        return;
++    }
++    s_inst = wgpuCreateInstance(NULL);
++    WGPURequestAdapterOptions opt = { .powerPreference = WGPUPowerPreference_HighPerformance };
++    WGPURequestAdapterCallbackInfo ci = { .mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_adapter };
++    wgpuInstanceRequestAdapter(s_inst, &opt, ci);
++}
++
++int wg_server_start(const char *canvas_id)
++{
++    pthread_attr_t at;
++    if (atomic_load(&s_available))
++        return 1;
++    snprintf(s_canvas_selector, sizeof s_canvas_selector, "#%s", canvas_id);
++    pthread_attr_init(&at);
++    /* The bare id: how a thread keys a canvas it holds (GL.offscreenCanvases). */
++    emscripten_pthread_attr_settransferredcanvases(&at, canvas_id);
++    if (pthread_create(&s_server, &at, server_main, NULL) != 0) {
++        fprintf(stderr, "  [WebGPU] cannot start the GPU thread (is #%s on the page?)\n", canvas_id);
++        return 0;
++    }
++    run_sync_ctx(do_init, NULL);
++    if (atomic_load(&s_available))
++        fprintf(stderr, "  [WebGPU] device ready (depth32float-stencil8 %s, surface format %d)\n",
++                s_has_d32s8 ? "yes" : "no", (int)s_surface_format);
++    return atomic_load(&s_available);
++}
++
++int wg_available(void) { return atomic_load(&s_available); }
++
++/* ── Enum translation ─────────────────────────────────────────────────── */
++static WGPUTextureFormat tex_format(SDL_GPUTextureFormat f)
++{
++    switch (f) {
++    case SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM: return WGPUTextureFormat_BGRA8Unorm;
++    case SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM: return WGPUTextureFormat_RGBA8Unorm;
++    case SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT: return WGPUTextureFormat_Depth32FloatStencil8;
++    case SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT: return WGPUTextureFormat_Depth24PlusStencil8;
++    case SDL_GPU_TEXTUREFORMAT_D32_FLOAT: return WGPUTextureFormat_Depth32Float;
++    case SDL_GPU_TEXTUREFORMAT_D16_UNORM: return WGPUTextureFormat_Depth16Unorm;
++    default: return WGPUTextureFormat_Undefined;
++    }
++}
++static int is_depth(WGPUTextureFormat f)
++{
++    return f == WGPUTextureFormat_Depth32FloatStencil8 || f == WGPUTextureFormat_Depth24PlusStencil8 ||
++           f == WGPUTextureFormat_Depth32Float || f == WGPUTextureFormat_Depth16Unorm;
++}
++static int has_stencil(WGPUTextureFormat f)
++{
++    return f == WGPUTextureFormat_Depth32FloatStencil8 || f == WGPUTextureFormat_Depth24PlusStencil8;
++}
++static WGPUBlendFactor blend_factor(SDL_GPUBlendFactor f)
++{
++    switch (f) {
++    case SDL_GPU_BLENDFACTOR_ZERO: return WGPUBlendFactor_Zero;
++    case SDL_GPU_BLENDFACTOR_ONE: return WGPUBlendFactor_One;
++    case SDL_GPU_BLENDFACTOR_SRC_COLOR: return WGPUBlendFactor_Src;
++    case SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR: return WGPUBlendFactor_OneMinusSrc;
++    case SDL_GPU_BLENDFACTOR_DST_COLOR: return WGPUBlendFactor_Dst;
++    case SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR: return WGPUBlendFactor_OneMinusDst;
++    case SDL_GPU_BLENDFACTOR_SRC_ALPHA: return WGPUBlendFactor_SrcAlpha;
++    case SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA: return WGPUBlendFactor_OneMinusSrcAlpha;
++    case SDL_GPU_BLENDFACTOR_DST_ALPHA: return WGPUBlendFactor_DstAlpha;
++    case SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA: return WGPUBlendFactor_OneMinusDstAlpha;
++    case SDL_GPU_BLENDFACTOR_CONSTANT_COLOR: return WGPUBlendFactor_Constant;
++    case SDL_GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR: return WGPUBlendFactor_OneMinusConstant;
++    case SDL_GPU_BLENDFACTOR_SRC_ALPHA_SATURATE: return WGPUBlendFactor_SrcAlphaSaturated;
++    default: return WGPUBlendFactor_One;
++    }
++}
++static WGPUBlendOperation blend_op(SDL_GPUBlendOp o)
++{
++    switch (o) {
++    case SDL_GPU_BLENDOP_SUBTRACT: return WGPUBlendOperation_Subtract;
++    case SDL_GPU_BLENDOP_REVERSE_SUBTRACT: return WGPUBlendOperation_ReverseSubtract;
++    case SDL_GPU_BLENDOP_MIN: return WGPUBlendOperation_Min;
++    case SDL_GPU_BLENDOP_MAX: return WGPUBlendOperation_Max;
++    default: return WGPUBlendOperation_Add;
++    }
++}
++static WGPUCompareFunction compare(SDL_GPUCompareOp c)
++{
++    switch (c) {
++    case SDL_GPU_COMPAREOP_NEVER: return WGPUCompareFunction_Never;
++    case SDL_GPU_COMPAREOP_LESS: return WGPUCompareFunction_Less;
++    case SDL_GPU_COMPAREOP_EQUAL: return WGPUCompareFunction_Equal;
++    case SDL_GPU_COMPAREOP_LESS_OR_EQUAL: return WGPUCompareFunction_LessEqual;
++    case SDL_GPU_COMPAREOP_GREATER: return WGPUCompareFunction_Greater;
++    case SDL_GPU_COMPAREOP_NOT_EQUAL: return WGPUCompareFunction_NotEqual;
++    case SDL_GPU_COMPAREOP_GREATER_OR_EQUAL: return WGPUCompareFunction_GreaterEqual;
++    default: return WGPUCompareFunction_Always;
++    }
++}
++static WGPUStencilOperation stencil_op(SDL_GPUStencilOp o)
++{
++    switch (o) {
++    case SDL_GPU_STENCILOP_ZERO: return WGPUStencilOperation_Zero;
++    case SDL_GPU_STENCILOP_REPLACE: return WGPUStencilOperation_Replace;
++    case SDL_GPU_STENCILOP_INCREMENT_AND_CLAMP: return WGPUStencilOperation_IncrementClamp;
++    case SDL_GPU_STENCILOP_DECREMENT_AND_CLAMP: return WGPUStencilOperation_DecrementClamp;
++    case SDL_GPU_STENCILOP_INVERT: return WGPUStencilOperation_Invert;
++    case SDL_GPU_STENCILOP_INCREMENT_AND_WRAP: return WGPUStencilOperation_IncrementWrap;
++    case SDL_GPU_STENCILOP_DECREMENT_AND_WRAP: return WGPUStencilOperation_DecrementWrap;
++    default: return WGPUStencilOperation_Keep;
++    }
++}
++static WGPUAddressMode address(SDL_GPUSamplerAddressMode m)
++{
++    switch (m) {
++    case SDL_GPU_SAMPLERADDRESSMODE_REPEAT: return WGPUAddressMode_Repeat;
++    case SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT: return WGPUAddressMode_MirrorRepeat;
++    default: return WGPUAddressMode_ClampToEdge;
++    }
++}
++static WGPUVertexFormat vertex_format(SDL_GPUVertexElementFormat f)
++{
++    switch (f) {
++    case SDL_GPU_VERTEXELEMENTFORMAT_FLOAT: return WGPUVertexFormat_Float32;
++    case SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2: return WGPUVertexFormat_Float32x2;
++    case SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3: return WGPUVertexFormat_Float32x3;
++    case SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4: return WGPUVertexFormat_Float32x4;
++    case SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM: return WGPUVertexFormat_Unorm8x4;
++    default: return WGPUVertexFormat_Float32x4;
++    }
++}
++static WGPULoadOp load_op(SDL_GPULoadOp o) { return o == SDL_GPU_LOADOP_LOAD ? WGPULoadOp_Load : WGPULoadOp_Clear; }
++static WGPUStoreOp store_op(SDL_GPUStoreOp o) { return o == SDL_GPU_STOREOP_STORE ? WGPUStoreOp_Store : WGPUStoreOp_Discard; }
++
++/* ── Device ───────────────────────────────────────────────────────────── */
++SDL_GPUDevice *WG_CreateGPUDevice(SDL_GPUShaderFormat formats, bool debug, const char *name)
++{
++    (void)debug; (void)name;
++    if (!atomic_load(&s_available)) { SDL_SetError("WebGPU is not available"); return NULL; }
++    if (!(formats & SDL_GPU_SHADERFORMAT_WGSL)) { SDL_SetError("WebGPU takes WGSL shaders"); return NULL; }
++    return &s_device_obj;
++}
++void WG_DestroyGPUDevice(SDL_GPUDevice *d) { (void)d; }
++const char *WG_GetGPUDeviceDriver(SDL_GPUDevice *d) { (void)d; return "webgpu"; }
++bool WG_GPUTextureSupportsFormat(SDL_GPUDevice *d, SDL_GPUTextureFormat f, SDL_GPUTextureType t, SDL_GPUTextureUsageFlags u)
++{
++    (void)d; (void)t; (void)u;
++    WGPUTextureFormat w = tex_format(f);
++    if (w == WGPUTextureFormat_Depth32FloatStencil8) return s_has_d32s8;
++    return w != WGPUTextureFormat_Undefined;
++}
++
++/* ── Textures ─────────────────────────────────────────────────────────── */
++typedef struct { const SDL_GPUTextureCreateInfo *info; SDL_GPUTexture *out; } TexArgs;
++
++static void do_create_texture(void *p)
++{
++    TexArgs *a = (TexArgs *)p;
++    const SDL_GPUTextureCreateInfo *i = a->info;
++    SDL_GPUTexture *t = (SDL_GPUTexture *)calloc(1, sizeof *t);
++    WGPUTextureUsage usage = 0;
++    t->format = tex_format(i->format);
++    t->w = i->width; t->h = i->height; t->levels = i->num_levels ? i->num_levels : 1;
++    if (i->usage & SDL_GPU_TEXTUREUSAGE_SAMPLER) usage |= WGPUTextureUsage_TextureBinding;
++    if (i->usage & (SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET))
++        usage |= WGPUTextureUsage_RenderAttachment;
++    if (!is_depth(t->format))
++        usage |= WGPUTextureUsage_CopySrc | WGPUTextureUsage_CopyDst;  /* uploads, downloads, copies */
++    if (t->levels > 1)
++        usage |= WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;  /* mip generation */
++    WGPUTextureDescriptor d = { .usage = usage, .dimension = WGPUTextureDimension_2D,
++        .size = { t->w, t->h, 1 }, .format = t->format, .mipLevelCount = t->levels, .sampleCount = 1 };
++    t->tex = wgpuDeviceCreateTexture(s_dev, &d);
++    if (!t->tex || t->format == WGPUTextureFormat_Undefined) { free(t); return; }
++    if (usage & WGPUTextureUsage_TextureBinding)
++        t->view = wgpuTextureCreateView(t->tex, NULL);
++    t->level_views = (WGPUTextureView *)calloc(t->levels, sizeof *t->level_views);
++    for (uint32_t l = 0; l < t->levels; l++) {
++        WGPUTextureViewDescriptor vd = { .format = t->format, .dimension = WGPUTextureViewDimension_2D,
++            .baseMipLevel = l, .mipLevelCount = 1, .baseArrayLayer = 0, .arrayLayerCount = 1,
++            .aspect = WGPUTextureAspect_All };
++        t->level_views[l] = wgpuTextureCreateView(t->tex, &vd);
++    }
++    a->out = t;
++}
++
++SDL_GPUTexture *WG_CreateGPUTexture(SDL_GPUDevice *d, const SDL_GPUTextureCreateInfo *i)
++{
++    (void)d;
++    TexArgs a = { i, NULL };
++    if (tex_format(i->format) == WGPUTextureFormat_Undefined) { SDL_SetError("texture format not supported on WebGPU"); return NULL; }
++    run_sync(do_create_texture, &a);
++    if (!a.out) SDL_SetError("WebGPU texture creation failed");
++    return a.out;
++}
++
++static void do_release_texture(void *p)
++{
++    SDL_GPUTexture *t = (SDL_GPUTexture *)p;
++    for (uint32_t l = 0; l < t->levels; l++) if (t->level_views[l]) wgpuTextureViewRelease(t->level_views[l]);
++    free(t->level_views);
++    if (t->view) wgpuTextureViewRelease(t->view);
++    if (t->tex) wgpuTextureRelease(t->tex);
++    free(t);
++}
++void WG_ReleaseGPUTexture(SDL_GPUDevice *d, SDL_GPUTexture *t)
++{
++    (void)d;
++    if (t && !t->swapchain) emscripten_proxy_async(q(), s_server, do_release_texture, t);
++}
++
++/* ── Buffers ──────────────────────────────────────────────────────────── */
++typedef struct { const SDL_GPUBufferCreateInfo *info; SDL_GPUBuffer *out; } BufArgs;
++static void do_create_buffer(void *p)
++{
++    BufArgs *a = (BufArgs *)p;
++    WGPUBufferUsage u = WGPUBufferUsage_CopyDst;
++    if (a->info->usage & SDL_GPU_BUFFERUSAGE_VERTEX) u |= WGPUBufferUsage_Vertex;
++    if (a->info->usage & SDL_GPU_BUFFERUSAGE_INDEX) u |= WGPUBufferUsage_Index;
++    SDL_GPUBuffer *b = (SDL_GPUBuffer *)calloc(1, sizeof *b);
++    b->size = (a->info->size + 3u) & ~3u;
++    WGPUBufferDescriptor d = { .usage = u, .size = b->size };
++    b->buf = wgpuDeviceCreateBuffer(s_dev, &d);
++    if (!b->buf) { free(b); return; }
++    a->out = b;
++}
++SDL_GPUBuffer *WG_CreateGPUBuffer(SDL_GPUDevice *d, const SDL_GPUBufferCreateInfo *i)
++{
++    (void)d;
++    BufArgs a = { i, NULL };
++    run_sync(do_create_buffer, &a);
++    return a.out;
++}
++static void do_release_buffer(void *p) { SDL_GPUBuffer *b = (SDL_GPUBuffer *)p; wgpuBufferRelease(b->buf); free(b); }
++void WG_ReleaseGPUBuffer(SDL_GPUDevice *d, SDL_GPUBuffer *b)
++{
++    (void)d;
++    if (b) emscripten_proxy_async(q(), s_server, do_release_buffer, b);
++}
++
++/* Transfer buffers are plain memory: the server copies out of (or into) them
++ * during the synchronous submit, so they need no WebGPU object. */
++SDL_GPUTransferBuffer *WG_CreateGPUTransferBuffer(SDL_GPUDevice *d, const SDL_GPUTransferBufferCreateInfo *i)
++{
++    (void)d;
++    SDL_GPUTransferBuffer *t = (SDL_GPUTransferBuffer *)calloc(1, sizeof *t);
++    if (!t) return NULL;
++    t->size = i->size;
++    t->mem = (uint8_t *)malloc(i->size ? i->size : 1);
++    if (!t->mem) { free(t); return NULL; }
++    return t;
++}
++void WG_ReleaseGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; if (t) { free(t->mem); free(t); } }
++void *WG_MapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t, bool cycle) { (void)d; (void)cycle; return t ? t->mem : NULL; }
++void WG_UnmapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; (void)t; }
++
++/* ── Samplers and shaders ─────────────────────────────────────────────── */
++typedef struct { const SDL_GPUSamplerCreateInfo *info; SDL_GPUSampler *out; } SmpArgs;
++static void do_create_sampler(void *p)
++{
++    SmpArgs *a = (SmpArgs *)p;
++    const SDL_GPUSamplerCreateInfo *i = a->info;
++    int lin_min = i->min_filter == SDL_GPU_FILTER_LINEAR, lin_mag = i->mag_filter == SDL_GPU_FILTER_LINEAR;
++    int lin_mip = i->mipmap_mode == SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
++    WGPUSamplerDescriptor d = {
++        .addressModeU = address(i->address_mode_u), .addressModeV = address(i->address_mode_v),
++        .addressModeW = address(i->address_mode_w),
++        .magFilter = lin_mag ? WGPUFilterMode_Linear : WGPUFilterMode_Nearest,
++        .minFilter = lin_min ? WGPUFilterMode_Linear : WGPUFilterMode_Nearest,
++        .mipmapFilter = lin_mip ? WGPUMipmapFilterMode_Linear : WGPUMipmapFilterMode_Nearest,
++        .lodMinClamp = i->min_lod, .lodMaxClamp = i->max_lod > 32.0f ? 32.0f : i->max_lod,
++        /* WebGPU allows anisotropy only with every filter linear. */
++        .maxAnisotropy = (i->enable_anisotropy && lin_min && lin_mag && lin_mip)
++                         ? (uint16_t)(i->max_anisotropy < 1 ? 1 : i->max_anisotropy > 16 ? 16 : i->max_anisotropy) : 1,
++    };
++    SDL_GPUSampler *s = (SDL_GPUSampler *)calloc(1, sizeof *s);
++    s->s = wgpuDeviceCreateSampler(s_dev, &d);
++    if (!s->s) { free(s); return; }
++    a->out = s;
++}
++SDL_GPUSampler *WG_CreateGPUSampler(SDL_GPUDevice *d, const SDL_GPUSamplerCreateInfo *i)
++{
++    (void)d;
++    SmpArgs a = { i, NULL };
++    run_sync(do_create_sampler, &a);
++    return a.out;
++}
++
++typedef struct { const SDL_GPUShaderCreateInfo *info; SDL_GPUShader *out; } ShArgs;
++static void do_create_shader(void *p)
++{
++    ShArgs *a = (ShArgs *)p;
++    /* WGSL source, NUL-terminated or not: copy it to terminate it. */
++    char *code = (char *)malloc(a->info->code_size + 1);
++    memcpy(code, a->info->code, a->info->code_size);
++    code[a->info->code_size] = 0;
++    WGPUShaderSourceWGSL src = { .chain = { .sType = WGPUSType_ShaderSourceWGSL }, .code = sv(code) };
++    WGPUShaderModuleDescriptor md = { .nextInChain = &src.chain };
++    WGPUShaderModule m = wgpuDeviceCreateShaderModule(s_dev, &md);
++    free(code);
++    if (!m) return;
++    SDL_GPUShader *s = (SDL_GPUShader *)calloc(1, sizeof *s);
++    s->mod = m;
++    s->stage = a->info->stage;
++    a->out = s;
++}
++SDL_GPUShader *WG_CreateGPUShader(SDL_GPUDevice *d, const SDL_GPUShaderCreateInfo *i)
++{
++    (void)d;
++    if (i->format != SDL_GPU_SHADERFORMAT_WGSL) { SDL_SetError("WebGPU takes WGSL shaders"); return NULL; }
++    ShArgs a = { i, NULL };
++    run_sync(do_create_shader, &a);
++    return a.out;
++}
++
++/* ── Pipelines ────────────────────────────────────────────────────────── */
++typedef struct { const SDL_GPUGraphicsPipelineCreateInfo *info; SDL_GPUGraphicsPipeline *out; } PipeArgs;
++static void do_create_pipeline(void *p)
++{
++    PipeArgs *a = (PipeArgs *)p;
++    const SDL_GPUGraphicsPipelineCreateInfo *i = a->info;
++    WGPUVertexAttribute attrs[16];
++    WGPUVertexBufferLayout vbl[4];
++    uint32_t nb = i->vertex_input_state.num_vertex_buffers > 4 ? 4 : i->vertex_input_state.num_vertex_buffers;
++    uint32_t na = i->vertex_input_state.num_vertex_attributes > 16 ? 16 : i->vertex_input_state.num_vertex_attributes;
++    uint32_t b, k;
++
++    for (b = 0; b < nb; b++) {
++        const SDL_GPUVertexBufferDescription *d = &i->vertex_input_state.vertex_buffer_descriptions[b];
++        uint32_t first = 0, count = 0;
++        /* Attributes are grouped per buffer slot: gather this slot's. */
++        for (k = 0; k < na; k++) {
++            const SDL_GPUVertexAttribute *va = &i->vertex_input_state.vertex_attributes[k];
++            if (va->buffer_slot != d->slot) continue;
++            if (!count) first = k;
++            attrs[k] = (WGPUVertexAttribute){ .format = vertex_format(va->format), .offset = va->offset,
++                                              .shaderLocation = va->location };
++            count++;
++        }
++        vbl[b] = (WGPUVertexBufferLayout){ .stepMode = WGPUVertexStepMode_Vertex, .arrayStride = d->pitch,
++                                           .attributeCount = count, .attributes = &attrs[first] };
++    }
++
++    const SDL_GPUColorTargetDescription *ct = i->target_info.num_color_targets ? &i->target_info.color_target_descriptions[0] : NULL;
++    WGPUBlendState blend;
++    WGPUColorTargetState color = {0};
++    WGPUFragmentState frag = {0};
++    if (ct) {
++        const SDL_GPUColorTargetBlendState *bs = &ct->blend_state;
++        blend = (WGPUBlendState){
++            .color = { .operation = blend_op(bs->color_blend_op), .srcFactor = blend_factor(bs->src_color_blendfactor),
++                       .dstFactor = blend_factor(bs->dst_color_blendfactor) },
++            .alpha = { .operation = blend_op(bs->alpha_blend_op), .srcFactor = blend_factor(bs->src_alpha_blendfactor),
++                       .dstFactor = blend_factor(bs->dst_alpha_blendfactor) },
++        };
++        color.format = tex_format(ct->format);
++        color.blend = bs->enable_blend ? &blend : NULL;
++        color.writeMask = bs->enable_color_write_mask ? (WGPUColorWriteMask)(bs->color_write_mask & 15u)
++                                                      : WGPUColorWriteMask_All;
++        frag = (WGPUFragmentState){ .module = i->fragment_shader->mod, .entryPoint = sv("main"),
++                                    .targetCount = 1, .targets = &color };
++    }
++
++    const SDL_GPUDepthStencilState *ds = &i->depth_stencil_state;
++    WGPUDepthStencilState depth = {0};
++    if (i->target_info.has_depth_stencil_target) {
++        WGPUTextureFormat df = tex_format(i->target_info.depth_stencil_format);
++        WGPUStencilFaceState front = {
++            .compare = ds->enable_stencil_test ? compare(ds->front_stencil_state.compare_op) : WGPUCompareFunction_Always,
++            .failOp = stencil_op(ds->front_stencil_state.fail_op),
++            .depthFailOp = stencil_op(ds->front_stencil_state.depth_fail_op),
++            .passOp = stencil_op(ds->front_stencil_state.pass_op) };
++        WGPUStencilFaceState back = {
++            .compare = ds->enable_stencil_test ? compare(ds->back_stencil_state.compare_op) : WGPUCompareFunction_Always,
++            .failOp = stencil_op(ds->back_stencil_state.fail_op),
++            .depthFailOp = stencil_op(ds->back_stencil_state.depth_fail_op),
++            .passOp = stencil_op(ds->back_stencil_state.pass_op) };
++        if (!ds->enable_stencil_test) {
++            front.failOp = front.depthFailOp = front.passOp = WGPUStencilOperation_Keep;
++            back = front;
++        }
++        depth = (WGPUDepthStencilState){
++            .format = df,
++            .depthWriteEnabled = ds->enable_depth_write ? WGPUOptionalBool_True : WGPUOptionalBool_False,
++            .depthCompare = ds->enable_depth_test ? compare(ds->compare_op) : WGPUCompareFunction_Always,
++            .stencilFront = front, .stencilBack = back,
++            .stencilReadMask = ds->enable_stencil_test ? ds->compare_mask : 0xFF,
++            .stencilWriteMask = ds->enable_stencil_test ? ds->write_mask : 0,
++        };
++    }
++
++    const SDL_GPURasterizerState *rs = &i->rasterizer_state;
++    WGPURenderPipelineDescriptor d = {
++        .layout = s_layout,
++        .vertex = { .module = i->vertex_shader->mod, .entryPoint = sv("main"), .bufferCount = nb, .buffers = vbl },
++        .primitive = {
++            .topology = WGPUPrimitiveTopology_TriangleList,
++            .frontFace = rs->front_face == SDL_GPU_FRONTFACE_CLOCKWISE ? WGPUFrontFace_CW : WGPUFrontFace_CCW,
++            .cullMode = rs->cull_mode == SDL_GPU_CULLMODE_FRONT ? WGPUCullMode_Front
++                      : rs->cull_mode == SDL_GPU_CULLMODE_BACK ? WGPUCullMode_Back : WGPUCullMode_None,
++            .unclippedDepth = (!rs->enable_depth_clip && s_has_depth_clip) ? 1 : 0,
++        },
++        .depthStencil = i->target_info.has_depth_stencil_target ? &depth : NULL,
++        .multisample = { .count = 1, .mask = 0xFFFFFFFFu },
++        .fragment = ct ? &frag : NULL,
++    };
++    WGPURenderPipeline pipe = wgpuDeviceCreateRenderPipeline(s_dev, &d);
++    if (!pipe) return;
++    a->out = (SDL_GPUGraphicsPipeline *)calloc(1, sizeof *a->out);
++    a->out->pipe = pipe;
++}
++SDL_GPUGraphicsPipeline *WG_CreateGPUGraphicsPipeline(SDL_GPUDevice *d, const SDL_GPUGraphicsPipelineCreateInfo *i)
++{
++    (void)d;
++    PipeArgs a = { i, NULL };
++    if (!i->vertex_shader || !i->fragment_shader) { SDL_SetError("pipeline without shaders"); return NULL; }
++    run_sync(do_create_pipeline, &a);
++    if (!a.out) SDL_SetError("WebGPU pipeline creation failed");
++    return a.out;
++}
++
++/* Internal: one fullscreen-triangle pipeline per target format, for blits
++ * and mipmaps (server thread). */
++static WGPURenderPipeline blit_pipeline(WGPUTextureFormat f)
++{
++    static struct { WGPUTextureFormat f; WGPURenderPipeline p; } cache[4];
++    static int n;
++    for (int i = 0; i < n; i++) if (cache[i].f == f) return cache[i].p;
++    WGPUBindGroupLayoutEntry e[2] = {
++        { .binding = 0, .visibility = WGPUShaderStage_Fragment,
++          .texture = { .sampleType = WGPUTextureSampleType_Float, .viewDimension = WGPUTextureViewDimension_2D } },
++        { .binding = 1, .visibility = WGPUShaderStage_Fragment, .sampler = { .type = WGPUSamplerBindingType_Filtering } },
++    };
++    static WGPUBindGroupLayout bgl;
++    static WGPUPipelineLayout pl;
++    if (!bgl) {
++        bgl = make_bgl(e, 2);
++        WGPUPipelineLayoutDescriptor pd = { .bindGroupLayoutCount = 1, .bindGroupLayouts = &bgl };
++        pl = wgpuDeviceCreatePipelineLayout(s_dev, &pd);
++    }
++    WGPUColorTargetState ct = { .format = f, .writeMask = WGPUColorWriteMask_All };
++    WGPUFragmentState fs = { .module = s_blit_module, .entryPoint = sv("fs"), .targetCount = 1, .targets = &ct };
++    WGPURenderPipelineDescriptor d = {
++        .layout = pl, .vertex = { .module = s_blit_module, .entryPoint = sv("vs") },
++        .primitive = { .topology = WGPUPrimitiveTopology_TriangleList, .cullMode = WGPUCullMode_None },
++        .multisample = { .count = 1, .mask = 0xFFFFFFFFu }, .fragment = &fs,
++    };
++    WGPURenderPipeline p = wgpuDeviceCreateRenderPipeline(s_dev, &d);
++    if (n < 4) { cache[n].f = f; cache[n].p = p; n++; }
++    return p;
++}
++
++/* ── Command buffers ──────────────────────────────────────────────────── */
++SDL_GPUCommandBuffer *WG_AcquireGPUCommandBuffer(SDL_GPUDevice *d)
++{
++    (void)d;
++    return (SDL_GPUCommandBuffer *)calloc(1, sizeof(SDL_GPUCommandBuffer));
++}
++
++static Op *push(SDL_GPUCommandBuffer *c, OpKind k)
++{
++    if (c->n == c->cap) {
++        uint32_t cap = c->cap ? c->cap * 2 : 64;
++        Op *o = (Op *)realloc(c->ops, cap * sizeof *o);
++        if (!o) return NULL;
++        c->ops = o;
++        c->cap = cap;
++    }
++    Op *o = &c->ops[c->n++];
++    memset(o, 0, sizeof *o);
++    o->kind = k;
++    return o;
++}
++
++static void cmd_free(SDL_GPUCommandBuffer *c) { free(c->ops); free(c->uniforms); free(c); }
++
++bool WG_CancelGPUCommandBuffer(SDL_GPUCommandBuffer *c) { if (c) cmd_free(c); return true; }
++
++/* Passes are views of their command buffer. */
++SDL_GPUCopyPass *WG_BeginGPUCopyPass(SDL_GPUCommandBuffer *c) { return (SDL_GPUCopyPass *)c; }
++void WG_EndGPUCopyPass(SDL_GPUCopyPass *p) { (void)p; }
++#define CMD(pass) ((SDL_GPUCommandBuffer *)(pass))
++
++void WG_UploadToGPUBuffer(SDL_GPUCopyPass *p, const SDL_GPUTransferBufferLocation *s, const SDL_GPUBufferRegion *d, bool cycle)
++{
++    (void)cycle;
++    Op *o = push(CMD(p), OP_UPLOAD_BUFFER);
++    if (o) o->ub = (typeof(o->ub)){ s->transfer_buffer, s->offset, d->buffer, d->offset, d->size };
++}
++void WG_UploadToGPUTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureTransferInfo *s, const SDL_GPUTextureRegion *d, bool cycle)
++{
++    (void)cycle;
++    Op *o = push(CMD(p), OP_UPLOAD_TEXTURE);
++    if (o) o->ut = (typeof(o->ut)){ s->transfer_buffer, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
++                                   s->rows_per_layer ? s->rows_per_layer : d->h, d->texture, d->mip_level,
++                                   d->x, d->y, d->w, d->h };
++}
++void WG_DownloadFromGPUTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureRegion *s, const SDL_GPUTextureTransferInfo *d)
++{
++    Op *o = push(CMD(p), OP_DOWNLOAD_TEXTURE);
++    if (o) o->dt = (typeof(o->dt)){ s->texture, s->mip_level, s->x, s->y, s->w, s->h, d->transfer_buffer, d->offset,
++                                   d->pixels_per_row ? d->pixels_per_row : s->w };
++    CMD(p)->has_download = 1;
++}
++void WG_CopyGPUTextureToTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureLocation *s, const SDL_GPUTextureLocation *d,
++                                Uint32 w, Uint32 h, Uint32 depth, bool cycle)
++{
++    (void)depth; (void)cycle;
++    Op *o = push(CMD(p), OP_COPY_TEXTURE);
++    if (o) o->ct = (typeof(o->ct)){ s->texture, d->texture, s->mip_level, s->x, s->y, d->mip_level, d->x, d->y, w, h };
++}
++void WG_GenerateMipmapsForGPUTexture(SDL_GPUCommandBuffer *c, SDL_GPUTexture *t)
++{
++    Op *o = push(c, OP_MIPMAPS);
++    if (o) o->mip.tex = t;
++}
++void WG_BlitGPUTexture(SDL_GPUCommandBuffer *c, const SDL_GPUBlitInfo *i)
++{
++    Op *o = push(c, OP_BLIT);
++    if (o) o->blit = (typeof(o->blit)){ i->source.texture, i->destination.texture, i->destination.x, i->destination.y,
++                                       i->destination.w, i->destination.h, i->filter == SDL_GPU_FILTER_LINEAR,
++                                       i->load_op == SDL_GPU_LOADOP_CLEAR, i->clear_color };
++}
++
++SDL_GPURenderPass *WG_BeginGPURenderPass(SDL_GPUCommandBuffer *c, const SDL_GPUColorTargetInfo *ct, Uint32 n,
++                                         const SDL_GPUDepthStencilTargetInfo *ds)
++{
++    Op *o = push(c, OP_BEGIN_PASS);
++    if (o) {
++        if (n) { o->pass.color = ct[0]; o->pass.has_color = 1; }
++        if (ds) { o->pass.depth = *ds; o->pass.has_depth = 1; }
++    }
++    return (SDL_GPURenderPass *)c;
++}
++void WG_EndGPURenderPass(SDL_GPURenderPass *p) { push(CMD(p), OP_END_PASS); }
++void WG_SetGPUViewport(SDL_GPURenderPass *p, const SDL_GPUViewport *v) { Op *o = push(CMD(p), OP_VIEWPORT); if (o) o->viewport = *v; }
++void WG_SetGPUScissor(SDL_GPURenderPass *p, const SDL_Rect *r) { Op *o = push(CMD(p), OP_SCISSOR); if (o) o->scissor = *r; }
++void WG_SetGPUBlendConstants(SDL_GPURenderPass *p, SDL_FColor c) { Op *o = push(CMD(p), OP_BLEND_CONSTANT); if (o) o->blend = c; }
++void WG_SetGPUStencilReference(SDL_GPURenderPass *p, Uint8 r) { Op *o = push(CMD(p), OP_STENCIL_REF); if (o) o->stencil_ref = r; }
++void WG_BindGPUGraphicsPipeline(SDL_GPURenderPass *p, SDL_GPUGraphicsPipeline *g) { Op *o = push(CMD(p), OP_PIPELINE); if (o) o->pipeline = g; }
++void WG_BindGPUVertexBuffers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUBufferBinding *b, Uint32 n)
++{
++    (void)first;
++    if (n) { Op *o = push(CMD(p), OP_VERTEX_BUFFER); if (o) o->vb = (typeof(o->vb)){ b[0].buffer, b[0].offset }; }
++}
++void WG_BindGPUIndexBuffer(SDL_GPURenderPass *p, const SDL_GPUBufferBinding *b, SDL_GPUIndexElementSize s)
++{
++    (void)s;   /* the renderer only uses 32-bit indices */
++    Op *o = push(CMD(p), OP_INDEX_BUFFER);
++    if (o) o->vb = (typeof(o->vb)){ b->buffer, b->offset };
++}
++void WG_BindGPUFragmentSamplers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUTextureSamplerBinding *b, Uint32 n)
++{
++    Op *o = push(CMD(p), OP_SAMPLERS);
++    if (!o) return;
++    o->samplers.first = first;
++    o->samplers.n = n > WG_MAX_SAMPLERS ? WG_MAX_SAMPLERS : n;
++    for (uint32_t i = 0; i < o->samplers.n; i++) { o->samplers.tex[i] = b[i].texture; o->samplers.smp[i] = b[i].sampler; }
++}
++static void push_uniform(SDL_GPUCommandBuffer *c, int fragment, const void *data, Uint32 len)
++{
++    uint32_t off = (c->ubytes + WG_UNIFORM_ALIGN - 1) & ~(WG_UNIFORM_ALIGN - 1);
++    uint32_t cap_needed = off + len + 4;   /* + the 4-byte rounding of the final write */
++    if (cap_needed > c->ucap) {
++        uint32_t cap = c->ucap ? c->ucap : 4096;
++        while (cap < cap_needed) cap *= 2;
++        uint8_t *u = (uint8_t *)realloc(c->uniforms, cap);
++        if (!u) return;
++        c->uniforms = u;
++        c->ucap = cap;
++    }
++    memset(c->uniforms + c->ubytes, 0, off - c->ubytes);
++    memcpy(c->uniforms + off, data, len);
++    c->ubytes = off + len;
++    Op *o = push(c, OP_UNIFORM);
++    if (o) o->uniform = (typeof(o->uniform)){ fragment, off };
++}
++void WG_PushGPUVertexUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 0, d, len); }
++void WG_PushGPUFragmentUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 1, d, len); }
++void WG_DrawGPUPrimitives(SDL_GPURenderPass *p, Uint32 n, Uint32 inst, Uint32 first_v, Uint32 first_i)
++{
++    Op *o = push(CMD(p), OP_DRAW);
++    if (o) o->draw = (typeof(o->draw)){ n, inst, first_v, first_i, 0 };
++}
++void WG_DrawGPUIndexedPrimitives(SDL_GPURenderPass *p, Uint32 n, Uint32 inst, Uint32 first_idx, Sint32 voff, Uint32 first_i)
++{
++    Op *o = push(CMD(p), OP_DRAW_INDEXED);
++    if (o) o->draw = (typeof(o->draw)){ n, inst, first_idx, first_i, voff };
++}
++
++/* ── Replay (server thread) ───────────────────────────────────────────── */
++typedef struct {
++    WGPUBuffer buf;
++    uint8_t *dst;              /* transfer buffer memory */
++    uint32_t row_bytes, padded, rows, dst_stride;
++} Readback;
++
++typedef struct {
++    SDL_GPUCommandBuffer *c;
++    WGPUCommandEncoder enc;
++    int encoded;               /* GPU commands in `enc` not yet submitted */
++    WGPUTexture swap_tex;      /* the canvas's current texture, once resolved */
++    WGPUTextureView swap_view;
++    Readback *rb; uint32_t nrb, caprb;
++    WGPUBuffer ubuf;           /* this submission's uniforms */
++    WGPUBindGroup vs_group, fs_group, empty_group;
++    em_proxying_ctx *ctx;
++    atomic_int pending;
++} Replay;
++
++static WGPUTextureView view_of(Replay *r, SDL_GPUTexture *t, uint32_t level, int sampling)
++{
++    if (t->swapchain) {
++        if (!r->swap_tex) {
++            WGPUSurfaceTexture st = {0};
++            wgpuSurfaceGetCurrentTexture(s_surface, &st);
++            r->swap_tex = st.texture;
++            r->swap_view = st.texture ? wgpuTextureCreateView(st.texture, NULL) : NULL;
++        }
++        return r->swap_view;
++    }
++    return sampling ? t->view : t->level_views[level < t->levels ? level : 0];
++}
++
++static void flush_encoder(Replay *r)
++{
++    if (!r->encoded) return;
++    WGPUCommandBuffer cb = wgpuCommandEncoderFinish(r->enc, NULL);
++    wgpuQueueSubmit(s_queue, 1, &cb);
++    wgpuCommandBufferRelease(cb);
++    wgpuCommandEncoderRelease(r->enc);
++    r->enc = wgpuDeviceCreateCommandEncoder(s_dev, NULL);
++    r->encoded = 0;
++}
++
++static void fullscreen_pass(Replay *r, WGPUTextureView src, WGPUSampler smp, WGPUTextureView dst,
++                            WGPUTextureFormat fmt, int clear, SDL_FColor cc, const float *viewport)
++{
++    WGPURenderPassColorAttachment ca = { .view = dst, .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
++        .loadOp = clear ? WGPULoadOp_Clear : WGPULoadOp_Load, .storeOp = WGPUStoreOp_Store,
++        .clearValue = { cc.r, cc.g, cc.b, cc.a } };
++    WGPURenderPassDescriptor rp = { .colorAttachmentCount = 1, .colorAttachments = &ca };
++    WGPURenderPipeline pipe = blit_pipeline(fmt);
++    WGPUBindGroupEntry be[2] = { { .binding = 0, .textureView = src }, { .binding = 1, .sampler = smp } };
++    WGPUBindGroupDescriptor bd = { .layout = wgpuRenderPipelineGetBindGroupLayout(pipe, 0), .entryCount = 2, .entries = be };
++    WGPUBindGroup bg = wgpuDeviceCreateBindGroup(s_dev, &bd);
++    WGPURenderPassEncoder pe = wgpuCommandEncoderBeginRenderPass(r->enc, &rp);
++    wgpuRenderPassEncoderSetPipeline(pe, pipe);
++    wgpuRenderPassEncoderSetBindGroup(pe, 0, bg, 0, NULL);
++    if (viewport && viewport[2] > 0 && viewport[3] > 0)
++        wgpuRenderPassEncoderSetViewport(pe, viewport[0], viewport[1], viewport[2], viewport[3], 0, 1);
++    wgpuRenderPassEncoderDraw(pe, 3, 1, 0, 0);
++    wgpuRenderPassEncoderEnd(pe);
++    wgpuRenderPassEncoderRelease(pe);
++    wgpuBindGroupRelease(bg);
++    wgpuBindGroupLayoutRelease(bd.layout);
++    r->encoded = 1;
++}
++
++static void replay_pass(Replay *r, uint32_t *ip)
++{
++    SDL_GPUCommandBuffer *c = r->c;
++    const Op *begin = &c->ops[*ip];
++    WGPURenderPassColorAttachment ca = {0};
++    WGPURenderPassDepthStencilAttachment da = {0};
++    WGPURenderPassDescriptor rp = {0};
++    uint32_t tw = 0, th = 0;
++
++    if (begin->pass.has_color) {
++        const SDL_GPUColorTargetInfo *t = &begin->pass.color;
++        ca = (WGPURenderPassColorAttachment){ .view = view_of(r, t->texture, t->mip_level, 0),
++            .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED, .loadOp = load_op(t->load_op), .storeOp = store_op(t->store_op),
++            .clearValue = { t->clear_color.r, t->clear_color.g, t->clear_color.b, t->clear_color.a } };
++        rp.colorAttachmentCount = 1;
++        rp.colorAttachments = &ca;
++        tw = t->texture->swapchain ? s_surface_w : t->texture->w;
++        th = t->texture->swapchain ? s_surface_h : t->texture->h;
++    }
++    if (begin->pass.has_depth) {
++        const SDL_GPUDepthStencilTargetInfo *t = &begin->pass.depth;
++        da = (WGPURenderPassDepthStencilAttachment){ .view = t->texture->level_views[0],
++            .depthLoadOp = load_op(t->load_op), .depthStoreOp = store_op(t->store_op), .depthClearValue = t->clear_depth };
++        if (has_stencil(t->texture->format)) {
++            da.stencilLoadOp = load_op(t->stencil_load_op);
++            da.stencilStoreOp = store_op(t->stencil_store_op);
++            da.stencilClearValue = t->clear_stencil;
++        }
++        rp.depthStencilAttachment = &da;
++        if (!tw) { tw = t->texture->w; th = t->texture->h; }
++    }
++
++    WGPURenderPassEncoder pe = wgpuCommandEncoderBeginRenderPass(r->enc, &rp);
++    r->encoded = 1;
++    SDL_GPUTexture *tex[WG_MAX_SAMPLERS] = {0};
++    SDL_GPUSampler *smp[WG_MAX_SAMPLERS] = {0};
++    uint32_t vs_off = 0, fs_off = 0;
++    int samplers_dirty = 1;
++    WGPUBindGroup tex_group = NULL;
++
++    for ((*ip)++; *ip < c->n && c->ops[*ip].kind != OP_END_PASS; (*ip)++) {
++        const Op *o = &c->ops[*ip];
++        switch (o->kind) {
++        case OP_VIEWPORT:
++            wgpuRenderPassEncoderSetViewport(pe, o->viewport.x, o->viewport.y, o->viewport.w, o->viewport.h,
++                                             o->viewport.min_depth, o->viewport.max_depth);
++            break;
++        case OP_SCISSOR: {
++            /* WebGPU rejects rectangles outside the target: clamp. */
++            int x0 = o->scissor.x < 0 ? 0 : o->scissor.x, y0 = o->scissor.y < 0 ? 0 : o->scissor.y;
++            int x1 = o->scissor.x + o->scissor.w, y1 = o->scissor.y + o->scissor.h;
++            if (x1 > (int)tw) x1 = (int)tw;
++            if (y1 > (int)th) y1 = (int)th;
++            if (x0 > x1) x0 = x1;
++            if (y0 > y1) y0 = y1;
++            wgpuRenderPassEncoderSetScissorRect(pe, (uint32_t)x0, (uint32_t)y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0));
++            break;
++        }
++        case OP_BLEND_CONSTANT: {
++            WGPUColor col = { o->blend.r, o->blend.g, o->blend.b, o->blend.a };
++            wgpuRenderPassEncoderSetBlendConstant(pe, &col);
++            break;
++        }
++        case OP_STENCIL_REF: wgpuRenderPassEncoderSetStencilReference(pe, o->stencil_ref); break;
++        case OP_PIPELINE: wgpuRenderPassEncoderSetPipeline(pe, o->pipeline->pipe); break;
++        case OP_VERTEX_BUFFER: wgpuRenderPassEncoderSetVertexBuffer(pe, 0, o->vb.buf->buf, o->vb.off, WGPU_WHOLE_SIZE); break;
++        case OP_INDEX_BUFFER:
++            wgpuRenderPassEncoderSetIndexBuffer(pe, o->vb.buf->buf, WGPUIndexFormat_Uint32, o->vb.off, WGPU_WHOLE_SIZE);
++            break;
++        case OP_SAMPLERS:
++            for (uint32_t i = 0; i < o->samplers.n && o->samplers.first + i < WG_MAX_SAMPLERS; i++) {
++                tex[o->samplers.first + i] = o->samplers.tex[i];
++                smp[o->samplers.first + i] = o->samplers.smp[i];
++            }
++            samplers_dirty = 1;
++            break;
++        case OP_UNIFORM:
++            if (o->uniform.fragment) fs_off = o->uniform.off; else vs_off = o->uniform.off;
++            break;
++        case OP_DRAW:
++        case OP_DRAW_INDEXED:
++            if (samplers_dirty) {
++                WGPUBindGroupEntry e[2 * WG_MAX_SAMPLERS];
++                for (uint32_t i = 0; i < WG_MAX_SAMPLERS; i++) {
++                    e[i] = (WGPUBindGroupEntry){ .binding = i,
++                        .textureView = tex[i] && tex[i]->view ? tex[i]->view : s_dummy_view };
++                    e[WG_MAX_SAMPLERS + i] = (WGPUBindGroupEntry){ .binding = WG_MAX_SAMPLERS + i,
++                        .sampler = smp[i] ? smp[i]->s : s_dummy_sampler };
++                }
++                WGPUBindGroupDescriptor bd = { .layout = s_bgl[2], .entryCount = 2 * WG_MAX_SAMPLERS, .entries = e };
++                if (tex_group) wgpuBindGroupRelease(tex_group);
++                tex_group = wgpuDeviceCreateBindGroup(s_dev, &bd);
++                samplers_dirty = 0;
++            }
++            wgpuRenderPassEncoderSetBindGroup(pe, 0, r->empty_group, 0, NULL);
++            wgpuRenderPassEncoderSetBindGroup(pe, 1, r->vs_group, 1, &vs_off);
++            wgpuRenderPassEncoderSetBindGroup(pe, 2, tex_group, 0, NULL);
++            wgpuRenderPassEncoderSetBindGroup(pe, 3, r->fs_group, 1, &fs_off);
++            if (o->kind == OP_DRAW)
++                wgpuRenderPassEncoderDraw(pe, o->draw.count, o->draw.instances, o->draw.first, o->draw.first_instance);
++            else
++                wgpuRenderPassEncoderDrawIndexed(pe, o->draw.count, o->draw.instances, o->draw.first,
++                                                 o->draw.vertex_offset, o->draw.first_instance);
++            break;
++        default:
++            break;
++        }
++    }
++    wgpuRenderPassEncoderEnd(pe);
++    wgpuRenderPassEncoderRelease(pe);
++    if (tex_group) wgpuBindGroupRelease(tex_group);
++}
++
++static void on_readback(WGPUMapAsyncStatus st, WGPUStringView msg, void *u1, void *u2)
++{
++    Replay *r = (Replay *)u1;
++    Readback *b = (Readback *)u2;
++    if (st == WGPUMapAsyncStatus_Success) {
++        const uint8_t *src = (const uint8_t *)wgpuBufferGetConstMappedRange(b->buf, 0, (size_t)b->padded * b->rows);
++        for (uint32_t y = 0; src && y < b->rows; y++)
++            memcpy(b->dst + (size_t)y * b->dst_stride, src + (size_t)y * b->padded, b->row_bytes);
++        wgpuBufferUnmap(b->buf);
++    } else {
++        report("download", msg);
++    }
++    wgpuBufferRelease(b->buf);
++    if (atomic_fetch_sub(&r->pending, 1) == 1)
++        emscripten_proxy_finish(r->ctx);
++}
++
++static void replay(Replay *r)
++{
++    SDL_GPUCommandBuffer *c = r->c;
++    r->enc = wgpuDeviceCreateCommandEncoder(s_dev, NULL);
++
++    /* Uniforms of the whole submission in one buffer; each draw binds its
++     * own offsets. Room past the end for a full binding at the last offset. */
++    {
++        uint32_t size = c->ubytes + WG_VS_UNIFORM_BYTES;
++        size = (size + 3u) & ~3u;
++        WGPUBufferDescriptor bd = { .usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = size };
++        r->ubuf = wgpuDeviceCreateBuffer(s_dev, &bd);
++        if (c->ubytes)
++            wgpuQueueWriteBuffer(s_queue, r->ubuf, 0, c->uniforms, (c->ubytes + 3u) & ~3u);
++        WGPUBindGroupEntry ve = { .binding = 0, .buffer = r->ubuf, .offset = 0, .size = WG_VS_UNIFORM_BYTES };
++        WGPUBindGroupEntry fe = { .binding = 0, .buffer = r->ubuf, .offset = 0, .size = WG_FS_UNIFORM_BYTES };
++        WGPUBindGroupDescriptor vd = { .layout = s_bgl[1], .entryCount = 1, .entries = &ve };
++        WGPUBindGroupDescriptor fd = { .layout = s_bgl[3], .entryCount = 1, .entries = &fe };
++        WGPUBindGroupDescriptor ed = { .layout = s_bgl[0], .entryCount = 0 };
++        r->vs_group = wgpuDeviceCreateBindGroup(s_dev, &vd);
++        r->fs_group = wgpuDeviceCreateBindGroup(s_dev, &fd);
++        r->empty_group = wgpuDeviceCreateBindGroup(s_dev, &ed);
++    }
++
++    for (uint32_t i = 0; i < c->n; i++) {
++        const Op *o = &c->ops[i];
++        switch (o->kind) {
++        case OP_UPLOAD_BUFFER:
++            /* Queue writes run ahead of the encoder: submit what is encoded
++             * first so the order SDL promises holds. */
++            flush_encoder(r);
++            wgpuQueueWriteBuffer(s_queue, o->ub.dst->buf, o->ub.dst_off, o->ub.src->mem + o->ub.src_off,
++                                 (o->ub.size + 3u) & ~3u);
++            break;
++        case OP_UPLOAD_TEXTURE: {
++            flush_encoder(r);
++            WGPUTexelCopyTextureInfo dst = { .texture = o->ut.dst->tex, .mipLevel = o->ut.level,
++                                             .origin = { o->ut.x, o->ut.y, 0 }, .aspect = WGPUTextureAspect_All };
++            WGPUTexelCopyBufferLayout layout = { .offset = 0, .bytesPerRow = o->ut.row_px * 4, .rowsPerImage = o->ut.rows };
++            WGPUExtent3D ext = { o->ut.w, o->ut.h, 1 };
++            wgpuQueueWriteTexture(s_queue, &dst, o->ut.src->mem + o->ut.src_off,
++                                  (size_t)o->ut.row_px * 4 * o->ut.h, &layout, &ext);
++            break;
++        }
++        case OP_DOWNLOAD_TEXTURE: {
++            if (r->nrb == r->caprb) {
++                r->caprb = r->caprb ? r->caprb * 2 : 4;
++                r->rb = (Readback *)realloc(r->rb, r->caprb * sizeof *r->rb);
++            }
++            Readback *b = &r->rb[r->nrb++];
++            b->row_bytes = o->dt.w * 4;
++            b->padded = (b->row_bytes + 255u) & ~255u;     /* copyTextureToBuffer's row alignment */
++            b->rows = o->dt.h;
++            b->dst = o->dt.dst->mem + o->dt.dst_off;
++            b->dst_stride = o->dt.row_px * 4;
++            WGPUBufferDescriptor bd = { .usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst,
++                                        .size = (uint64_t)b->padded * b->rows };
++            b->buf = wgpuDeviceCreateBuffer(s_dev, &bd);
++            WGPUTexelCopyTextureInfo src = { .texture = o->dt.src->tex, .mipLevel = o->dt.level,
++                                             .origin = { o->dt.x, o->dt.y, 0 }, .aspect = WGPUTextureAspect_All };
++            WGPUTexelCopyBufferInfo dst = { .layout = { .bytesPerRow = b->padded, .rowsPerImage = b->rows }, .buffer = b->buf };
++            WGPUExtent3D ext = { o->dt.w, o->dt.h, 1 };
++            wgpuCommandEncoderCopyTextureToBuffer(r->enc, &src, &dst, &ext);
++            r->encoded = 1;
++            break;
++        }
++        case OP_COPY_TEXTURE: {
++            WGPUTexelCopyTextureInfo src = { .texture = o->ct.src->tex, .mipLevel = o->ct.sl,
++                                             .origin = { o->ct.sx, o->ct.sy, 0 }, .aspect = WGPUTextureAspect_All };
++            WGPUTexelCopyTextureInfo dst = { .texture = o->ct.dst->tex, .mipLevel = o->ct.dl,
++                                             .origin = { o->ct.dx, o->ct.dy, 0 }, .aspect = WGPUTextureAspect_All };
++            WGPUExtent3D ext = { o->ct.w, o->ct.h, 1 };
++            wgpuCommandEncoderCopyTextureToTexture(r->enc, &src, &dst, &ext);
++            r->encoded = 1;
++            break;
++        }
++        case OP_MIPMAPS: {
++            SDL_GPUTexture *t = o->mip.tex;
++            for (uint32_t l = 1; l < t->levels; l++)
++                fullscreen_pass(r, t->level_views[l - 1], s_linear_sampler, t->level_views[l], t->format, 1,
++                                (SDL_FColor){0, 0, 0, 0}, NULL);
++            break;
++        }
++        case OP_BLIT: {
++            SDL_GPUTexture *d = o->blit.dst;
++            WGPUTextureView dv = view_of(r, d, 0, 0);
++            WGPUTextureFormat df = d->swapchain ? s_surface_format : d->format;
++            float vp[4] = { (float)o->blit.dx, (float)o->blit.dy, (float)o->blit.dw, (float)o->blit.dh };
++            if (dv && o->blit.src->view)
++                fullscreen_pass(r, o->blit.src->view, o->blit.linear ? s_linear_sampler : s_nearest_sampler, dv, df,
++                                o->blit.clear, o->blit.clear_color, vp);
++            break;
++        }
++        case OP_BEGIN_PASS:
++            replay_pass(r, &i);
++            break;
++        default:
++            break;   /* render-pass state outside a pass: nothing to do */
++        }
++    }
++
++    WGPUCommandBuffer cb = wgpuCommandEncoderFinish(r->enc, NULL);
++    wgpuQueueSubmit(s_queue, 1, &cb);
++    wgpuCommandBufferRelease(cb);
++    wgpuCommandEncoderRelease(r->enc);
++    wgpuBindGroupRelease(r->vs_group);
++    wgpuBindGroupRelease(r->fs_group);
++    wgpuBindGroupRelease(r->empty_group);
++    wgpuBufferRelease(r->ubuf);
++    if (r->swap_view) wgpuTextureViewRelease(r->swap_view);
++    if (r->swap_tex) wgpuTextureRelease(r->swap_tex);
++}
++
++static void do_submit(void *p) { replay((Replay *)p); }
++
++static void do_submit_download(em_proxying_ctx *ctx, void *p)
++{
++    Replay *r = (Replay *)p;
++    r->ctx = ctx;
++    replay(r);
++    atomic_store(&r->pending, (int)r->nrb);
++    if (!r->nrb) { emscripten_proxy_finish(ctx); return; }
++    for (uint32_t i = 0; i < r->nrb; i++) {
++        WGPUBufferMapCallbackInfo ci = { .mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_readback,
++                                         .userdata1 = r, .userdata2 = &r->rb[i] };
++        wgpuBufferMapAsync(r->rb[i].buf, WGPUMapMode_Read, 0, (size_t)r->rb[i].padded * r->rb[i].rows, ci);
++    }
++}
++
++bool WG_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer *c)
++{
++    Replay r = { .c = c };
++    if (c->has_download) run_sync_ctx(do_submit_download, &r);   /* returns with the data in place */
++    else run_sync(do_submit, &r);
++    free(r.rb);
++    cmd_free(c);
++    return true;
++}
++
++/* Submits are complete when they return (downloads included), so a fence
++ * is already signalled. */
++SDL_GPUFence *WG_SubmitGPUCommandBufferAndAcquireFence(SDL_GPUCommandBuffer *c)
++{
++    WG_SubmitGPUCommandBuffer(c);
++    return &s_fence_obj;
++}
++bool WG_WaitForGPUFences(SDL_GPUDevice *d, bool all, SDL_GPUFence *const *f, Uint32 n) { (void)d; (void)all; (void)f; (void)n; return true; }
++void WG_ReleaseGPUFence(SDL_GPUDevice *d, SDL_GPUFence *f) { (void)d; (void)f; }
++
++/* ── Presenting ───────────────────────────────────────────────────────── */
++typedef struct { uint32_t w, h; } SizeArgs;
++static void do_configure(void *p)
++{
++    SizeArgs *a = (SizeArgs *)p;
++    if (!s_surface) return;
++    emscripten_set_canvas_element_size(s_canvas_selector, (int)a->w, (int)a->h);
++    WGPUSurfaceConfiguration cfg = { .device = s_dev, .format = s_surface_format,
++        .usage = WGPUTextureUsage_RenderAttachment, .width = a->w, .height = a->h,
++        .alphaMode = WGPUCompositeAlphaMode_Opaque, .presentMode = WGPUPresentMode_Fifo };
++    wgpuSurfaceConfigure(s_surface, &cfg);
++    s_surface_w = a->w;
++    s_surface_h = a->h;
++}
++
++static void window_pixels(SDL_Window *w, uint32_t *pw, uint32_t *ph)
++{
++    int x = 0, y = 0;
++    if (w) SDL_GetWindowSizeInPixels(w, &x, &y);
++    *pw = x > 0 ? (uint32_t)x : 640;
++    *ph = y > 0 ? (uint32_t)y : 480;
++}
++
++bool WG_ClaimWindowForGPUDevice(SDL_GPUDevice *d, SDL_Window *w)
++{
++    (void)d;
++    SizeArgs a;
++    if (!s_surface) { SDL_SetError("no WebGPU canvas"); return false; }
++    window_pixels(w, &a.w, &a.h);
++    run_sync(do_configure, &a);
++    /* Show the GPU canvas over SDL's (which keeps the input focus). */
++    MAIN_THREAD_EM_ASM({
++        var c = document.querySelector(UTF8ToString($0));
++        if (c) c.hidden = false;
++        if (Module['onGpuPresent']) Module['onGpuPresent'](true);
++    }, s_canvas_selector);
++    return true;
++}
++void WG_ReleaseWindowFromGPUDevice(SDL_GPUDevice *d, SDL_Window *w)
++{
++    (void)d; (void)w;
++    MAIN_THREAD_EM_ASM({
++        var c = document.querySelector(UTF8ToString($0));
++        if (c) c.hidden = true;
++        if (Module['onGpuPresent']) Module['onGpuPresent'](false);
++    }, s_canvas_selector);
++}
++
++/* Wait for the next animation frame on the server: the presenter's pacing.
++ * The callback finishes the proxied call through an exported C function. */
++EMSCRIPTEN_KEEPALIVE void wg_frame_done(em_proxying_ctx *ctx) { emscripten_proxy_finish(ctx); }
++EM_JS(void, wg_frame_wait_js, (em_proxying_ctx *ctx), {
++    var done = () => _wg_frame_done(ctx);
++    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(done);
++    else setTimeout(done, 16);
++});
++static void do_frame_wait(em_proxying_ctx *ctx, void *p) { (void)p; wg_frame_wait_js(ctx); }
++
++bool WG_WaitAndAcquireGPUSwapchainTexture(SDL_GPUCommandBuffer *c, SDL_Window *w, SDL_GPUTexture **t, Uint32 *tw, Uint32 *th)
++{
++    static struct SDL_GPUTexture swap = { .swapchain = 1, .levels = 1 };
++    SizeArgs a;
++    (void)c;
++    window_pixels(w, &a.w, &a.h);
++    if (a.w != s_surface_w || a.h != s_surface_h)
++        run_sync(do_configure, &a);
++    run_sync_ctx(do_frame_wait, NULL);
++    swap.w = s_surface_w;
++    swap.h = s_surface_h;
++    swap.format = s_surface_format;
++    *t = &swap;
++    if (tw) *tw = s_surface_w;
++    if (th) *th = s_surface_h;
++    return true;
++}
++#endif /* __EMSCRIPTEN__ */
+diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
+new file mode 100644
+index 0000000..b1e0dec
+--- /dev/null
++++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
+@@ -0,0 +1,153 @@
++#ifndef SDL_GPU_WEBGPU_H
++#define SDL_GPU_WEBGPU_H
++/* The SDL GPU renderer on WebGPU (Emscripten builds).
++ *
++ * SDL 3 has no WebGPU backend for its GPU API, so the subset of that API the
++ * renderer in src/kernel/sdlgpu/ uses -- 46 functions, SDL's own types -- is
++ * implemented here on Dawn's webgpu.h (emdawnwebgpu), and this header
++ * redirects the renderer's SDL_*GPU* calls to it. The renderer itself is
++ * unchanged apart from loading WGSL shaders (webgpu/sg_wgsl.h, generated
++ * from its GLSL by tools/gen-wgsl.py).
++ *
++ * Threads. A WebGPU device and everything made from it belong to the
++ * JavaScript context that created them, and a device only makes progress
++ * (mapAsync, adapter requests, presenting) when that context returns to its
++ * event loop -- which the renderer's threads never do. So one thread, the
++ * GPU server, owns the device and sits in its event loop; every call below,
++ * from any thread, runs there through Emscripten's proxying queue. Command
++ * buffers are recorded on the caller's side and replayed into a
++ * GPUCommandEncoder on submit. Submits are synchronous (they copy upload data
++ * into WebGPU before returning) and wait for any downloads in them. The
++ * renderer calls from two threads -- the pushbuffer executor and the window
++ * presenter -- which this makes safe.
++ *
++ * Presenting. The server thread receives the page's <canvas id="gpucanvas">
++ * (an OffscreenCanvas, transferred to the program's main thread at startup by
++ * -sOFFSCREENCANVASES_TO_PTHREAD and on to the server when it is created), so
++ * wg_server_start() must run on the main thread. A frame is shown when the
++ * server returns to its event loop after the submit that drew it. Acquiring a
++ * swapchain texture waits for the next animation frame, which paces the
++ * presenter as vsync does natively. */
++#ifdef __EMSCRIPTEN__
++#include <SDL3/SDL.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Start the GPU server and create the WebGPU device; `canvas_id` is the id of
++ * the transferred presentation canvas (no '#'). Call once, on the main
++ * thread. Returns 0 when the browser has no usable WebGPU; the renderer then
++ * finds no device and draws in software. */
++int wg_server_start(const char *canvas_id);
++/* 1 once wg_server_start() succeeded. */
++int wg_available(void);
++
++/* SDL_GPU_SHADERFORMAT_PRIVATE carries WGSL source here: the shader format
++ * enum has no WGSL value in SDL 3.2. */
++#define SDL_GPU_SHADERFORMAT_WGSL SDL_GPU_SHADERFORMAT_PRIVATE
++
++#define WG_API(ret, name, args) ret WG_##name args;
++WG_API(SDL_GPUDevice *, CreateGPUDevice, (SDL_GPUShaderFormat formats, bool debug, const char *name))
++WG_API(void, DestroyGPUDevice, (SDL_GPUDevice *d))
++WG_API(const char *, GetGPUDeviceDriver, (SDL_GPUDevice *d))
++WG_API(bool, GPUTextureSupportsFormat, (SDL_GPUDevice *d, SDL_GPUTextureFormat f, SDL_GPUTextureType t, SDL_GPUTextureUsageFlags u))
++WG_API(SDL_GPUTexture *, CreateGPUTexture, (SDL_GPUDevice *d, const SDL_GPUTextureCreateInfo *i))
++WG_API(void, ReleaseGPUTexture, (SDL_GPUDevice *d, SDL_GPUTexture *t))
++WG_API(SDL_GPUBuffer *, CreateGPUBuffer, (SDL_GPUDevice *d, const SDL_GPUBufferCreateInfo *i))
++WG_API(void, ReleaseGPUBuffer, (SDL_GPUDevice *d, SDL_GPUBuffer *b))
++WG_API(SDL_GPUTransferBuffer *, CreateGPUTransferBuffer, (SDL_GPUDevice *d, const SDL_GPUTransferBufferCreateInfo *i))
++WG_API(void, ReleaseGPUTransferBuffer, (SDL_GPUDevice *d, SDL_GPUTransferBuffer *b))
++WG_API(void *, MapGPUTransferBuffer, (SDL_GPUDevice *d, SDL_GPUTransferBuffer *b, bool cycle))
++WG_API(void, UnmapGPUTransferBuffer, (SDL_GPUDevice *d, SDL_GPUTransferBuffer *b))
++WG_API(SDL_GPUSampler *, CreateGPUSampler, (SDL_GPUDevice *d, const SDL_GPUSamplerCreateInfo *i))
++WG_API(SDL_GPUShader *, CreateGPUShader, (SDL_GPUDevice *d, const SDL_GPUShaderCreateInfo *i))
++WG_API(SDL_GPUGraphicsPipeline *, CreateGPUGraphicsPipeline, (SDL_GPUDevice *d, const SDL_GPUGraphicsPipelineCreateInfo *i))
++WG_API(SDL_GPUCommandBuffer *, AcquireGPUCommandBuffer, (SDL_GPUDevice *d))
++WG_API(bool, SubmitGPUCommandBuffer, (SDL_GPUCommandBuffer *c))
++WG_API(SDL_GPUFence *, SubmitGPUCommandBufferAndAcquireFence, (SDL_GPUCommandBuffer *c))
++WG_API(bool, CancelGPUCommandBuffer, (SDL_GPUCommandBuffer *c))
++WG_API(bool, WaitForGPUFences, (SDL_GPUDevice *d, bool all, SDL_GPUFence *const *f, Uint32 n))
++WG_API(void, ReleaseGPUFence, (SDL_GPUDevice *d, SDL_GPUFence *f))
++WG_API(SDL_GPUCopyPass *, BeginGPUCopyPass, (SDL_GPUCommandBuffer *c))
++WG_API(void, EndGPUCopyPass, (SDL_GPUCopyPass *p))
++WG_API(void, UploadToGPUBuffer, (SDL_GPUCopyPass *p, const SDL_GPUTransferBufferLocation *s, const SDL_GPUBufferRegion *d, bool cycle))
++WG_API(void, UploadToGPUTexture, (SDL_GPUCopyPass *p, const SDL_GPUTextureTransferInfo *s, const SDL_GPUTextureRegion *d, bool cycle))
++WG_API(void, DownloadFromGPUTexture, (SDL_GPUCopyPass *p, const SDL_GPUTextureRegion *s, const SDL_GPUTextureTransferInfo *d))
++WG_API(void, CopyGPUTextureToTexture, (SDL_GPUCopyPass *p, const SDL_GPUTextureLocation *s, const SDL_GPUTextureLocation *d, Uint32 w, Uint32 h, Uint32 depth, bool cycle))
++WG_API(void, GenerateMipmapsForGPUTexture, (SDL_GPUCommandBuffer *c, SDL_GPUTexture *t))
++WG_API(void, BlitGPUTexture, (SDL_GPUCommandBuffer *c, const SDL_GPUBlitInfo *i))
++WG_API(SDL_GPURenderPass *, BeginGPURenderPass, (SDL_GPUCommandBuffer *c, const SDL_GPUColorTargetInfo *ct, Uint32 n, const SDL_GPUDepthStencilTargetInfo *ds))
++WG_API(void, EndGPURenderPass, (SDL_GPURenderPass *p))
++WG_API(void, SetGPUViewport, (SDL_GPURenderPass *p, const SDL_GPUViewport *v))
++WG_API(void, SetGPUScissor, (SDL_GPURenderPass *p, const SDL_Rect *r))
++WG_API(void, SetGPUBlendConstants, (SDL_GPURenderPass *p, SDL_FColor c))
++WG_API(void, SetGPUStencilReference, (SDL_GPURenderPass *p, Uint8 r))
++WG_API(void, BindGPUGraphicsPipeline, (SDL_GPURenderPass *p, SDL_GPUGraphicsPipeline *g))
++WG_API(void, BindGPUVertexBuffers, (SDL_GPURenderPass *p, Uint32 first, const SDL_GPUBufferBinding *b, Uint32 n))
++WG_API(void, BindGPUIndexBuffer, (SDL_GPURenderPass *p, const SDL_GPUBufferBinding *b, SDL_GPUIndexElementSize s))
++WG_API(void, BindGPUFragmentSamplers, (SDL_GPURenderPass *p, Uint32 first, const SDL_GPUTextureSamplerBinding *b, Uint32 n))
++WG_API(void, PushGPUVertexUniformData, (SDL_GPUCommandBuffer *c, Uint32 slot, const void *data, Uint32 len))
++WG_API(void, PushGPUFragmentUniformData, (SDL_GPUCommandBuffer *c, Uint32 slot, const void *data, Uint32 len))
++WG_API(void, DrawGPUPrimitives, (SDL_GPURenderPass *p, Uint32 n, Uint32 inst, Uint32 first_v, Uint32 first_i))
++WG_API(void, DrawGPUIndexedPrimitives, (SDL_GPURenderPass *p, Uint32 n, Uint32 inst, Uint32 first_idx, Sint32 voff, Uint32 first_i))
++WG_API(bool, ClaimWindowForGPUDevice, (SDL_GPUDevice *d, SDL_Window *w))
++WG_API(void, ReleaseWindowFromGPUDevice, (SDL_GPUDevice *d, SDL_Window *w))
++WG_API(bool, WaitAndAcquireGPUSwapchainTexture, (SDL_GPUCommandBuffer *c, SDL_Window *w, SDL_GPUTexture **t, Uint32 *tw, Uint32 *th))
++#undef WG_API
++
++#ifdef __cplusplus
++}
++#endif
++
++/* The renderer's calls, redirected. */
++#ifndef SDL_GPU_WEBGPU_IMPLEMENTATION
++#define SDL_CreateGPUDevice WG_CreateGPUDevice
++#define SDL_DestroyGPUDevice WG_DestroyGPUDevice
++#define SDL_GetGPUDeviceDriver WG_GetGPUDeviceDriver
++#define SDL_GPUTextureSupportsFormat WG_GPUTextureSupportsFormat
++#define SDL_CreateGPUTexture WG_CreateGPUTexture
++#define SDL_ReleaseGPUTexture WG_ReleaseGPUTexture
++#define SDL_CreateGPUBuffer WG_CreateGPUBuffer
++#define SDL_ReleaseGPUBuffer WG_ReleaseGPUBuffer
++#define SDL_CreateGPUTransferBuffer WG_CreateGPUTransferBuffer
++#define SDL_ReleaseGPUTransferBuffer WG_ReleaseGPUTransferBuffer
++#define SDL_MapGPUTransferBuffer WG_MapGPUTransferBuffer
++#define SDL_UnmapGPUTransferBuffer WG_UnmapGPUTransferBuffer
++#define SDL_CreateGPUSampler WG_CreateGPUSampler
++#define SDL_CreateGPUShader WG_CreateGPUShader
++#define SDL_CreateGPUGraphicsPipeline WG_CreateGPUGraphicsPipeline
++#define SDL_AcquireGPUCommandBuffer WG_AcquireGPUCommandBuffer
++#define SDL_SubmitGPUCommandBuffer WG_SubmitGPUCommandBuffer
++#define SDL_SubmitGPUCommandBufferAndAcquireFence WG_SubmitGPUCommandBufferAndAcquireFence
++#define SDL_CancelGPUCommandBuffer WG_CancelGPUCommandBuffer
++#define SDL_WaitForGPUFences WG_WaitForGPUFences
++#define SDL_ReleaseGPUFence WG_ReleaseGPUFence
++#define SDL_BeginGPUCopyPass WG_BeginGPUCopyPass
++#define SDL_EndGPUCopyPass WG_EndGPUCopyPass
++#define SDL_UploadToGPUBuffer WG_UploadToGPUBuffer
++#define SDL_UploadToGPUTexture WG_UploadToGPUTexture
++#define SDL_DownloadFromGPUTexture WG_DownloadFromGPUTexture
++#define SDL_CopyGPUTextureToTexture WG_CopyGPUTextureToTexture
++#define SDL_GenerateMipmapsForGPUTexture WG_GenerateMipmapsForGPUTexture
++#define SDL_BlitGPUTexture WG_BlitGPUTexture
++#define SDL_BeginGPURenderPass WG_BeginGPURenderPass
++#define SDL_EndGPURenderPass WG_EndGPURenderPass
++#define SDL_SetGPUViewport WG_SetGPUViewport
++#define SDL_SetGPUScissor WG_SetGPUScissor
++#define SDL_SetGPUBlendConstants WG_SetGPUBlendConstants
++#define SDL_SetGPUStencilReference WG_SetGPUStencilReference
++#define SDL_BindGPUGraphicsPipeline WG_BindGPUGraphicsPipeline
++#define SDL_BindGPUVertexBuffers WG_BindGPUVertexBuffers
++#define SDL_BindGPUIndexBuffer WG_BindGPUIndexBuffer
++#define SDL_BindGPUFragmentSamplers WG_BindGPUFragmentSamplers
++#define SDL_PushGPUVertexUniformData WG_PushGPUVertexUniformData
++#define SDL_PushGPUFragmentUniformData WG_PushGPUFragmentUniformData
++#define SDL_DrawGPUPrimitives WG_DrawGPUPrimitives
++#define SDL_DrawGPUIndexedPrimitives WG_DrawGPUIndexedPrimitives
++#define SDL_ClaimWindowForGPUDevice WG_ClaimWindowForGPUDevice
++#define SDL_ReleaseWindowFromGPUDevice WG_ReleaseWindowFromGPUDevice
++#define SDL_WaitAndAcquireGPUSwapchainTexture WG_WaitAndAcquireGPUSwapchainTexture
++#endif
++#endif /* __EMSCRIPTEN__ */
++#endif
+diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
+new file mode 100644
+index 0000000..f20080d
+--- /dev/null
++++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
+@@ -0,0 +1,1417 @@
++/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
++#pragma once
++
++static const char k_sg_flat2d_vert_wgsl[] =
++    "struct Viewport {\n"
++    "    surface_size: vec2<f32>,\n"
++    "}\n"
++    "\n"
++    "struct VertexOutput {\n"
++    "    @location(0) @interpolate(flat) v_color: vec4<f32>,\n"
++    "    @location(1) @interpolate(linear) v_uv: vec3<f32>,\n"
++    "    @builtin(position) gl_Position: vec4<f32>,\n"
++    "}\n"
++    "\n"
++    "var<private> in_pos_1: vec2<f32>;\n"
++    "var<private> in_color_1: vec4<f32>;\n"
++    "var<private> in_uv_1: vec3<f32>;\n"
++    "var<private> v_color: vec4<f32>;\n"
++    "var<private> v_uv: vec3<f32>;\n"
++    "@group(1) @binding(0) \n"
++    "var<uniform> vp: Viewport;\n"
++    "var<private> gl_Position: vec4<f32>;\n"
++    "\n"
++    "fn main_1() {\n"
++    "    var ndc: vec2<f32>;\n"
++    "\n"
++    "    let _e8 = in_pos_1;\n"
++    "    let _e9 = vp;\n"
++    "    ndc = (((_e8 / _e9.surface_size) * 2f) - vec2(1f));\n"
++    "    let _e19 = ndc;\n"
++    "    let _e21 = ndc;\n"
++    "    gl_Position = vec4<f32>(_e19.x, -(_e21.y), 0f, 1f);\n"
++    "    let _e27 = in_color_1;\n"
++    "    v_color = _e27;\n"
++    "    let _e28 = in_uv_1;\n"
++    "    v_uv = _e28;\n"
++    "    return;\n"
++    "}\n"
++    "\n"
++    "@vertex \n"
++    "fn main(@location(0) in_pos: vec2<f32>, @location(1) in_color: vec4<f32>, @location(2) in_uv: vec3<f32>) -> VertexOutput {\n"
++    "    in_pos_1 = in_pos;\n"
++    "    in_color_1 = in_color;\n"
++    "    in_uv_1 = in_uv;\n"
++    "    main_1();\n"
++    "    let _e20 = v_color;\n"
++    "    let _e22 = v_uv;\n"
++    "    let _e24 = gl_Position;\n"
++    "    return VertexOutput(_e20, _e22, _e24);\n"
++    "}\n";
++
++static const char k_sg_flat2d_frag_wgsl[] =
++    "diagnostic(off, derivative_uniformity);\n"
++    "\n"
++    "struct Shade {\n"
++    "    tex_size: vec2<u32>,\n"
++    "    tex_wrap: vec2<u32>,\n"
++    "    alpha_test: u32,\n"
++    "    alpha_func: u32,\n"
++    "    alpha_ref: u32,\n"
++    "    pad: u32,\n"
++    "}\n"
++    "\n"
++    "struct FragmentOutput {\n"
++    "    @location(0) out_color: vec4<f32>,\n"
++    "}\n"
++    "\n"
++    "const TEXEL_BIAS: f32 = 0.001953125f;\n"
++    "\n"
++    "var<private> v_color_1: vec4<f32>;\n"
++    "var<private> v_uv_1: vec3<f32>;\n"
++    "var<private> out_color: vec4<f32>;\n"
++    "@group(2) @binding(0) \n"
++    "var tex_t: texture_2d<f32>;\n"
++    "@group(2) @binding(4) \n"
++    "var tex_s: sampler;\n"
++    "@group(3) @binding(0) \n"
++    "var<uniform> sh: Shade;\n"
++    "\n"
++    "fn texel_coord(c: f32, size: u32, wrap: u32) -> u32 {\n"
++    "    var c_1: f32;\n"
++    "    var size_1: u32;\n"
++    "    var wrap_1: u32;\n"
++    "    var u: u32;\n"
++    "    var local: u32;\n"
++    "\n"
++    "    c_1 = c;\n"
++    "    size_1 = size;\n"
++    "    wrap_1 = wrap;\n"
++    "    let _e25 = c_1;\n"
++    "    u = u32(max((_e25 + TEXEL_BIAS), 0f));\n"
++    "    let _e31 = size_1;\n"
++    "    if (_e31 == 0u) {\n"
++    "        return 0u;\n"
++    "    }\n"
++    "    let _e35 = wrap_1;\n"
++    "    if (_e35 == 1u) {\n"
++    "        let _e38 = u;\n"
++    "        let _e39 = size_1;\n"
++    "        return (_e38 % _e39);\n"
++    "    }\n"
++    "    let _e41 = u;\n"
++    "    let _e42 = size_1;\n"
++    "    if (_e41 >= _e42) {\n"
++    "        let _e44 = size_1;\n"
++    "        local = (_e44 - 1u);\n"
++    "    } else {\n"
++    "        let _e47 = u;\n"
++    "        local = _e47;\n"
++    "    }\n"
++    "    let _e49 = local;\n"
++    "    return _e49;\n"
++    "}\n"
++    "\n"
++    "fn alpha_pass(a: u32) -> bool {\n"
++    "    var a_1: u32;\n"
++    "    var r: u32;\n"
++    "\n"
++    "    a_1 = a;\n"
++    "    let _e21 = sh;\n"
++    "    r = _e21.alpha_ref;\n"
++    "    let _e24 = sh;\n"
++    "    if (_e24.alpha_func == 512u) {\n"
++    "        return false;\n"
++    "    }\n"
++    "    let _e29 = sh;\n"
++    "    if (_e29.alpha_func == 513u) {\n"
++    "        let _e33 = a_1;\n"
++    "        let _e34 = r;\n"
++    "        return (_e33 < _e34);\n"
++    "    }\n"
++    "    let _e36 = sh;\n"
++    "    if (_e36.alpha_func == 514u) {\n"
++    "        let _e40 = a_1;\n"
++    "        let _e41 = r;\n"
++    "        return (_e40 == _e41);\n"
++    "    }\n"
++    "    let _e43 = sh;\n"
++    "    if (_e43.alpha_func == 515u) {\n"
++    "        let _e47 = a_1;\n"
++    "        let _e48 = r;\n"
++    "        return (_e47 <= _e48);\n"
++    "    }\n"
++    "    let _e50 = sh;\n"
++    "    if (_e50.alpha_func == 516u) {\n"
++    "        let _e54 = a_1;\n"
++    "        let _e55 = r;\n"
++    "        return (_e54 > _e55);\n"
++    "    }\n"
++    "    let _e57 = sh;\n"
++    "    if (_e57.alpha_func == 517u) {\n"
++    "        let _e61 = a_1;\n"
++    "        let _e62 = r;\n"
++    "        return (_e61 != _e62);\n"
++    "    }\n"
++    "    let _e64 = sh;\n"
++    "    if (_e64.alpha_func == 518u) {\n"
++    "        let _e68 = a_1;\n"
++    "        let _e69 = r;\n"
++    "        return (_e68 >= _e69);\n"
++    "    }\n"
++    "    return true;\n"
++    "}\n"
++    "\n"
++    "fn main_1() {\n"
++    "    var c_2: vec4<u32>;\n"
++    "    var at: vec2<i32>;\n"
++    "    var t: vec4<u32>;\n"
++    "\n"
++    "    let _e19 = v_color_1;\n"
++    "    c_2 = vec4<u32>(round((clamp(_e19, vec4(0f), vec4(1f)) * 255f)));\n"
++    "    let _e30 = v_uv_1;\n"
++    "    if (_e30.z != 0f) {\n"
++    "        {\n"
++    "            let _e34 = v_uv_1;\n"
++    "            let _e36 = sh;\n"
++    "            let _e39 = sh;\n"
++    "            let _e42 = texel_coord(_e34.x, _e36.tex_size.x, _e39.tex_wrap.x);\n"
++    "            let _e43 = v_uv_1;\n"
++    "            let _e45 = sh;\n"
++    "            let _e48 = sh;\n"
++    "            let _e51 = texel_coord(_e43.y, _e45.tex_size.y, _e48.tex_wrap.y);\n"
++    "            at = vec2<i32>(i32(_e42), i32(_e51));\n"
++    "            let _e56 = at;\n"
++    "            let _e58 = textureLoad(tex_t, _e56, 0i);\n"
++    "            t = vec4<u32>(round((_e58 * 255f)));\n"
++    "            let _e64 = t;\n"
++    "            let _e65 = c_2;\n"
++    "            c_2 = (((_e64 * _e65) + vec4(127u)) / vec4(255u));\n"
++    "        }\n"
++    "    }\n"
++    "    let _e73 = sh;\n"
++    "    let _e77 = c_2;\n"
++    "    let _e79 = alpha_pass(_e77.w);\n"
++    "    if ((_e73.alpha_test != 0u) && !(_e79)) {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e82 = c_2;\n"
++    "    out_color = (vec4<f32>(_e82) / vec4(255f));\n"
++    "    return;\n"
++    "}\n"
++    "\n"
++    "@fragment \n"
++    "fn main(@location(0) @interpolate(flat) v_color: vec4<f32>, @location(1) @interpolate(linear) v_uv: vec3<f32>) -> FragmentOutput {\n"
++    "    v_color_1 = v_color;\n"
++    "    v_uv_1 = v_uv;\n"
++    "    main_1();\n"
++    "    let _e30 = out_color;\n"
++    "    return FragmentOutput(_e30);\n"
++    "}\n";
++
++static const char k_sg_xf_vert_wgsl[] =
++    "struct Viewport {\n"
++    "    surface_size: vec2<f32>,\n"
++    "    depth_scale: f32,\n"
++    "    pad: f32,\n"
++    "}\n"
++    "\n"
++    "struct VertexOutput {\n"
++    "    @location(0) v_col: vec4<f32>,\n"
++    "    @location(1) v_spec: vec4<f32>,\n"
++    "    @location(2) v_t0_: vec4<f32>,\n"
++    "    @location(3) v_t1_: vec4<f32>,\n"
++    "    @location(4) v_t2_: vec4<f32>,\n"
++    "    @location(5) v_t3_: vec4<f32>,\n"
++    "    @location(6) v_fog: f32,\n"
++    "    @location(7) v_w: f32,\n"
++    "    @builtin(position) gl_Position: vec4<f32>,\n"
++    "}\n"
++    "\n"
++    "var<private> in_pos_1: vec4<f32>;\n"
++    "var<private> in_col_1: vec4<f32>;\n"
++    "var<private> in_spec_1: vec4<f32>;\n"
++    "var<private> in_t0_1: vec4<f32>;\n"
++    "var<private> in_t1_1: vec4<f32>;\n"
++    "var<private> in_t2_1: vec4<f32>;\n"
++    "var<private> in_t3_1: vec4<f32>;\n"
++    "var<private> in_fog_1: f32;\n"
++    "var<private> v_col: vec4<f32>;\n"
++    "var<private> v_spec: vec4<f32>;\n"
++    "var<private> v_t0_: vec4<f32>;\n"
++    "var<private> v_t1_: vec4<f32>;\n"
++    "var<private> v_t2_: vec4<f32>;\n"
++    "var<private> v_t3_: vec4<f32>;\n"
++    "var<private> v_fog: f32;\n"
++    "var<private> v_w: f32;\n"
++    "@group(1) @binding(0) \n"
++    "var<uniform> vp: Viewport;\n"
++    "var<private> gl_Position: vec4<f32>;\n"
++    "\n"
++    "fn main_1() {\n"
++    "    var w: f32;\n"
++    "    var ndc: vec2<f32>;\n"
++    "\n"
++    "    let _e23 = in_pos_1;\n"
++    "    w = _e23.w;\n"
++    "    let _e26 = in_pos_1;\n"
++    "    let _e28 = vp;\n"
++    "    ndc = (((_e26.xy / _e28.surface_size) * 2f) - vec2(1f));\n"
++    "    let _e38 = ndc;\n"
++    "    let _e40 = w;\n"
++    "    let _e42 = ndc;\n"
++    "    let _e45 = w;\n"
++    "    let _e47 = in_pos_1;\n"
++    "    let _e49 = vp;\n"
++    "    let _e52 = w;\n"
++    "    let _e54 = w;\n"
++    "    gl_Position = vec4<f32>((_e38.x * _e40), (-(_e42.y) * _e45), ((_e47.z * _e49.depth_scale) * _e52), _e54);\n"
++    "    let _e56 = in_col_1;\n"
++    "    v_col = _e56;\n"
++    "    let _e57 = in_spec_1;\n"
++    "    v_spec = _e57;\n"
++    "    let _e58 = in_t0_1;\n"
++    "    v_t0_ = _e58;\n"
++    "    let _e59 = in_t1_1;\n"
++    "    v_t1_ = _e59;\n"
++    "    let _e60 = in_t2_1;\n"
++    "    v_t2_ = _e60;\n"
++    "    let _e61 = in_t3_1;\n"
++    "    v_t3_ = _e61;\n"
++    "    let _e62 = in_fog_1;\n"
++    "    v_fog = _e62;\n"
++    "    let _e63 = in_pos_1;\n"
++    "    v_w = _e63.w;\n"
++    "    return;\n"
++    "}\n"
++    "\n"
++    "@vertex \n"
++    "fn main(@location(0) in_pos: vec4<f32>, @location(1) in_col: vec4<f32>, @location(2) in_spec: vec4<f32>, @location(3) in_t0_: vec4<f32>, @location(4) in_t1_: vec4<f32>, @location(5) in_t2_: vec4<f32>, @location(6) in_t3_: vec4<f32>, @location(7) in_fog: f32) -> VertexOutput {\n"
++    "    in_pos_1 = in_pos;\n"
++    "    in_col_1 = in_col;\n"
++    "    in_spec_1 = in_spec;\n"
++    "    in_t0_1 = in_t0_;\n"
++    "    in_t1_1 = in_t1_;\n"
++    "    in_t2_1 = in_t2_;\n"
++    "    in_t3_1 = in_t3_;\n"
++    "    in_fog_1 = in_fog;\n"
++    "    main_1();\n"
++    "    let _e56 = v_col;\n"
++    "    let _e58 = v_spec;\n"
++    "    let _e60 = v_t0_;\n"
++    "    let _e62 = v_t1_;\n"
++    "    let _e64 = v_t2_;\n"
++    "    let _e66 = v_t3_;\n"
++    "    let _e68 = v_fog;\n"
++    "    let _e70 = v_w;\n"
++    "    let _e72 = gl_Position;\n"
++    "    return VertexOutput(_e56, _e58, _e60, _e62, _e64, _e66, _e68, _e70, _e72);\n"
++    "}\n";
++
++static const char k_sg_xf_frag_wgsl[] =
++    "diagnostic(off, derivative_uniformity);\n"
++    "\n"
++    "struct Shade {\n"
++    "    prog: vec4<u32>,\n"
++    "    misc: vec4<u32>,\n"
++    "    alpha: vec4<u32>,\n"
++    "    tex: array<vec4<u32>, 4>,\n"
++    "    factor0_: array<vec4<u32>, 2>,\n"
++    "    factor1_: array<vec4<u32>, 2>,\n"
++    "    color_icw: array<vec4<u32>, 2>,\n"
++    "    color_ocw: array<vec4<u32>, 2>,\n"
++    "    alpha_icw: array<vec4<u32>, 2>,\n"
++    "    alpha_ocw: array<vec4<u32>, 2>,\n"
++    "    fog: vec4<u32>,\n"
++    "    mode: vec4<u32>,\n"
++    "    rect: vec4<u32>,\n"
++    "    depth: vec4<u32>,\n"
++    "}\n"
++    "\n"
++    "struct FragmentOutput {\n"
++    "    @location(0) out_color: vec4<f32>,\n"
++    "    @builtin(frag_depth) gl_FragDepth: f32,\n"
++    "}\n"
++    "\n"
++    "const TEXEL_BIAS: f32 = 0.001953125f;\n"
++    "\n"
++    "var<private> v_col_1: vec4<f32>;\n"
++    "var<private> v_spec_1: vec4<f32>;\n"
++    "var<private> v_t0_1: vec4<f32>;\n"
++    "var<private> v_t1_1: vec4<f32>;\n"
++    "var<private> v_t2_1: vec4<f32>;\n"
++    "var<private> v_t3_1: vec4<f32>;\n"
++    "var<private> v_fog_1: f32;\n"
++    "var<private> v_w_1: f32;\n"
++    "var<private> out_color: vec4<f32>;\n"
++    "@group(2) @binding(0) \n"
++    "var tex0_t: texture_2d<f32>;\n"
++    "@group(2) @binding(4) \n"
++    "var tex0_s: sampler;\n"
++    "@group(2) @binding(1) \n"
++    "var tex1_t: texture_2d<f32>;\n"
++    "@group(2) @binding(5) \n"
++    "var tex1_s: sampler;\n"
++    "@group(2) @binding(2) \n"
++    "var tex2_t: texture_2d<f32>;\n"
++    "@group(2) @binding(6) \n"
++    "var tex2_s: sampler;\n"
++    "@group(2) @binding(3) \n"
++    "var tex3_t: texture_2d<f32>;\n"
++    "@group(2) @binding(7) \n"
++    "var tex3_s: sampler;\n"
++    "@group(3) @binding(0) \n"
++    "var<uniform> sh: Shade;\n"
++    "var<private> src_r: array<vec4<f32>, 16>;\n"
++    "var<private> dst_r: array<vec4<f32>, 16>;\n"
++    "var<private> gl_FragCoord_1: vec4<f32>;\n"
++    "var<private> gl_FragDepth: f32;\n"
++    "\n"
++    "fn value8_(packed: array<vec4<u32>, 2>, s: i32) -> u32 {\n"
++    "    var packed_1: array<vec4<u32>, 2>;\n"
++    "    var s_1: i32;\n"
++    "\n"
++    "    packed_1 = packed;\n"
++    "    s_1 = s;\n"
++    "    let _e51 = s_1;\n"
++    "    let _e54 = s_1;\n"
++    "    let _e60 = packed_1[(_e54 >> 2u)][(_e51 & 3i)];\n"
++    "    return _e60;\n"
++    "}\n"
++    "\n"
++    "fn unpack_argb(c: u32) -> vec4<f32> {\n"
++    "    var c_1: u32;\n"
++    "\n"
++    "    c_1 = c;\n"
++    "    let _e49 = c_1;\n"
++    "    let _e56 = c_1;\n"
++    "    let _e63 = c_1;\n"
++    "    let _e67 = c_1;\n"
++    "    return (vec4<f32>(f32(((_e49 >> 16u) & 255u)), f32(((_e56 >> 8u) & 255u)), f32((_e63 & 255u)), f32((_e67 >> 24u))) / vec4(255f));\n"
++    "}\n"
++    "\n"
++    "fn wrap_coord(c_2: u32, size: u32, mode: u32) -> u32 {\n"
++    "    var c_3: u32;\n"
++    "    var size_1: u32;\n"
++    "    var mode_1: u32;\n"
++    "    var local: u32;\n"
++    "\n"
++    "    c_3 = c_2;\n"
++    "    size_1 = size;\n"
++    "    mode_1 = mode;\n"
++    "    let _e53 = size_1;\n"
++    "    if (_e53 == 0u) {\n"
++    "        return 0u;\n"
++    "    }\n"
++    "    let _e57 = mode_1;\n"
++    "    if (_e57 == 1u) {\n"
++    "        let _e60 = c_3;\n"
++    "        let _e61 = size_1;\n"
++    "        return (_e60 % _e61);\n"
++    "    }\n"
++    "    let _e63 = c_3;\n"
++    "    let _e64 = size_1;\n"
++    "    if (_e63 >= _e64) {\n"
++    "        let _e66 = size_1;\n"
++    "        local = (_e66 - 1u);\n"
++    "    } else {\n"
++    "        let _e69 = c_3;\n"
++    "        local = _e69;\n"
++    "    }\n"
++    "    let _e71 = local;\n"
++    "    return _e71;\n"
++    "}\n"
++    "\n"
++    "fn shift_negative(c_4: f32, size_2: f32) -> f32 {\n"
++    "    var c_5: f32;\n"
++    "    var size_3: f32;\n"
++    "    var local_1: f32;\n"
++    "\n"
++    "    c_5 = c_4;\n"
++    "    size_3 = size_2;\n"
++    "    let _e51 = c_5;\n"
++    "    if (_e51 < 0f) {\n"
++    "        let _e54 = c_5;\n"
++    "        let _e55 = size_3;\n"
++    "        let _e56 = c_5;\n"
++    "        let _e58 = size_3;\n"
++    "        local_1 = (_e54 + (_e55 * (floor((-(_e56) / _e58)) + 1f)));\n"
++    "    } else {\n"
++    "        let _e65 = c_5;\n"
++    "        local_1 = _e65;\n"
++    "    }\n"
++    "    let _e67 = local_1;\n"
++    "    return _e67;\n"
++    "}\n"
++    "\n"
++    "fn texel(s_2: i32, at: vec2<i32>) -> vec4<f32> {\n"
++    "    var s_3: i32;\n"
++    "    var at_1: vec2<i32>;\n"
++    "\n"
++    "    s_3 = s_2;\n"
++    "    at_1 = at;\n"
++    "    let _e51 = s_3;\n"
++    "    if (_e51 == 0i) {\n"
++    "        let _e54 = at_1;\n"
++    "        let _e56 = textureLoad(tex0_t, _e54, 0i);\n"
++    "        return _e56;\n"
++    "    }\n"
++    "    let _e57 = s_3;\n"
++    "    if (_e57 == 1i) {\n"
++    "        let _e60 = at_1;\n"
++    "        let _e62 = textureLoad(tex1_t, _e60, 0i);\n"
++    "        return _e62;\n"
++    "    }\n"
++    "    let _e63 = s_3;\n"
++    "    if (_e63 == 2i) {\n"
++    "        let _e66 = at_1;\n"
++    "        let _e68 = textureLoad(tex2_t, _e66, 0i);\n"
++    "        return _e68;\n"
++    "    }\n"
++    "    let _e69 = at_1;\n"
++    "    let _e71 = textureLoad(tex3_t, _e69, 0i);\n"
++    "    return _e71;\n"
++    "}\n"
++    "\n"
++    "fn tex2d(s_4: i32, nuv: vec2<f32>) -> vec4<f32> {\n"
++    "    var s_5: i32;\n"
++    "    var nuv_1: vec2<f32>;\n"
++    "\n"
++    "    s_5 = s_4;\n"
++    "    nuv_1 = nuv;\n"
++    "    let _e51 = s_5;\n"
++    "    if (_e51 == 0i) {\n"
++    "        let _e54 = nuv_1;\n"
++    "        let _e55 = textureSample(tex0_t, tex0_s, _e54);\n"
++    "        return _e55;\n"
++    "    }\n"
++    "    let _e56 = s_5;\n"
++    "    if (_e56 == 1i) {\n"
++    "        let _e59 = nuv_1;\n"
++    "        let _e60 = textureSample(tex1_t, tex1_s, _e59);\n"
++    "        return _e60;\n"
++    "    }\n"
++    "    let _e61 = s_5;\n"
++    "    if (_e61 == 2i) {\n"
++    "        let _e64 = nuv_1;\n"
++    "        let _e65 = textureSample(tex2_t, tex2_s, _e64);\n"
++    "        return _e65;\n"
++    "    }\n"
++    "    let _e66 = nuv_1;\n"
++    "    let _e67 = textureSample(tex3_t, tex3_s, _e66);\n"
++    "    return _e67;\n"
++    "}\n"
++    "\n"
++    "fn tex2dc(s_6: i32, uv: vec2<f32>) -> vec4<f32> {\n"
++    "    var s_7: i32;\n"
++    "    var uv_1: vec2<f32>;\n"
++    "\n"
++    "    s_7 = s_6;\n"
++    "    uv_1 = uv;\n"
++    "    let _e51 = s_7;\n"
++    "    let _e54 = sh.rect[_e51];\n"
++    "    if (_e54 != 0u) {\n"
++    "        let _e57 = uv_1;\n"
++    "        let _e58 = s_7;\n"
++    "        let _e61 = sh.tex[_e58];\n"
++    "        uv_1 = (_e57 / vec2<f32>(_e61.xy));\n"
++    "    }\n"
++    "    let _e65 = s_7;\n"
++    "    let _e66 = uv_1;\n"
++    "    let _e67 = tex2d(_e65, _e66);\n"
++    "    return _e67;\n"
++    "}\n"
++    "\n"
++    "fn texdir(s_8: i32, d: vec3<f32>) -> vec4<f32> {\n"
++    "    var s_9: i32;\n"
++    "    var d_1: vec3<f32>;\n"
++    "    var a: vec3<f32>;\n"
++    "    var uv_2: vec2<f32>;\n"
++    "    var local_2: vec2<f32>;\n"
++    "    var local_3: vec2<f32>;\n"
++    "    var local_4: vec2<f32>;\n"
++    "\n"
++    "    s_9 = s_8;\n"
++    "    d_1 = d;\n"
++    "    let _e51 = d_1;\n"
++    "    a = max(abs(_e51), vec3(0.00000001f));\n"
++    "    let _e58 = a;\n"
++    "    let _e60 = a;\n"
++    "    let _e63 = a;\n"
++    "    let _e65 = a;\n"
++    "    if ((_e58.x > _e60.y) && (_e63.x > _e65.z)) {\n"
++    "        let _e69 = d_1;\n"
++    "        if (_e69.x > 0f) {\n"
++    "            let _e73 = d_1;\n"
++    "            let _e76 = d_1;\n"
++    "            local_2 = vec2<f32>(-(_e73.z), _e76.y);\n"
++    "        } else {\n"
++    "            let _e79 = d_1;\n"
++    "            let _e81 = d_1;\n"
++    "            local_2 = vec2<f32>(_e79.z, _e81.y);\n"
++    "        }\n"
++    "        let _e85 = local_2;\n"
++    "        let _e86 = a;\n"
++    "        uv_2 = (_e85 / vec2(_e86.x));\n"
++    "    } else {\n"
++    "        let _e90 = a;\n"
++    "        let _e92 = a;\n"
++    "        let _e95 = a;\n"
++    "        let _e97 = a;\n"
++    "        if ((_e90.y > _e92.x) && (_e95.y > _e97.z)) {\n"
++    "            let _e101 = d_1;\n"
++    "            if (_e101.y > 0f) {\n"
++    "                let _e105 = d_1;\n"
++    "                let _e107 = d_1;\n"
++    "                local_3 = vec2<f32>(_e105.x, -(_e107.z));\n"
++    "            } else {\n"
++    "                let _e111 = d_1;\n"
++    "                let _e113 = d_1;\n"
++    "                local_3 = vec2<f32>(_e111.x, _e113.z);\n"
++    "            }\n"
++    "            let _e117 = local_3;\n"
++    "            let _e118 = a;\n"
++    "            uv_2 = (_e117 / vec2(_e118.y));\n"
++    "        } else {\n"
++    "            let _e122 = d_1;\n"
++    "            if (_e122.z > 0f) {\n"
++    "                let _e126 = d_1;\n"
++    "                let _e128 = d_1;\n"
++    "                local_4 = vec2<f32>(_e126.x, _e128.y);\n"
++    "            } else {\n"
++    "                let _e131 = d_1;\n"
++    "                let _e134 = d_1;\n"
++    "                local_4 = vec2<f32>(-(_e131.x), _e134.y);\n"
++    "            }\n"
++    "            let _e138 = local_4;\n"
++    "            let _e139 = a;\n"
++    "            uv_2 = (_e138 / vec2(_e139.z));\n"
++    "        }\n"
++    "    }\n"
++    "    let _e143 = s_9;\n"
++    "    let _e144 = uv_2;\n"
++    "    let _e150 = tex2d(_e143, ((_e144 * 0.5f) + vec2(0.5f)));\n"
++    "    return _e150;\n"
++    "}\n"
++    "\n"
++    "fn stage_sample(s_10: i32, pt: vec4<f32>, m: u32, on: bool) -> vec4<f32> {\n"
++    "    var s_11: i32;\n"
++    "    var pt_1: vec4<f32>;\n"
++    "    var m_1: u32;\n"
++    "    var on_1: bool;\n"
++    "    var local_5: f32;\n"
++    "    var w: f32;\n"
++    "\n"
++    "    s_11 = s_10;\n"
++    "    pt_1 = pt;\n"
++    "    m_1 = m;\n"
++    "    on_1 = on;\n"
++    "    let _e55 = m_1;\n"
++    "    if (_e55 == 0u) {\n"
++    "        return vec4<f32>(0f, 0f, 0f, 1f);\n"
++    "    }\n"
++    "    let _e63 = m_1;\n"
++    "    if (_e63 == 4u) {\n"
++    "        let _e66 = pt_1;\n"
++    "        return _e66;\n"
++    "    }\n"
++    "    let _e67 = on_1;\n"
++    "    if !(_e67) {\n"
++    "        return vec4(1f);\n"
++    "    }\n"
++    "    let _e71 = m_1;\n"
++    "    let _e74 = m_1;\n"
++    "    let _e78 = m_1;\n"
++    "    let _e82 = m_1;\n"
++    "    if ((((_e71 == 1u) || (_e74 == 2u)) || (_e78 == 6u)) || (_e82 == 7u)) {\n"
++    "        {\n"
++    "            let _e86 = m_1;\n"
++    "            let _e89 = m_1;\n"
++    "            let _e93 = pt_1;\n"
++    "            if (((_e86 == 1u) || (_e89 == 2u)) && (_e93.w != 0f)) {\n"
++    "                let _e98 = pt_1;\n"
++    "                local_5 = _e98.w;\n"
++    "            } else {\n"
++    "                local_5 = 1f;\n"
++    "            }\n"
++    "            let _e102 = local_5;\n"
++    "            w = _e102;\n"
++    "            let _e104 = s_11;\n"
++    "            let _e105 = pt_1;\n"
++    "            let _e107 = w;\n"
++    "            let _e110 = tex2dc(_e104, (_e105.xy / vec2(_e107)));\n"
++    "            return _e110;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e111 = m_1;\n"
++    "    if (_e111 == 3u) {\n"
++    "        let _e114 = s_11;\n"
++    "        let _e115 = pt_1;\n"
++    "        let _e117 = texdir(_e114, _e115.xyz);\n"
++    "        return _e117;\n"
++    "    }\n"
++    "    return vec4<f32>(0f, 0f, 0f, 1f);\n"
++    "}\n"
++    "\n"
++    "fn comb_input(in_byte: u32, is_alpha: bool) -> vec3<f32> {\n"
++    "    var in_byte_1: u32;\n"
++    "    var is_alpha_1: bool;\n"
++    "    var r: vec4<f32>;\n"
++    "    var chan_alpha: bool;\n"
++    "    var mapping: u32;\n"
++    "    var local_6: f32;\n"
++    "    var local_7: vec3<f32>;\n"
++    "    var local_8: vec3<f32>;\n"
++    "    var x: vec3<f32>;\n"
++    "    var p: vec3<f32>;\n"
++    "\n"
++    "    in_byte_1 = in_byte;\n"
++    "    is_alpha_1 = is_alpha;\n"
++    "    let _e53 = in_byte_1;\n"
++    "    let _e57 = src_r[(_e53 & 15u)];\n"
++    "    r = _e57;\n"
++    "    let _e59 = in_byte_1;\n"
++    "    chan_alpha = ((_e59 & 16u) != 0u);\n"
++    "    let _e65 = in_byte_1;\n"
++    "    mapping = (_e65 & 224u);\n"
++    "    let _e69 = is_alpha_1;\n"
++    "    if _e69 {\n"
++    "        let _e70 = chan_alpha;\n"
++    "        if _e70 {\n"
++    "            let _e71 = r;\n"
++    "            local_6 = _e71.w;\n"
++    "        } else {\n"
++    "            let _e73 = r;\n"
++    "            local_6 = _e73.z;\n"
++    "        }\n"
++    "        let _e76 = local_6;\n"
++    "        local_8 = vec3(_e76);\n"
++    "    } else {\n"
++    "        let _e78 = chan_alpha;\n"
++    "        if _e78 {\n"
++    "            let _e79 = r;\n"
++    "            local_7 = vec3(_e79.w);\n"
++    "        } else {\n"
++    "            let _e82 = r;\n"
++    "            local_7 = _e82.xyz;\n"
++    "        }\n"
++    "        let _e85 = local_7;\n"
++    "        local_8 = _e85;\n"
++    "    }\n"
++    "    let _e87 = local_8;\n"
++    "    x = _e87;\n"
++    "    let _e89 = x;\n"
++    "    p = max(_e89, vec3(0f));\n"
++    "    let _e94 = mapping;\n"
++    "    switch _e94 {\n"
++    "        case 0u: {\n"
++    "            let _e95 = p;\n"
++    "            x = _e95;\n"
++    "        }\n"
++    "        case 32u: {\n"
++    "            let _e97 = p;\n"
++    "            x = (vec3(1f) - min(_e97, vec3(1f)));\n"
++    "        }\n"
++    "        case 64u: {\n"
++    "            let _e104 = p;\n"
++    "            x = ((2f * _e104) - vec3(1f));\n"
++    "        }\n"
++    "        case 96u: {\n"
++    "            let _e111 = p;\n"
++    "            x = ((-2f * _e111) + vec3(1f));\n"
++    "        }\n"
++    "        case 128u: {\n"
++    "            let _e116 = p;\n"
++    "            x = (_e116 - vec3(0.5f));\n"
++    "        }\n"
++    "        case 160u: {\n"
++    "            let _e120 = p;\n"
++    "            x = (-(_e120) + vec3(0.5f));\n"
++    "        }\n"
++    "        case 192u: {\n"
++    "        }\n"
++    "        default: {\n"
++    "            let _e125 = x;\n"
++    "            x = -(_e125);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e127 = x;\n"
++    "    return _e127;\n"
++    "}\n"
++    "\n"
++    "fn comb_map(x_1: f32, mapping_1: u32) -> f32 {\n"
++    "    var x_2: f32;\n"
++    "    var mapping_2: u32;\n"
++    "\n"
++    "    x_2 = x_1;\n"
++    "    mapping_2 = mapping_1;\n"
++    "    let _e53 = mapping_2;\n"
++    "    switch _e53 {\n"
++    "        case 8u: {\n"
++    "            let _e54 = x_2;\n"
++    "            x_2 = (_e54 - 0.5f);\n"
++    "        }\n"
++    "        case 16u: {\n"
++    "            let _e57 = x_2;\n"
++    "            x_2 = (_e57 * 2f);\n"
++    "        }\n"
++    "        case 24u: {\n"
++    "            let _e60 = x_2;\n"
++    "            x_2 = ((_e60 - 0.5f) * 2f);\n"
++    "        }\n"
++    "        case 32u: {\n"
++    "            let _e65 = x_2;\n"
++    "            x_2 = (_e65 * 4f);\n"
++    "        }\n"
++    "        case 48u: {\n"
++    "            let _e68 = x_2;\n"
++    "            x_2 = (_e68 * 0.5f);\n"
++    "        }\n"
++    "        default: {\n"
++    "        }\n"
++    "    }\n"
++    "    let _e71 = x_2;\n"
++    "    return clamp(_e71, -1f, 1f);\n"
++    "}\n"
++    "\n"
++    "fn comb_map3_(v: vec3<f32>, mapping_3: u32) -> vec3<f32> {\n"
++    "    var v_1: vec3<f32>;\n"
++    "    var mapping_4: u32;\n"
++    "\n"
++    "    v_1 = v;\n"
++    "    mapping_4 = mapping_3;\n"
++    "    let _e53 = v_1;\n"
++    "    let _e55 = mapping_4;\n"
++    "    let _e56 = comb_map(_e53.x, _e55);\n"
++    "    let _e57 = v_1;\n"
++    "    let _e59 = mapping_4;\n"
++    "    let _e60 = comb_map(_e57.y, _e59);\n"
++    "    let _e61 = v_1;\n"
++    "    let _e63 = mapping_4;\n"
++    "    let _e64 = comb_map(_e61.z, _e63);\n"
++    "    return vec3<f32>(_e56, _e60, _e64);\n"
++    "}\n"
++    "\n"
++    "fn comb_stage(icw: u32, ocw: u32, is_alpha_2: bool) {\n"
++    "    var icw_1: u32;\n"
++    "    var ocw_1: u32;\n"
++    "    var is_alpha_3: bool;\n"
++    "    var flags: u32;\n"
++    "    var mapping_5: u32;\n"
++    "    var ab_dst: u32;\n"
++    "    var cd_dst: u32;\n"
++    "    var ms_dst: u32;\n"
++    "    var A: vec3<f32>;\n"
++    "    var B: vec3<f32>;\n"
++    "    var C: vec3<f32>;\n"
++    "    var D: vec3<f32>;\n"
++    "    var local_9: vec3<f32>;\n"
++    "    var ab: vec3<f32>;\n"
++    "    var local_10: vec3<f32>;\n"
++    "    var cd: vec3<f32>;\n"
++    "    var local_11: bool;\n"
++    "    var mux_cd: bool;\n"
++    "    var local_12: vec3<f32>;\n"
++    "    var local_13: vec3<f32>;\n"
++    "    var ms: vec3<f32>;\n"
++    "\n"
++    "    icw_1 = icw;\n"
++    "    ocw_1 = ocw;\n"
++    "    is_alpha_3 = is_alpha_2;\n"
++    "    let _e55 = ocw_1;\n"
++    "    flags = (_e55 >> 12u);\n"
++    "    let _e60 = flags;\n"
++    "    mapping_5 = (_e60 & 56u);\n"
++    "    let _e64 = ocw_1;\n"
++    "    ab_dst = ((_e64 >> 4u) & 15u);\n"
++    "    let _e71 = ocw_1;\n"
++    "    cd_dst = (_e71 & 15u);\n"
++    "    let _e75 = ocw_1;\n"
++    "    ms_dst = ((_e75 >> 8u) & 15u);\n"
++    "    let _e82 = icw_1;\n"
++    "    let _e88 = is_alpha_3;\n"
++    "    let _e89 = comb_input(((_e82 >> 24u) & 255u), _e88);\n"
++    "    A = _e89;\n"
++    "    let _e91 = icw_1;\n"
++    "    let _e97 = is_alpha_3;\n"
++    "    let _e98 = comb_input(((_e91 >> 16u) & 255u), _e97);\n"
++    "    B = _e98;\n"
++    "    let _e100 = icw_1;\n"
++    "    let _e106 = is_alpha_3;\n"
++    "    let _e107 = comb_input(((_e100 >> 8u) & 255u), _e106);\n"
++    "    C = _e107;\n"
++    "    let _e109 = icw_1;\n"
++    "    let _e112 = is_alpha_3;\n"
++    "    let _e113 = comb_input((_e109 & 255u), _e112);\n"
++    "    D = _e113;\n"
++    "    let _e115 = is_alpha_3;\n"
++    "    let _e117 = flags;\n"
++    "    if (!(_e115) && ((_e117 & 2u) != 0u)) {\n"
++    "        let _e123 = A;\n"
++    "        let _e125 = B;\n"
++    "        let _e128 = A;\n"
++    "        let _e130 = B;\n"
++    "        let _e134 = A;\n"
++    "        let _e136 = B;\n"
++    "        local_9 = vec3((((_e123.x * _e125.x) + (_e128.y * _e130.y)) + (_e134.z * _e136.z)));\n"
++    "    } else {\n"
++    "        let _e141 = A;\n"
++    "        let _e142 = B;\n"
++    "        local_9 = (_e141 * _e142);\n"
++    "    }\n"
++    "    let _e145 = local_9;\n"
++    "    ab = _e145;\n"
++    "    let _e147 = is_alpha_3;\n"
++    "    let _e149 = flags;\n"
++    "    if (!(_e147) && ((_e149 & 1u) != 0u)) {\n"
++    "        let _e155 = C;\n"
++    "        let _e157 = D;\n"
++    "        let _e160 = C;\n"
++    "        let _e162 = D;\n"
++    "        let _e166 = C;\n"
++    "        let _e168 = D;\n"
++    "        local_10 = vec3((((_e155.x * _e157.x) + (_e160.y * _e162.y)) + (_e166.z * _e168.z)));\n"
++    "    } else {\n"
++    "        let _e173 = C;\n"
++    "        let _e174 = D;\n"
++    "        local_10 = (_e173 * _e174);\n"
++    "    }\n"
++    "    let _e177 = local_10;\n"
++    "    cd = _e177;\n"
++    "    let _e179 = sh;\n"
++    "    if ((_e179.prog.x & 256u) != 0u) {\n"
++    "        let _e188 = src_r[12];\n"
++    "        local_11 = (_e188.w >= 0.5f);\n"
++    "    } else {\n"
++    "        let _e194 = src_r[12];\n"
++    "        local_11 = ((u32(((_e194.w * 255f) + 0.5f)) & 1u) != 0u);\n"
++    "    }\n"
++    "    let _e206 = local_11;\n"
++    "    mux_cd = _e206;\n"
++    "    let _e208 = flags;\n"
++    "    if ((_e208 & 4u) != 0u) {\n"
++    "        let _e213 = mux_cd;\n"
++    "        if _e213 {\n"
++    "            let _e214 = cd;\n"
++    "            local_12 = _e214;\n"
++    "        } else {\n"
++    "            let _e215 = ab;\n"
++    "            local_12 = _e215;\n"
++    "        }\n"
++    "        let _e217 = local_12;\n"
++    "        local_13 = _e217;\n"
++    "    } else {\n"
++    "        let _e218 = ab;\n"
++    "        let _e219 = cd;\n"
++    "        local_13 = (_e218 + _e219);\n"
++    "    }\n"
++    "    let _e222 = local_13;\n"
++    "    ms = _e222;\n"
++    "    let _e224 = ab;\n"
++    "    let _e225 = mapping_5;\n"
++    "    let _e226 = comb_map3_(_e224, _e225);\n"
++    "    ab = _e226;\n"
++    "    let _e227 = cd;\n"
++    "    let _e228 = mapping_5;\n"
++    "    let _e229 = comb_map3_(_e227, _e228);\n"
++    "    cd = _e229;\n"
++    "    let _e230 = ms;\n"
++    "    let _e231 = mapping_5;\n"
++    "    let _e232 = comb_map3_(_e230, _e231);\n"
++    "    ms = _e232;\n"
++    "    let _e233 = is_alpha_3;\n"
++    "    if _e233 {\n"
++    "        {\n"
++    "            let _e234 = ab_dst;\n"
++    "            if (_e234 != 0u) {\n"
++    "                let _e237 = ab_dst;\n"
++    "                let _e240 = ab;\n"
++    "                dst_r[_e237].w = _e240.x;\n"
++    "            }\n"
++    "            let _e242 = cd_dst;\n"
++    "            if (_e242 != 0u) {\n"
++    "                let _e245 = cd_dst;\n"
++    "                let _e248 = cd;\n"
++    "                dst_r[_e245].w = _e248.x;\n"
++    "            }\n"
++    "            let _e250 = ms_dst;\n"
++    "            if (_e250 != 0u) {\n"
++    "                let _e253 = ms_dst;\n"
++    "                let _e256 = ms;\n"
++    "                dst_r[_e253].w = _e256.x;\n"
++    "                return;\n"
++    "            } else {\n"
++    "                return;\n"
++    "            }\n"
++    "        }\n"
++    "    } else {\n"
++    "        {\n"
++    "            let _e258 = ab_dst;\n"
++    "            if (_e258 != 0u) {\n"
++    "                {\n"
++    "                    let _e261 = ab_dst;\n"
++    "                    let _e263 = dst_r[_e261];\n"
++    "                    let _e265 = ab;\n"
++    "                    dst_r[_e261].x = _e265.x;\n"
++    "                    dst_r[_e261].y = _e265.y;\n"
++    "                    dst_r[_e261].z = _e265.z;\n"
++    "                    let _e272 = flags;\n"
++    "                    if ((_e272 & 128u) != 0u) {\n"
++    "                        let _e277 = ab_dst;\n"
++    "                        let _e280 = ab;\n"
++    "                        dst_r[_e277].w = _e280.z;\n"
++    "                    }\n"
++    "                }\n"
++    "            }\n"
++    "            let _e282 = cd_dst;\n"
++    "            if (_e282 != 0u) {\n"
++    "                {\n"
++    "                    let _e285 = cd_dst;\n"
++    "                    let _e287 = dst_r[_e285];\n"
++    "                    let _e289 = cd;\n"
++    "                    dst_r[_e285].x = _e289.x;\n"
++    "                    dst_r[_e285].y = _e289.y;\n"
++    "                    dst_r[_e285].z = _e289.z;\n"
++    "                    let _e296 = flags;\n"
++    "                    if ((_e296 & 64u) != 0u) {\n"
++    "                        let _e301 = cd_dst;\n"
++    "                        let _e304 = cd;\n"
++    "                        dst_r[_e301].w = _e304.z;\n"
++    "                    }\n"
++    "                }\n"
++    "            }\n"
++    "            let _e306 = ms_dst;\n"
++    "            if (_e306 != 0u) {\n"
++    "                let _e309 = ms_dst;\n"
++    "                let _e311 = dst_r[_e309];\n"
++    "                let _e313 = ms;\n"
++    "                dst_r[_e309].x = _e313.x;\n"
++    "                dst_r[_e309].y = _e313.y;\n"
++    "                dst_r[_e309].z = _e313.z;\n"
++    "                return;\n"
++    "            } else {\n"
++    "                return;\n"
++    "            }\n"
++    "        }\n"
++    "    }\n"
++    "}\n"
++    "\n"
++    "fn comb_eval(t0_: vec4<f32>, v0_: vec4<f32>, v1_: vec4<f32>, tn: array<vec4<f32>, 3>) -> vec4<f32> {\n"
++    "    var t0_1: vec4<f32>;\n"
++    "    var v0_1: vec4<f32>;\n"
++    "    var v1_1: vec4<f32>;\n"
++    "    var tn_1: array<vec4<f32>, 3>;\n"
++    "    var control: u32;\n"
++    "    var stage_prog: u32;\n"
++    "    var final0_: u32;\n"
++    "    var final1_: u32;\n"
++    "    var stages: i32;\n"
++    "    var i: i32 = 0i;\n"
++    "    var s_12: i32 = 1i;\n"
++    "    var local_14: f32;\n"
++    "    var s_13: i32 = 0i;\n"
++    "    var local_15: i32;\n"
++    "    var c0_: i32;\n"
++    "    var local_16: i32;\n"
++    "    var c1_: i32;\n"
++    "    var result: vec4<f32>;\n"
++    "    var fl: u32;\n"
++    "    var E: vec3<f32>;\n"
++    "    var F: vec3<f32>;\n"
++    "    var local_17: vec3<f32>;\n"
++    "    var v1c: vec3<f32>;\n"
++    "    var local_18: vec3<f32>;\n"
++    "    var r0c: vec3<f32>;\n"
++    "    var sum: vec3<f32>;\n"
++    "    var A_1: vec3<f32>;\n"
++    "    var B_1: vec3<f32>;\n"
++    "    var C_1: vec3<f32>;\n"
++    "    var D_1: vec3<f32>;\n"
++    "    var G: vec3<f32>;\n"
++    "\n"
++    "    t0_1 = t0_;\n"
++    "    v0_1 = v0_;\n"
++    "    v1_1 = v1_;\n"
++    "    tn_1 = tn;\n"
++    "    let _e57 = sh;\n"
++    "    control = _e57.prog.x;\n"
++    "    let _e61 = sh;\n"
++    "    stage_prog = _e61.prog.y;\n"
++    "    let _e65 = sh;\n"
++    "    final0_ = _e65.prog.z;\n"
++    "    let _e69 = sh;\n"
++    "    final1_ = _e69.prog.w;\n"
++    "    let _e73 = control;\n"
++    "    stages = min(i32((_e73 & 255u)), 8i);\n"
++    "    loop {\n"
++    "        let _e82 = i;\n"
++    "        if !((_e82 < 16i)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        let _e89 = i;\n"
++    "        src_r[_e89] = vec4(0f);\n"
++    "        continuing {\n"
++    "            let _e86 = i;\n"
++    "            i = (_e86 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e95 = v0_1;\n"
++    "    src_r[4i] = _e95;\n"
++    "    let _e98 = v1_1;\n"
++    "    src_r[5i] = _e98;\n"
++    "    let _e101 = sh;\n"
++    "    let _e107 = sh;\n"
++    "    let _e116 = sh;\n"
++    "    src_r[3i] = (vec4<f32>(f32((_e101.fog.x & 255u)), f32(((_e107.fog.x >> 8u) & 255u)), f32(((_e116.fog.x >> 16u) & 255u)), 0f) / vec4(255f));\n"
++    "    let _e133 = v_fog_1;\n"
++    "    src_r[3i].w = clamp(_e133, 0f, 1f);\n"
++    "    let _e139 = t0_1;\n"
++    "    src_r[8i] = _e139;\n"
++    "    loop {\n"
++    "        let _e142 = s_12;\n"
++    "        if !((_e142 < 4i)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        let _e149 = stage_prog;\n"
++    "        let _e150 = s_12;\n"
++    "        if (((_e149 >> u32((_e150 * 5i))) & 31u) != 0u) {\n"
++    "            let _e160 = s_12;\n"
++    "            let _e163 = s_12;\n"
++    "            let _e167 = tn_1[(_e163 - 1i)];\n"
++    "            src_r[(8i + _e160)] = _e167;\n"
++    "        }\n"
++    "        continuing {\n"
++    "            let _e146 = s_12;\n"
++    "            s_12 = (_e146 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e171 = stage_prog;\n"
++    "    if ((_e171 & 31u) != 0u) {\n"
++    "        let _e176 = t0_1;\n"
++    "        local_14 = _e176.w;\n"
++    "    } else {\n"
++    "        local_14 = 1f;\n"
++    "    }\n"
++    "    let _e180 = local_14;\n"
++    "    src_r[12i].w = _e180;\n"
++    "    loop {\n"
++    "        let _e183 = s_13;\n"
++    "        let _e184 = stages;\n"
++    "        if !((_e183 < _e184)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        {\n"
++    "            let _e190 = control;\n"
++    "            if ((_e190 & 4096u) != 0u) {\n"
++    "                let _e195 = s_13;\n"
++    "                local_15 = _e195;\n"
++    "            } else {\n"
++    "                local_15 = 0i;\n"
++    "            }\n"
++    "            let _e198 = local_15;\n"
++    "            c0_ = _e198;\n"
++    "            let _e200 = control;\n"
++    "            if ((_e200 & 65536u) != 0u) {\n"
++    "                let _e205 = s_13;\n"
++    "                local_16 = _e205;\n"
++    "            } else {\n"
++    "                local_16 = 0i;\n"
++    "            }\n"
++    "            let _e208 = local_16;\n"
++    "            c1_ = _e208;\n"
++    "            let _e212 = sh;\n"
++    "            let _e214 = c0_;\n"
++    "            let _e215 = value8_(_e212.factor0_, _e214);\n"
++    "            let _e216 = unpack_argb(_e215);\n"
++    "            src_r[1i] = _e216;\n"
++    "            let _e219 = sh;\n"
++    "            let _e221 = c1_;\n"
++    "            let _e222 = value8_(_e219.factor1_, _e221);\n"
++    "            let _e223 = unpack_argb(_e222);\n"
++    "            src_r[2i] = _e223;\n"
++    "            let _e224 = src_r;\n"
++    "            dst_r = _e224;\n"
++    "            let _e225 = sh;\n"
++    "            let _e227 = s_13;\n"
++    "            let _e228 = value8_(_e225.color_icw, _e227);\n"
++    "            let _e229 = sh;\n"
++    "            let _e231 = s_13;\n"
++    "            let _e232 = value8_(_e229.color_ocw, _e231);\n"
++    "            comb_stage(_e228, _e232, false);\n"
++    "            let _e234 = sh;\n"
++    "            let _e236 = s_13;\n"
++    "            let _e237 = value8_(_e234.alpha_icw, _e236);\n"
++    "            let _e238 = sh;\n"
++    "            let _e240 = s_13;\n"
++    "            let _e241 = value8_(_e238.alpha_ocw, _e240);\n"
++    "            comb_stage(_e237, _e241, true);\n"
++    "            let _e243 = dst_r;\n"
++    "            src_r = _e243;\n"
++    "        }\n"
++    "        continuing {\n"
++    "            let _e187 = s_13;\n"
++    "            s_13 = (_e187 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e245 = final0_;\n"
++    "    let _e248 = final1_;\n"
++    "    if ((_e245 != 0u) || (_e248 != 0u)) {\n"
++    "        {\n"
++    "            let _e252 = final1_;\n"
++    "            fl = (_e252 & 255u);\n"
++    "            let _e258 = sh;\n"
++    "            let _e261 = unpack_argb(_e258.misc.x);\n"
++    "            src_r[1i] = _e261;\n"
++    "            let _e264 = sh;\n"
++    "            let _e267 = unpack_argb(_e264.misc.y);\n"
++    "            src_r[2i] = _e267;\n"
++    "            let _e268 = final1_;\n"
++    "            let _e275 = comb_input(((_e268 >> 24u) & 255u), false);\n"
++    "            E = _e275;\n"
++    "            let _e277 = final1_;\n"
++    "            let _e284 = comb_input(((_e277 >> 16u) & 255u), false);\n"
++    "            F = _e284;\n"
++    "            let _e286 = fl;\n"
++    "            if ((_e286 & 64u) != 0u) {\n"
++    "                let _e294 = src_r[5];\n"
++    "                local_17 = (vec3(1f) - _e294.xyz);\n"
++    "            } else {\n"
++    "                let _e300 = src_r[5];\n"
++    "                local_17 = _e300.xyz;\n"
++    "            }\n"
++    "            let _e303 = local_17;\n"
++    "            v1c = _e303;\n"
++    "            let _e305 = fl;\n"
++    "            if ((_e305 & 32u) != 0u) {\n"
++    "                let _e313 = src_r[12];\n"
++    "                local_18 = (vec3(1f) - _e313.xyz);\n"
++    "            } else {\n"
++    "                let _e319 = src_r[12];\n"
++    "                local_18 = _e319.xyz;\n"
++    "            }\n"
++    "            let _e322 = local_18;\n"
++    "            r0c = _e322;\n"
++    "            let _e324 = v1c;\n"
++    "            let _e325 = r0c;\n"
++    "            sum = (_e324 + _e325);\n"
++    "            let _e328 = fl;\n"
++    "            if ((_e328 & 128u) != 0u) {\n"
++    "                let _e333 = sum;\n"
++    "                sum = clamp(_e333, vec3(0f), vec3(1f));\n"
++    "            }\n"
++    "            let _e341 = sum;\n"
++    "            src_r[14i] = vec4<f32>(_e341.x, _e341.y, _e341.z, 0f);\n"
++    "            let _e349 = E;\n"
++    "            let _e350 = F;\n"
++    "            let _e351 = (_e349 * _e350);\n"
++    "            src_r[15i] = vec4<f32>(_e351.x, _e351.y, _e351.z, 0f);\n"
++    "            let _e357 = final0_;\n"
++    "            let _e364 = comb_input(((_e357 >> 24u) & 255u), false);\n"
++    "            A_1 = _e364;\n"
++    "            let _e366 = final0_;\n"
++    "            let _e373 = comb_input(((_e366 >> 16u) & 255u), false);\n"
++    "            B_1 = _e373;\n"
++    "            let _e375 = final0_;\n"
++    "            let _e382 = comb_input(((_e375 >> 8u) & 255u), false);\n"
++    "            C_1 = _e382;\n"
++    "            let _e384 = final0_;\n"
++    "            let _e388 = comb_input((_e384 & 255u), false);\n"
++    "            D_1 = _e388;\n"
++    "            let _e390 = final1_;\n"
++    "            let _e397 = comb_input(((_e390 >> 8u) & 255u), true);\n"
++    "            G = _e397;\n"
++    "            let _e399 = D_1;\n"
++    "            let _e400 = C_1;\n"
++    "            let _e402 = A_1;\n"
++    "            let _e407 = B_1;\n"
++    "            let _e408 = A_1;\n"
++    "            let _e410 = ((_e399 + (_e400 * (vec3(1f) - _e402))) + (_e407 * _e408));\n"
++    "            let _e411 = G;\n"
++    "            result = vec4<f32>(_e410.x, _e410.y, _e410.z, _e411.x);\n"
++    "        }\n"
++    "    } else {\n"
++    "        {\n"
++    "            let _e419 = src_r[12];\n"
++    "            result = _e419;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e420 = result;\n"
++    "    return clamp(_e420, vec4(0f), vec4(1f));\n"
++    "}\n"
++    "\n"
++    "fn to8_(c_6: vec4<f32>) -> vec4<u32> {\n"
++    "    var c_7: vec4<f32>;\n"
++    "\n"
++    "    c_7 = c_6;\n"
++    "    let _e51 = c_7;\n"
++    "    return vec4<u32>(((clamp(_e51, vec4(0f), vec4(1f)) * 255f) + vec4(0.5f)));\n"
++    "}\n"
++    "\n"
++    "fn alpha_pass(a_1: u32) -> bool {\n"
++    "    var a_2: u32;\n"
++    "    var r_1: u32;\n"
++    "\n"
++    "    a_2 = a_1;\n"
++    "    let _e51 = sh;\n"
++    "    r_1 = _e51.alpha.z;\n"
++    "    let _e55 = sh;\n"
++    "    if (_e55.alpha.y == 512u) {\n"
++    "        return false;\n"
++    "    }\n"
++    "    let _e61 = sh;\n"
++    "    if (_e61.alpha.y == 513u) {\n"
++    "        let _e66 = a_2;\n"
++    "        let _e67 = r_1;\n"
++    "        return (_e66 < _e67);\n"
++    "    }\n"
++    "    let _e69 = sh;\n"
++    "    if (_e69.alpha.y == 514u) {\n"
++    "        let _e74 = a_2;\n"
++    "        let _e75 = r_1;\n"
++    "        return (_e74 == _e75);\n"
++    "    }\n"
++    "    let _e77 = sh;\n"
++    "    if (_e77.alpha.y == 515u) {\n"
++    "        let _e82 = a_2;\n"
++    "        let _e83 = r_1;\n"
++    "        return (_e82 <= _e83);\n"
++    "    }\n"
++    "    let _e85 = sh;\n"
++    "    if (_e85.alpha.y == 516u) {\n"
++    "        let _e90 = a_2;\n"
++    "        let _e91 = r_1;\n"
++    "        return (_e90 > _e91);\n"
++    "    }\n"
++    "    let _e93 = sh;\n"
++    "    if (_e93.alpha.y == 517u) {\n"
++    "        let _e98 = a_2;\n"
++    "        let _e99 = r_1;\n"
++    "        return (_e98 != _e99);\n"
++    "    }\n"
++    "    let _e101 = sh;\n"
++    "    if (_e101.alpha.y == 518u) {\n"
++    "        let _e106 = a_2;\n"
++    "        let _e107 = r_1;\n"
++    "        return (_e106 >= _e107);\n"
++    "    }\n"
++    "    return true;\n"
++    "}\n"
++    "\n"
++    "fn main_1() {\n"
++    "    var sampled0_: bool;\n"
++    "    var t0_2: vec4<f32>;\n"
++    "    var c8_: vec4<u32>;\n"
++    "    var tn_2: array<vec4<f32>, 3>;\n"
++    "    var zmax: f32;\n"
++    "    var local_19: f32;\n"
++    "    var zd: f32;\n"
++    "    var cmin: f32;\n"
++    "    var cmax: f32;\n"
++    "\n"
++    "    let _e49 = sh;\n"
++    "    sampled0_ = ((_e49.misc.z & 1u) != 0u);\n"
++    "    let _e58 = v_t0_1;\n"
++    "    let _e59 = sh;\n"
++    "    let _e62 = sampled0_;\n"
++    "    let _e63 = stage_sample(0i, _e58, _e59.mode.x, _e62);\n"
++    "    t0_2 = _e63;\n"
++    "    let _e66 = sh;\n"
++    "    if (_e66.prog.x != 0u) {\n"
++    "        {\n"
++    "            let _e75 = v_t1_1;\n"
++    "            let _e76 = sh;\n"
++    "            let _e79 = sh;\n"
++    "            let _e86 = stage_sample(1i, _e75, _e76.mode.y, ((_e79.misc.z & 2u) != 0u));\n"
++    "            tn_2[0i] = _e86;\n"
++    "            let _e90 = v_t2_1;\n"
++    "            let _e91 = sh;\n"
++    "            let _e94 = sh;\n"
++    "            let _e101 = stage_sample(2i, _e90, _e91.mode.z, ((_e94.misc.z & 4u) != 0u));\n"
++    "            tn_2[1i] = _e101;\n"
++    "            let _e105 = v_t3_1;\n"
++    "            let _e106 = sh;\n"
++    "            let _e109 = sh;\n"
++    "            let _e116 = stage_sample(3i, _e105, _e106.mode.w, ((_e109.misc.z & 8u) != 0u));\n"
++    "            tn_2[2i] = _e116;\n"
++    "            let _e117 = t0_2;\n"
++    "            let _e118 = v_col_1;\n"
++    "            let _e119 = v_spec_1;\n"
++    "            let _e120 = tn_2;\n"
++    "            let _e121 = comb_eval(_e117, _e118, _e119, _e120);\n"
++    "            let _e122 = to8_(_e121);\n"
++    "            c8_ = _e122;\n"
++    "        }\n"
++    "    } else {\n"
++    "        let _e123 = sampled0_;\n"
++    "        if _e123 {\n"
++    "            {\n"
++    "                let _e124 = t0_2;\n"
++    "                let _e131 = v_col_1;\n"
++    "                let _e132 = to8_(_e131);\n"
++    "                c8_ = (((vec4<u32>(((_e124 * 255f) + vec4(0.5f))) * _e132) + vec4(127u)) / vec4(255u));\n"
++    "            }\n"
++    "        } else {\n"
++    "            {\n"
++    "                let _e140 = v_col_1;\n"
++    "                let _e141 = to8_(_e140);\n"
++    "                c8_ = _e141;\n"
++    "            }\n"
++    "        }\n"
++    "    }\n"
++    "    let _e142 = sh;\n"
++    "    let _e147 = c8_;\n"
++    "    let _e149 = alpha_pass(_e147.w);\n"
++    "    if ((_e142.alpha.x != 0u) && !(_e149)) {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e152 = c8_;\n"
++    "    out_color = (vec4<f32>(_e152) / vec4(255f));\n"
++    "    let _e157 = sh;\n"
++    "    zmax = bitcast<f32>(_e157.depth.y);\n"
++    "    let _e163 = sh;\n"
++    "    if ((_e163.depth.x & 1u) != 0u) {\n"
++    "        let _e170 = v_w_1;\n"
++    "        local_19 = _e170;\n"
++    "    } else {\n"
++    "        let _e171 = gl_FragCoord_1;\n"
++    "        let _e173 = zmax;\n"
++    "        local_19 = (_e171.z * _e173);\n"
++    "    }\n"
++    "    let _e176 = local_19;\n"
++    "    zd = _e176;\n"
++    "    let _e178 = sh;\n"
++    "    cmin = bitcast<f32>(_e178.depth.z);\n"
++    "    let _e183 = sh;\n"
++    "    cmax = bitcast<f32>(_e183.depth.w);\n"
++    "    let _e188 = sh;\n"
++    "    let _e195 = zd;\n"
++    "    let _e196 = cmin;\n"
++    "    let _e198 = zd;\n"
++    "    let _e199 = cmax;\n"
++    "    if (((_e188.depth.x & 2u) != 0u) && ((_e195 < _e196) || (_e198 > _e199))) {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e204 = zd;\n"
++    "    let _e205 = cmin;\n"
++    "    let _e206 = cmax;\n"
++    "    let _e208 = zmax;\n"
++    "    gl_FragDepth = clamp((clamp(_e204, _e205, _e206) / _e208), 0f, 1f);\n"
++    "    return;\n"
++    "}\n"
++    "\n"
++    "@fragment \n"
++    "fn main(@location(0) v_col: vec4<f32>, @location(1) v_spec: vec4<f32>, @location(2) v_t0_: vec4<f32>, @location(3) v_t1_: vec4<f32>, @location(4) v_t2_: vec4<f32>, @location(5) v_t3_: vec4<f32>, @location(6) v_fog: f32, @location(7) v_w: f32, @builtin(position) gl_FragCoord: vec4<f32>) -> FragmentOutput {\n"
++    "    v_col_1 = v_col;\n"
++    "    v_spec_1 = v_spec;\n"
++    "    v_t0_1 = v_t0_;\n"
++    "    v_t1_1 = v_t1_;\n"
++    "    v_t2_1 = v_t2_;\n"
++    "    v_t3_1 = v_t3_;\n"
++    "    v_fog_1 = v_fog;\n"
++    "    v_w_1 = v_w;\n"
++    "    gl_FragCoord_1 = gl_FragCoord;\n"
++    "    main_1();\n"
++    "    let _e88 = out_color;\n"
++    "    let _e90 = gl_FragDepth;\n"
++    "    return FragmentOutput(_e88, _e90);\n"
++    "}\n";
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 index c3eab62..f26c937 100644
 --- a/src/kernel/xbox_memory_layout.c
@@ -1400,6 +4339,510 @@ index 0e3de94..97d843d 100644
  
  /** Read/write N bytes at a flat Xbox memory address. */
  #define MEM8(addr)   (*(volatile uint8_t  *)XBOX_PTR(addr))
+diff --git a/tests/sdlgpu_web/CMakeLists.txt b/tests/sdlgpu_web/CMakeLists.txt
+new file mode 100644
+index 0000000..a5fab6d
+--- /dev/null
++++ b/tests/sdlgpu_web/CMakeLists.txt
+@@ -0,0 +1,20 @@
++# Emscripten only: the SDL GPU renderer on WebGPU, in headless Chromium.
++#   emcmake cmake -S . -B build -DSDL3_DIR=<sdl3-wasm>/lib/cmake/SDL3 -DCMAKE_C_FLAGS=-pthread
++#   cmake --build build && node test_page.js build
++cmake_minimum_required(VERSION 3.20)
++project(sdlgpu_web C CXX)
++find_package(SDL3 REQUIRED CONFIG)
++get_filename_component(SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../src" ABSOLUTE)
++add_executable(sdlgpu_web test_web.c "${SRC}/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c")
++target_include_directories(sdlgpu_web PRIVATE "${SRC}")
++target_compile_definitions(sdlgpu_web PRIVATE SG_HAVE_SHADERS=1)
++target_compile_options(sdlgpu_web PRIVATE --use-port=emdawnwebgpu -Wall -Wno-unused-function)
++target_link_libraries(sdlgpu_web PRIVATE SDL3::SDL3 m)
++target_link_options(sdlgpu_web PRIVATE --use-port=emdawnwebgpu -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8
++    -sOFFSCREENCANVAS_SUPPORT=1 "-sOFFSCREENCANVASES_TO_PTHREAD=#gpucanvas"
++    -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB
++    -sMODULARIZE=1 -sEXPORT_NAME=createTest -sENVIRONMENT=web,worker -sEXIT_RUNTIME=0)
++set_target_properties(sdlgpu_web PROPERTIES SUFFIX ".js" LINKER_LANGUAGE CXX)
++add_custom_target(sdlgpu_web_page ALL
++  COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/index.html" "${CMAKE_BINARY_DIR}" VERBATIM)
++add_dependencies(sdlgpu_web sdlgpu_web_page)
+diff --git a/tests/sdlgpu_web/index.html b/tests/sdlgpu_web/index.html
+new file mode 100644
+index 0000000..f78c473
+--- /dev/null
++++ b/tests/sdlgpu_web/index.html
+@@ -0,0 +1,13 @@
++<!doctype html><html><head><meta charset="utf-8"><title>sdlgpu web</title></head>
++<body style="margin:0;background:#222">
++<!-- #canvas: SDL's window. #gpucanvas: the WebGPU device's presentation
++     canvas, handed to the module's main thread at startup. -->
++<canvas id="canvas" width="640" height="480"></canvas>
++<canvas id="gpucanvas" width="640" height="480" hidden></canvas>
++<script src="sdlgpu_web.js"></script>
++<script>
++  window.L = [];
++  createTest({ canvas: document.getElementById('canvas'),
++    print: (t) => { L.push(t); console.log(t); }, printErr: (t) => { L.push(t); console.log(t); } });
++</script>
++</body></html>
+diff --git a/tests/sdlgpu_web/test_page.js b/tests/sdlgpu_web/test_page.js
+new file mode 100644
+index 0000000..44b90ac
+--- /dev/null
++++ b/tests/sdlgpu_web/test_page.js
+@@ -0,0 +1,62 @@
++// Runs test_web.c's build in headless Chromium with WebGPU (SwiftShader):
++//   node test_page.js <build dir>
++// Fails on any "FAIL:" line, on WebGPU validation errors the shim reports,
++// and when the presented canvas does not show the frame the test drew.
++'use strict';
++const { chromium } = require('playwright');
++const http = require('http');
++const fs = require('fs');
++const path = require('path');
++
++const DIR = path.resolve(process.argv[2] || 'build');
++const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
++// Cross-origin isolated, as the threads need.
++const server = http.createServer((req, res) => {
++  const file = path.join(DIR, decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/$/, '/index.html'));
++  if (!file.startsWith(DIR) || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
++  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
++    'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
++  fs.createReadStream(file).pipe(res);
++});
++
++(async () => {
++  await new Promise((r) => server.listen(0, '127.0.0.1', r));
++  const url = `http://127.0.0.1:${server.address().port}/`;
++  // WebGPU in headless Chromium: SwiftShader's Vulkan, and ANGLE so that
++  // WebGPU canvases are composited (and can be read back).
++  const browser = await chromium.launch({ channel: 'chromium', args: [
++    '--enable-unsafe-webgpu', '--use-gl=angle', '--use-angle=swiftshader',
++    '--enable-features=Vulkan', '--use-vulkan=swiftshader'] });
++  let failures = 0;
++  try {
++    const page = await browser.newPage();
++    page.on('pageerror', (e) => { failures++; console.log('pageerror:', e.message); });
++    await page.goto(url);
++    await page.waitForFunction(() => window.L && L.some((l) => /^PRESENTED|SDLGPU-WEB DONE|^FAILED/.test(l)),
++                               null, { timeout: 120000 });
++    await page.waitForTimeout(300);
++    const canvas = await page.evaluate(() => {
++      const c = document.getElementById('gpucanvas');
++      const k = document.createElement('canvas'); k.width = c.width; k.height = c.height;
++      const g = k.getContext('2d'); g.drawImage(c, 0, 0);
++      return { hidden: c.hidden, w: c.width, h: c.height,
++               px: Array.from(g.getImageData(c.width >> 1, c.height >> 1, 1, 1).data) };
++    });
++    await page.waitForFunction(() => L.some((l) => /SDLGPU-WEB DONE/.test(l)), null, { timeout: 60000 }).catch(() => {});
++    const log = await page.evaluate(() => L.slice());
++    for (const l of log) console.log(l);
++    failures += log.filter((l) => /^FAIL/.test(l)).length;
++    const errors = log.filter((l) => /\[WebGPU\] (device error|device lost|no device|no adapter|download)/.test(l));
++    if (errors.length) { failures += errors.length; console.log('FAIL: WebGPU reported errors'); }
++    else console.log('ok: no WebGPU validation errors');
++    const ok = !canvas.hidden && canvas.px[0] === 0 && canvas.px[1] === 0xC0 && canvas.px[2] === 0x30;
++    if (!ok) failures++;
++    console.log(`${ok ? 'ok' : 'FAIL'}: presented canvas ${canvas.w}x${canvas.h} visible=${!canvas.hidden} centre ${JSON.stringify(canvas.px)} (0,192,48 expected)`);
++    if (!log.some((l) => /SDLGPU-WEB DONE rc=0/.test(l))) failures++;
++  } finally {
++    await browser.close();
++    server.close();
++  }
++  console.log(failures ? `${failures} failure(s)` : 'sdlgpu web: all checks passed');
++  process.exit(failures ? 1 : 0);
++})().catch((e) => { console.error(e); process.exit(1); });
+diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
+new file mode 100644
+index 0000000..d165387
+--- /dev/null
++++ b/tests/sdlgpu_web/test_web.c
+@@ -0,0 +1,385 @@
++/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
++ * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
++ * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
++ * WGSL), its vertex layout and its pass structure. Pixels are checked against
++ * what the native renderer produces. Run in headless Chromium by
++ * test_page.js, which also checks the presented canvas and that WebGPU
++ * reported no validation errors.
++ *
++ * (tests/sdlgpu_posix drives the renderer itself, but no longer compiles
++ * against it: the renderer reads executor state that test does not stand in
++ * for. This test covers the layer the web build adds.) */
++#include <math.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h"
++#include "kernel/sdlgpu/webgpu/sg_wgsl.h"
++
++static int fails;
++#define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } \
++                           else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
++
++typedef struct { float x, y; float color[4]; float uv[3]; } SgVertex;   /* the renderer's flat 2D vertex */
++
++static SDL_GPUDevice *dev;
++static SDL_GPUTextureFormat depth_fmt;
++static SDL_GPUShader *flat_vs, *flat_fs;
++static SDL_GPUSampler *point_wrap;
++
++#define W 320
++#define H 240
++
++static SDL_GPUTexture *make_tex(SDL_GPUTextureFormat f, SDL_GPUTextureUsageFlags u, uint32_t w, uint32_t h, uint32_t levels)
++{
++    SDL_GPUTextureCreateInfo i = { .type = SDL_GPU_TEXTURETYPE_2D, .format = f, .usage = u, .width = w, .height = h,
++                                   .layer_count_or_depth = 1, .num_levels = levels };
++    return SDL_CreateGPUTexture(dev, &i);
++}
++
++static SDL_GPUShader *shader(const char *wgsl, SDL_GPUShaderStage st, Uint32 samplers)
++{
++    SDL_GPUShaderCreateInfo i = { .code = (const Uint8 *)wgsl, .code_size = strlen(wgsl), .entrypoint = "main",
++                                  .format = SDL_GPU_SHADERFORMAT_WGSL, .stage = st, .num_samplers = samplers,
++                                  .num_uniform_buffers = 1 };
++    return SDL_CreateGPUShader(dev, &i);
++}
++
++/* A flat 2D pipeline as sdlgpu_pipeline.inc.c builds one. */
++static SDL_GPUGraphicsPipeline *flat_pipe(int blend, Uint8 write_mask, int depth_test, SDL_GPUCompareOp cmp)
++{
++    SDL_GPUVertexBufferDescription buf = { .slot = 0, .pitch = sizeof(SgVertex), .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX };
++    SDL_GPUVertexAttribute a[3] = {
++        { .location = 0, .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = offsetof(SgVertex, x) },
++        { .location = 1, .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = offsetof(SgVertex, color) },
++        { .location = 2, .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, .offset = offsetof(SgVertex, uv) },
++    };
++    SDL_GPUColorTargetDescription ct = { .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, .blend_state = {
++        .enable_blend = blend, .src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
++        .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, .color_blend_op = SDL_GPU_BLENDOP_ADD,
++        .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA, .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
++        .alpha_blend_op = SDL_GPU_BLENDOP_ADD, .color_write_mask = write_mask, .enable_color_write_mask = true } };
++    SDL_GPUGraphicsPipelineCreateInfo i = {
++        .vertex_shader = flat_vs, .fragment_shader = flat_fs,
++        .vertex_input_state = { .vertex_buffer_descriptions = &buf, .num_vertex_buffers = 1,
++                                .vertex_attributes = a, .num_vertex_attributes = 3 },
++        .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
++        .rasterizer_state = { .fill_mode = SDL_GPU_FILLMODE_FILL, .cull_mode = SDL_GPU_CULLMODE_NONE,
++                              .front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE },
++        .depth_stencil_state = { .enable_depth_test = depth_test, .enable_depth_write = depth_test,
++                                 .compare_op = depth_test ? cmp : SDL_GPU_COMPAREOP_ALWAYS },
++        .target_info = { .color_target_descriptions = &ct, .num_color_targets = 1,
++                         .depth_stencil_format = depth_fmt, .has_depth_stencil_target = true },
++    };
++    return SDL_CreateGPUGraphicsPipeline(dev, &i);
++}
++
++typedef struct { uint32_t tex_size[2], tex_wrap[2], alpha_test, alpha_func, alpha_ref, pad; } Shade;
++
++static void quad(SgVertex *v, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1,
++                 uint32_t argb, int textured)
++{
++    const float c[4] = { ((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f, (argb & 0xFF) / 255.0f,
++                         (argb >> 24) / 255.0f };
++    const float p[6][4] = { {x0, y0, u0, v0}, {x1, y0, u1, v0}, {x1, y1, u1, v1},
++                            {x0, y0, u0, v0}, {x1, y1, u1, v1}, {x0, y1, u0, v1} };
++    for (int i = 0; i < 6; i++) {
++        v[i].x = p[i][0]; v[i].y = p[i][1];
++        memcpy(v[i].color, c, sizeof c);
++        v[i].uv[0] = p[i][2]; v[i].uv[1] = p[i][3]; v[i].uv[2] = textured ? 1.0f : 0.0f;
++    }
++}
++
++/* Upload `bytes` into a texture region through a transfer buffer. */
++static void upload(SDL_GPUTexture *t, const void *bytes, uint32_t w, uint32_t h)
++{
++    SDL_GPUTransferBufferCreateInfo ti = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = w * h * 4 };
++    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++    memcpy(SDL_MapGPUTransferBuffer(dev, tb, false), bytes, w * h * 4);
++    SDL_UnmapGPUTransferBuffer(dev, tb);
++    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
++    SDL_GPUTextureTransferInfo src = { .transfer_buffer = tb };
++    SDL_GPUTextureRegion dst = { .texture = t, .w = w, .h = h, .d = 1 };
++    SDL_UploadToGPUTexture(cp, &src, &dst, false);
++    SDL_EndGPUCopyPass(cp);
++    SDL_SubmitGPUCommandBuffer(c);
++    SDL_ReleaseGPUTransferBuffer(dev, tb);
++}
++
++/* Download a level of a texture as the renderer's sg_download does. */
++static void download(SDL_GPUTexture *t, uint32_t level, uint32_t w, uint32_t h, void *out)
++{
++    SDL_GPUTransferBufferCreateInfo ti = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = w * h * 4 };
++    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
++    SDL_GPUTextureRegion from = { .texture = t, .mip_level = level, .w = w, .h = h, .d = 1 };
++    SDL_GPUTextureTransferInfo to = { .transfer_buffer = tb };
++    SDL_DownloadFromGPUTexture(cp, &from, &to);
++    SDL_EndGPUCopyPass(cp);
++    SDL_GPUFence *f = SDL_SubmitGPUCommandBufferAndAcquireFence(c);
++    SDL_WaitForGPUFences(dev, true, &f, 1);
++    SDL_ReleaseGPUFence(dev, f);
++    memcpy(out, SDL_MapGPUTransferBuffer(dev, tb, false), w * h * 4);
++    SDL_UnmapGPUTransferBuffer(dev, tb);
++    SDL_ReleaseGPUTransferBuffer(dev, tb);
++}
++
++/* One render pass: optional clears, then one draw of `n` vertices, as
++ * sg_queue_flush records it (vertex upload in a copy pass first). */
++typedef struct {
++    SDL_GPUTexture *color, *depth, *tex;
++    SDL_GPUGraphicsPipeline *pipe;
++    const SgVertex *v; uint32_t n;
++    Shade shade;
++    int clear_color; uint32_t clear_argb;
++    int clear_depth; float depth_value;
++    SDL_Rect scissor;
++} Draw;
++
++static void draw(const Draw *d)
++{
++    static SDL_GPUBuffer *vb;
++    static SDL_GPUTransferBuffer *tb;
++    if (!vb) {
++        SDL_GPUBufferCreateInfo bi = { .usage = SDL_GPU_BUFFERUSAGE_VERTEX, .size = 64 * sizeof(SgVertex) };
++        SDL_GPUTransferBufferCreateInfo ti = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 64 * sizeof(SgVertex) };
++        vb = SDL_CreateGPUBuffer(dev, &bi);
++        tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++    }
++    memcpy(SDL_MapGPUTransferBuffer(dev, tb, true), d->v, d->n * sizeof(SgVertex));
++    SDL_UnmapGPUTransferBuffer(dev, tb);
++    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
++    SDL_GPUTransferBufferLocation from = { .transfer_buffer = tb };
++    SDL_GPUBufferRegion to = { .buffer = vb, .size = d->n * (uint32_t)sizeof(SgVertex) };
++    SDL_UploadToGPUBuffer(cp, &from, &to, true);
++    SDL_EndGPUCopyPass(cp);
++
++    uint32_t a = d->clear_argb;
++    SDL_GPUColorTargetInfo ct = { .texture = d->color, .store_op = SDL_GPU_STOREOP_STORE,
++        .load_op = d->clear_color ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD,
++        .clear_color = { ((a >> 16) & 0xFF) / 255.0f, ((a >> 8) & 0xFF) / 255.0f, (a & 0xFF) / 255.0f, (a >> 24) / 255.0f } };
++    SDL_GPUDepthStencilTargetInfo ds = { .texture = d->depth, .clear_depth = d->depth_value,
++        .load_op = d->clear_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD, .store_op = SDL_GPU_STOREOP_STORE,
++        .stencil_load_op = SDL_GPU_LOADOP_CLEAR, .stencil_store_op = SDL_GPU_STOREOP_STORE };
++    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(c, &ct, 1, &ds);
++    SDL_GPUViewport vp = { 0, 0, W, H, 0, 1 };
++    SDL_SetGPUViewport(p, &vp);
++    if (d->n) {
++        float size[2] = { W, H };
++        SDL_GPUBufferBinding b = { .buffer = vb };
++        SDL_GPUTextureSamplerBinding ts = { .texture = d->tex, .sampler = point_wrap };
++        SDL_Rect sc = d->scissor.w ? d->scissor : (SDL_Rect){ 0, 0, W, H };
++        SDL_BindGPUGraphicsPipeline(p, d->pipe);
++        SDL_SetGPUScissor(p, &sc);
++        SDL_SetGPUBlendConstants(p, (SDL_FColor){ 0, 0, 0, 0 });
++        SDL_SetGPUStencilReference(p, 0);
++        SDL_BindGPUVertexBuffers(p, 0, &b, 1);
++        SDL_BindGPUFragmentSamplers(p, 0, &ts, 1);
++        SDL_PushGPUVertexUniformData(c, 0, size, sizeof size);
++        SDL_PushGPUFragmentUniformData(c, 0, &d->shade, sizeof d->shade);
++        SDL_DrawGPUPrimitives(p, d->n, 1, 0, 0);
++    }
++    SDL_EndGPURenderPass(p);
++    SDL_SubmitGPUCommandBuffer(c);
++}
++
++static uint32_t px(const uint8_t *img, uint32_t x, uint32_t y)   /* BGRA bytes -> 0xAARRGGBB */
++{
++    const uint8_t *p = img + ((size_t)y * W + x) * 4;
++    return (uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0];
++}
++static int near(uint32_t a, uint32_t b, int tol)
++{
++    for (int s = 0; s < 32; s += 8)
++        if (abs((int)((a >> s) & 0xFF) - (int)((b >> s) & 0xFF)) > tol) return 0;
++    return 1;
++}
++
++int main(void)
++{
++    static uint8_t img[W * H * 4];
++    if (!wg_server_start("gpucanvas")) { printf("FAILED: no WebGPU device\n"); return 2; }
++
++    dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_WGSL, false, NULL);
++    CHECK(dev != NULL, "device (driver %s)", dev ? SDL_GetGPUDeviceDriver(dev) : "none");
++    CHECK(SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL) == NULL, "SPIR-V-only device refused");
++    depth_fmt = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
++                                             SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
++                ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
++
++    flat_vs = shader(k_sg_flat2d_vert_wgsl, SDL_GPU_SHADERSTAGE_VERTEX, 0);
++    flat_fs = shader(k_sg_flat2d_frag_wgsl, SDL_GPU_SHADERSTAGE_FRAGMENT, 1);
++    SDL_GPUShader *xvs = shader(k_sg_xf_vert_wgsl, SDL_GPU_SHADERSTAGE_VERTEX, 0);
++    SDL_GPUShader *xfs = shader(k_sg_xf_frag_wgsl, SDL_GPU_SHADERSTAGE_FRAGMENT, 4);
++    CHECK(flat_vs && flat_fs && xvs && xfs, "the renderer's four WGSL shaders load");
++    SDL_GPUSamplerCreateInfo si = { .min_filter = SDL_GPU_FILTER_NEAREST, .mag_filter = SDL_GPU_FILTER_NEAREST,
++        .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST, .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT,
++        .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT, .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE };
++    point_wrap = SDL_CreateGPUSampler(dev, &si);
++
++    SDL_GPUTexture *color = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++                                     SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++    SDL_GPUTexture *depth = make_tex(depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, W, H, 1);
++    CHECK(color && depth, "surface: B8G8R8A8 colour and depth-stencil (%s)",
++          depth_fmt == SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT ? "D32_FLOAT_S8_UINT" : "D24_UNORM_S8_UINT");
++
++    /* 1. Clear and download, byte for byte. */
++    Draw d = { .color = color, .depth = depth, .clear_color = 1, .clear_argb = 0xFF2040C0u, .clear_depth = 1, .depth_value = 1.0f };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 0, 0) == 0xFF2040C0u && px(img, W - 1, H - 1) == 0xFF2040C0u && px(img, 123, 77) == 0xFF2040C0u,
++          "clear then download: %08X (FF2040C0 expected)", px(img, 123, 77));
++
++    /* 2. Upload and download round trip; 300-pixel rows are not 256-byte aligned. */
++    {
++        static uint8_t up[300 * 7 * 4], back[300 * 7 * 4];
++        for (size_t i = 0; i < sizeof up; i++) up[i] = (uint8_t)(i * 7 + 3);
++        SDL_GPUTexture *t = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 300, 7, 1);
++        upload(t, up, 300, 7);
++        download(t, 0, 300, 7, back);
++        CHECK(memcmp(up, back, sizeof up) == 0, "upload/download round trip, unaligned rows");
++        SDL_ReleaseGPUTexture(dev, t);
++    }
++
++    /* 3. Flat 2D: orientation and flat colour. */
++    SDL_GPUGraphicsPipeline *opaque = flat_pipe(0, 15, 0, SDL_GPU_COMPAREOP_ALWAYS);
++    SDL_GPUTexture *white = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++    { uint32_t w1 = 0xFFFFFFFFu; upload(white, &w1, 1, 1); }
++    SgVertex v[12];
++    quad(v, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
++    d = (Draw){ .color = color, .depth = depth, .tex = white, .pipe = opaque, .v = v, .n = 6,
++                .clear_color = 1, .clear_argb = 0xFF000000u, .clear_depth = 1, .depth_value = 1.0f };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 15, 25) == 0xFF336699u && px(img, 105, 65) == 0xFF336699u,
++          "flat quad at its top-left position: %08X (y not flipped)", px(img, 15, 25));
++    CHECK(px(img, 5, 25) == 0xFF000000u && px(img, 15, 75) == 0xFF000000u, "nothing drawn outside the quad");
++
++    /* 4. Textured: 8x8 checker, point sampled, wrapped, modulated as the software path does. */
++    static uint32_t tex[64];
++    for (int i = 0; i < 64; i++) {      /* R8G8B8A8 bytes: R,G,B,A */
++        uint32_t c = (((i % 8) + (i / 8)) & 1) ? 0xFF1030E0u : 0xFFF08010u;   /* ABGR in memory order */
++        tex[i] = c;
++    }
++    SDL_GPUTexture *checker = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++                                       SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 8, 8, 4);
++    upload(checker, tex, 8, 8);
++    {
++        SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GenerateMipmapsForGPUTexture(c, checker);
++        SDL_SubmitGPUCommandBuffer(c);
++        uint32_t lvl[16];
++        download(checker, 1, 4, 4, lvl);
++        uint8_t *b = (uint8_t *)lvl;   /* each level-1 texel averages two of each colour */
++        CHECK(abs(b[0] - (0x10 + 0xE0) / 2) <= 2 && abs(b[1] - (0x80 + 0x30) / 2) <= 2,
++              "mipmap level 1 averages level 0 (%02X %02X)", b[0], b[1]);
++    }
++    quad(v, 0, 0, 64, 64, 0, 0, 16, 16, 0xFFFFFFFFu, 1);   /* 4 px per texel, wraps twice */
++    d = (Draw){ .color = color, .depth = depth, .tex = checker, .pipe = opaque, .v = v, .n = 6,
++                .shade = { {8, 8}, {1, 1}, 0, 0, 0, 0 }, .clear_color = 1, .clear_argb = 0xFF000000u,
++                .clear_depth = 1, .depth_value = 1.0f };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 1, 1) == 0xFF1080F0u && px(img, 5, 1) == 0xFFE03010u && px(img, 33, 1) == 0xFF1080F0u,
++          "textured: texel (0,0) %08X, (1,0) %08X, wrapped (8,0) %08X", px(img, 1, 1), px(img, 5, 1), px(img, 33, 1));
++
++    /* 5. Alpha test: GREATER 0x80 against alpha 0x40 discards. */
++    quad(v, 100, 100, 160, 160, 0, 0, 0, 0, 0x40FFFFFFu, 0);
++    d = (Draw){ .color = color, .depth = depth, .tex = white, .pipe = opaque, .v = v, .n = 6,
++                .shade = { {1, 1}, {0, 0}, 1, 0x0204, 0x80, 0 }, .clear_color = 1, .clear_argb = 0xFF000000u,
++                .clear_depth = 1, .depth_value = 1.0f };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 130, 130) == 0xFF000000u, "alpha test discards (%08X)", px(img, 130, 130));
++
++    /* 6. Blending SRC_ALPHA / ONE_MINUS_SRC_ALPHA, half white over black. */
++    SDL_GPUGraphicsPipeline *blend = flat_pipe(1, 15, 0, SDL_GPU_COMPAREOP_ALWAYS);
++    quad(v, 100, 100, 160, 160, 0, 0, 0, 0, 0x80FFFFFFu, 0);
++    d = (Draw){ .color = color, .depth = depth, .tex = white, .pipe = blend, .v = v, .n = 6,
++                .clear_color = 1, .clear_argb = 0xFF000000u, .clear_depth = 1, .depth_value = 1.0f };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(near(px(img, 130, 130), 0xBF808080u, 2), "alpha blend: %08X (BF808080 within 2)", px(img, 130, 130));
++
++    /* 7. Scissor, and a rectangle past the target (clamped, not an error). */
++    quad(v, 0, 0, W, H, 0, 0, 0, 0, 0xFF00FF00u, 0);
++    d = (Draw){ .color = color, .depth = depth, .tex = white, .pipe = opaque, .v = v, .n = 6,
++                .clear_color = 1, .clear_argb = 0xFF000000u, .clear_depth = 1, .depth_value = 1.0f,
++                .scissor = { 0, 0, 50, 50 } };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 10, 10) == 0xFF00FF00u && px(img, 60, 60) == 0xFF000000u, "scissor limits the draw");
++    d.scissor = (SDL_Rect){ 300, 200, 500, 500 };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 310, 230) == 0xFF00FF00u && px(img, 10, 10) == 0xFF000000u, "scissor past the target clamps");
++
++    /* 8. Depth: flat 2D draws at z = 0; LESS passes against 1.0, fails against 0.0. */
++    SDL_GPUGraphicsPipeline *ztest = flat_pipe(0, 15, 1, SDL_GPU_COMPAREOP_LESS);
++    quad(v, 0, 0, W, H, 0, 0, 0, 0, 0xFFFF0000u, 0);
++    d = (Draw){ .color = color, .depth = depth, .tex = white, .pipe = ztest, .v = v, .n = 6,
++                .clear_color = 1, .clear_argb = 0xFF000000u, .clear_depth = 1, .depth_value = 0.0f };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 50, 50) == 0xFF000000u, "depth test LESS against 0.0 fails");
++    d.depth_value = 1.0f;
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 50, 50) == 0xFFFF0000u, "depth test LESS against 1.0 passes");
++    d.clear_depth = 0;              /* kept from the last pass: now 0.0 where drawn */
++    d.clear_color = 0;              /* and the red kept too: blue must fail the test */
++    d.v = v; quad(v, 0, 0, W, H, 0, 0, 0, 0, 0xFF0000FFu, 0);
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 50, 50) == 0xFFFF0000u, "depth kept across passes (load op)");
++
++    /* 9. The 3D pipeline: the renderer's xf shaders and vertex layout. */
++    {
++        SDL_GPUVertexBufferDescription buf = { .slot = 0, .pitch = 112, .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX };
++        SDL_GPUVertexAttribute a[8];
++        for (int i = 0; i < 7; i++) a[i] = (SDL_GPUVertexAttribute){ .location = (Uint32)i, .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = (Uint32)i * 16 };
++        a[7] = (SDL_GPUVertexAttribute){ .location = 7, .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, .offset = 108 };
++        SDL_GPUColorTargetDescription ct = { .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM };
++        SDL_GPUGraphicsPipelineCreateInfo i = {
++            .vertex_shader = xvs, .fragment_shader = xfs,
++            .vertex_input_state = { .vertex_buffer_descriptions = &buf, .num_vertex_buffers = 1, .vertex_attributes = a, .num_vertex_attributes = 8 },
++            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
++            .depth_stencil_state = { .enable_depth_test = 1, .enable_depth_write = 1, .compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL,
++                                     .enable_stencil_test = 1, .compare_mask = 0xFF, .write_mask = 0xFF,
++                                     .front_stencil_state = { SDL_GPU_STENCILOP_KEEP, SDL_GPU_STENCILOP_REPLACE, SDL_GPU_STENCILOP_KEEP, SDL_GPU_COMPAREOP_ALWAYS },
++                                     .back_stencil_state = { SDL_GPU_STENCILOP_KEEP, SDL_GPU_STENCILOP_REPLACE, SDL_GPU_STENCILOP_KEEP, SDL_GPU_COMPAREOP_ALWAYS } },
++            .target_info = { .color_target_descriptions = &ct, .num_color_targets = 1, .depth_stencil_format = depth_fmt, .has_depth_stencil_target = true },
++        };
++        CHECK(SDL_CreateGPUGraphicsPipeline(dev, &i) != NULL, "3D pipeline (xf shaders, stencil) creates");
++    }
++
++    /* 10. Presenting, as sdlgpu_present.inc.c does: claim, acquire, blit, submit. */
++    {
++        quad(v, 0, 0, W, H, 0, 0, 0, 0, 0xFF00C030u, 0);
++        d = (Draw){ .color = color, .depth = depth, .tex = white, .pipe = opaque, .v = v, .n = 6,
++                    .clear_color = 1, .clear_argb = 0xFF000000u, .clear_depth = 1, .depth_value = 1.0f };
++        draw(&d);
++        CHECK(SDL_ClaimWindowForGPUDevice(dev, NULL), "claim the window (the GPU canvas)");
++        for (int frame = 0; frame < 3; frame++) {
++            SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++            SDL_GPUTexture *swap = NULL;
++            Uint32 sw = 0, sh = 0;
++            SDL_WaitAndAcquireGPUSwapchainTexture(c, NULL, &swap, &sw, &sh);
++            SDL_GPUBlitInfo b = { .source = { .texture = color, .w = W, .h = H },
++                                  .destination = { .texture = swap, .x = 0, .y = 0, .w = sw, .h = sh },
++                                  .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 }, .filter = SDL_GPU_FILTER_NEAREST };
++            SDL_BlitGPUTexture(c, &b);
++            SDL_SubmitGPUCommandBuffer(c);
++        }
++        printf("PRESENTED 00C030\n");   /* test_page.js reads the canvas now */
++    }
++
++    printf("%s (%d failures)\n", fails ? "FAILED" : "ALL PASS", fails);
++    printf("SDLGPU-WEB DONE rc=%d\n", fails != 0);
++    return fails != 0;
++}
 diff --git a/tests/wasm_fixed/CMakeLists.txt b/tests/wasm_fixed/CMakeLists.txt
 new file mode 100644
 index 0000000..44fdac2
@@ -1489,21 +4932,22 @@ index 0000000..48c0d26
 +}
 diff --git a/tests/wasm_layout/CMakeLists.txt b/tests/wasm_layout/CMakeLists.txt
 new file mode 100644
-index 0000000..02a3738
+index 0000000..ccf34a0
 --- /dev/null
 +++ b/tests/wasm_layout/CMakeLists.txt
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,14 @@
 +# Emscripten only. Needs SDL3 built for Emscripten (tools/build-web.sh does):
 +#   emcmake cmake -S . -B build -DSDL3_DIR=<sdl3-wasm>/lib/cmake/SDL3 -DCMAKE_C_FLAGS=-pthread
 +#   cmake --build build && ctest --test-dir build
 +cmake_minimum_required(VERSION 3.20)
-+project(wasm_layout_test C)
++project(wasm_layout_test C CXX)   # C++: the kernel's WebGPU port links as C++
 +add_subdirectory(../.. xboxrecomp)
 +add_executable(test_wasm_layout test_wasm_layout.c)
 +target_link_libraries(test_wasm_layout PRIVATE xboxrecomp)
 +target_link_options(test_wasm_layout PRIVATE -pthread -sALLOW_MEMORY_GROWTH=1
 +    -sINITIAL_MEMORY=512MB -sMAXIMUM_MEMORY=4GB -sPTHREAD_POOL_SIZE=8
 +    -sENVIRONMENT=node,worker -sEXIT_RUNTIME=1 -sERROR_ON_UNDEFINED_SYMBOLS=0)
++set_target_properties(test_wasm_layout PROPERTIES LINKER_LANGUAGE CXX)
 +enable_testing()
 +add_test(NAME wasm_layout COMMAND node $<TARGET_FILE:test_wasm_layout>)
 diff --git a/tests/wasm_layout/test_wasm_layout.c b/tests/wasm_layout/test_wasm_layout.c
@@ -1609,3 +5053,132 @@ index 0000000..f0e4b59
 +    printf("wasm layout: all checks passed\n");
 +    return 0;
 +}
+diff --git a/tools/gen-wgsl.py b/tools/gen-wgsl.py
+new file mode 100644
+index 0000000..390dc03
+--- /dev/null
++++ b/tools/gen-wgsl.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python3
++"""GLSL renderer shaders -> WGSL for the WebGPU build of the SDL GPU renderer.
++
++    gen-wgsl.py <shaders dir> <out header>
++
++The SDL GPU renderer's shaders (src/kernel/sdlgpu/shaders/*.vert/.frag) are
++Vulkan GLSL compiled to SPIR-V for native builds. The web build runs the same
++renderer on WebGPU (src/kernel/sdlgpu/webgpu/), which takes WGSL, so this
++translates them with naga (`cargo install naga-cli`) and embeds the result as
++C strings (k_sg_<name>_<stage>_wgsl). The output is committed, so building
++needs no naga; rerun this after changing a shader.
++
++Three adjustments, all mechanical:
++  - naga's GLSL front end has no combined `sampler2D`. Each one becomes the
++    Vulkan GLSL pair `texture2D <name>_t` (binding N) + `sampler <name>_s`
++    (binding N + 4), recombined as sampler2D(<name>_t, <name>_s) at every
++    use. The WebGPU shim binds an SDL sampler slot N that way.
++  - Fragment shaders sample inside per-stage branches, which WGSL's
++    derivative-uniformity analysis rejects although the stage is uniform per
++    draw; `diagnostic(off, derivative_uniformity)` turns that check off.
++  - naga refuses `return` inside a switch case (it calls it a
++    fall-through), so a switch whose every case is a single return -- the
++    alpha-test compares -- becomes the equivalent if chain.
++Sets and bindings carry over as WGSL groups and bindings (SDL's layout: set 1
++vertex uniforms, set 2 fragment samplers, set 3 fragment uniforms).
++"""
++import os
++import re
++import subprocess
++import sys
++import tempfile
++
++SAMPLER_OFFSET = 4
++SHADERS = ['flat2d.vert', 'flat2d.frag', 'xf.vert', 'xf.frag']
++
++
++def split_samplers(src):
++    names = []
++
++    def decl(m):
++        names.append(m.group(3))
++        s, b = int(m.group(1)), int(m.group(2))
++        return (f'layout(set = {s}, binding = {b}) uniform texture2D {m.group(3)}_t;\n'
++                f'layout(set = {s}, binding = {b + SAMPLER_OFFSET}) uniform sampler {m.group(3)}_s;')
++    src = re.sub(r'layout\(set\s*=\s*(\d+),\s*binding\s*=\s*(\d+)\)\s*uniform\s+sampler2D\s+(\w+)\s*;', decl, src)
++    for n in names:
++        src = re.sub(r'\b(texelFetch|texture|textureLod|textureSize)\(\s*' + n + r'\s*,',
++                     lambda m: f'{m.group(1)}(sampler2D({n}_t, {n}_s),', src)
++        src = re.sub(r'\btextureSize\(\s*' + n + r'\s*\)', f'textureSize(sampler2D({n}_t, {n}_s))', src)
++    return src
++
++
++def returning_switches(src):
++    """naga's GLSL front end refuses `return` inside a switch case (it
++    reports a fall-through). A switch whose every case is one `return` --
++    the alpha-test compares -- becomes the equivalent if chain; switches that
++    break are left alone."""
++    case_re = re.compile(r'^\s*case\s+([^:]+?)\s*:\s*return\s+([^;]+);\s*(//.*)?$')
++    default_re = re.compile(r'^\s*default\s*:\s*return\s+([^;]+);\s*(//.*)?$')
++
++    def rewrite(m):
++        indent, subject, body = m.group(1), m.group(2).strip(), m.group(3)
++        lines = [l for l in body.split('\n') if l.strip()]
++        out, default = [], None
++        for l in lines:
++            c, d = case_re.match(l), default_re.match(l)
++            if c:
++                out.append(f'{indent}if (({subject}) == {c.group(1)}) return {c.group(2)};')
++            elif d and default is None:
++                default = d.group(1)
++            else:
++                return m.group(0)          # not the all-return shape
++        if default is None:
++            return m.group(0)
++        out.append(f'{indent}return {default};')
++        return '\n'.join(out)
++    return re.sub(r'^([ \t]*)switch\s*\(([^)]*)\)\s*\{\n((?:[^{}]*\n)*?)\1\}', rewrite, src, flags=re.M)
++
++
++def translate(path):
++    stage = 'vert' if path.endswith('.vert') else 'frag'
++    with open(path) as f:
++        src = returning_switches(split_samplers(f.read()))
++    with tempfile.TemporaryDirectory() as tmp:
++        gl = os.path.join(tmp, 'in.' + stage)
++        out = os.path.join(tmp, 'out.wgsl')
++        with open(gl, 'w') as f:
++            f.write(src)
++        r = subprocess.run(['naga', '--shader-stage', stage, '--input-kind', 'glsl', gl, out],
++                           capture_output=True, text=True)
++        if r.returncode != 0:
++            sys.exit(f'naga failed on {path}:\n{r.stdout}{r.stderr}')
++        with open(out) as f:
++            wgsl = f.read()
++    if stage == 'frag':
++        wgsl = 'diagnostic(off, derivative_uniformity);\n\n' + wgsl
++    return wgsl
++
++
++def c_string(text):
++    lines = []
++    for line in text.splitlines():
++        lines.append('    "' + line.replace('\\', '\\\\').replace('"', '\\"') + '\\n"')
++    return '\n'.join(lines)
++
++
++def main():
++    if len(sys.argv) != 3:
++        sys.exit(__doc__)
++    shaders, out = sys.argv[1], sys.argv[2]
++    parts = ['/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */',
++             '#pragma once', '']
++    for name in SHADERS:
++        wgsl = translate(os.path.join(shaders, name))
++        ident = 'k_sg_' + name.replace('.', '_') + '_wgsl'
++        parts.append(f'static const char {ident}[] =\n{c_string(wgsl)};\n')
++    with open(out, 'w') as f:
++        f.write('\n'.join(parts))
++    print('wrote', out)
++
++
++if __name__ == '__main__':
++    main()

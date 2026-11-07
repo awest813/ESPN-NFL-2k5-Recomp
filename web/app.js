@@ -180,6 +180,7 @@ function play() {
     print: (t) => log(t),
     printErr: (t) => log(t, 'stderr'),
     onAbort: (what) => log('Aborted: ' + what, 'error'),
+    onGpuPresent: (on) => log(on ? 'Video: WebGPU' : 'Video: software'),
   }).catch((e) => {
     log('The game stopped: ' + (e && e.message ? e.message : e), 'error');
     state.running = false;
