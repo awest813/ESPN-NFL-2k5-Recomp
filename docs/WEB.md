@@ -3,9 +3,11 @@
 Milestone M1 of [WEB-PORT-PLAN.md](WEB-PORT-PLAN.md) is done: the game
 **compiles and links** with Emscripten. Two of the M2 runtime pieces are in:
 the guest address space ([below](#guest-address-space)) and APU/AC97
-register routing without faults ([below](#audio-registers-without-faults)).
-Nothing has booted yet, because that needs OPFS game files and a page served
-with COOP/COEP.
+register routing without faults ([below](#audio-registers-without-faults)),
+and the page itself, with game files in the browser's private file system
+([below](#playing-in-a-browser)). In a browser, the module mounts the
+imported disc and reads `default.xbe` from it. Booting further needs the
+retail disc, which this has not been tried with yet.
 
 ## Result (2026-11-06, emsdk 7.0.0, 4-core container)
 
@@ -64,6 +66,56 @@ plus the following:
 | `src/platform/web/` | `openssl/{sha,evp,hmac}.h` and `web_crypto.c`: the two OpenSSL calls the game makes (`SHA256` for the XBE check, `HMAC(EVP_sha1())` for save signatures), checked against the FIPS 180 and RFC 2202 vectors. |
 | `src/nfl2k5_controller_art.cpp`, `src/nfl2k5_texture_packs.cpp` | Add the missing `<stdlib.h>` for `getenv`. glibc pulled it in transitively; Emscripten's libc does not. |
 | xboxrecomp, via `config/xboxrecomp-web.patch` | `platform/guest_memory.c` gets an Emscripten implementation. wasm cannot fault inside linear memory, so a checked copy is a bounds check plus `memcpy`. `nv2a_pb_exec.c` and `nv2a_gpu_sdl3.inc.c` take the checked-copy (Linux) paths on Emscripten as well. The kernel no longer requires OpenSSL there (it never called it). `platform/CMakeLists.txt` builds `guest_memory.c` for Emscripten. `win32_compat.c` gets a `GlobalMemoryStatusEx` from the wasm heap limits, because there is no `sysinfo(2)`. `sdlgpu_vpcache.inc.c` now guards `sg_vp_worker` with `SG_HAVE_GLSLANG`, like its only caller. This last fix also applies to a Linux build without the glslang library. |
+
+## Playing in a browser
+
+    tools/build-web.sh                 # build-web/: index.html, app.js, NFL2K5.js/.wasm, ...
+    python3 tools/serve-web.py         # http://127.0.0.1:8080/
+
+Open the page, import your disc, press Play.
+
+- **Cross-origin isolation.** The game's threads share one wasm memory,
+  which needs `SharedArrayBuffer`, which browsers only give a page served
+  with `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Embedder-Policy: require-corp`. `tools/serve-web.py` sends
+  them. On a static host that cannot (GitHub Pages and the like), the page
+  registers `web/coi-sw.js`, a service worker that adds them, and reloads
+  once. Off `localhost`, the page must be served over HTTPS.
+- **Game files.** The page imports the player's disc into the origin's
+  private file system (OPFS):
+  - Sources: an Xbox disc image (`.iso`/`.xiso`, XDVDFS, including
+    redump-style images with the game partition at an offset) or an
+    extracted disc folder. For a folder, either the disc folder or the
+    folder above it works.
+  - How it is copied: `web/import-worker.js` copies it once, in a worker,
+    through sync access handles. Nothing is uploaded.
+  - Layout: `original/disc/...` plus `web-import.json`. The marker is
+    written last, so an interrupted import never counts as installed.
+  - The page shows whether `default.xbe` is the retail one this build runs.
+  - A folder picker passes files only, so empty directories on the disc
+    come through an image but not through a folder.
+- **The game's view.** `src/platform/web/web_fs.c` mounts OPFS at `/nfl2k5`
+  through WasmFS's OPFS backend and defaults `NFL2K5_ROOT` to it in
+  portable mode. The disc is `/nfl2k5/original/disc`, and saves, logs and
+  settings are written beside it in OPFS. The OPFS layout is the same one
+  the importer writes. Re-importing replaces only `original/disc`; saves
+  stay.
+- **Launch.** The module is a factory (`-sMODULARIZE`, `createNFL2K5`) that
+  the page calls on Play. `?env=NAME=VALUE` sets an environment variable for
+  the game (for example `?env=RECOMP_APU_TRACE=1`), and `?autoplay=1` presses
+  Play.
+
+`tests/web/test_web_page.js` drives all of this in headless Chromium, and
+`tools/test-web.sh` runs it when a full build exists. It checks:
+
+- a synthetic disc (`tests/web/make_test_disc.py`) imports byte for byte
+  from an image and from a folder;
+- a non-disc file is refused;
+- the page is isolated with the headers and through the service worker;
+- the real module mounts OPFS, finds the disc, and stops at its hash check
+  with the SHA-256 of the bytes it read, which must equal the imported
+  `default.xbe`'s;
+- the install survives a reload.
 
 ## Guest address space
 
@@ -161,8 +213,16 @@ These compile today but are inert or wrong at run time:
   DirectSound handshake can only be exercised once the game boots.
 - **Renderer.** SDL_GPU 3.2.20 has no WebGPU backend, so `RECOMP_SDLGPU`
   finds no device and drawing stays on the software rasterizer.
-- **Game files.** These need WasmFS on OPFS and a first-run disc import page.
-  There is no HTML page yet: the build emits only `NFL2K5.js` and `.wasm`.
+- **Not booted with the retail disc.** Past the XBE check, expect the M2
+  work in the plan: SDL video with the guest main on a worker, audio
+  unlock on the first click, and whatever stalls the browser's thread
+  scheduling brings out.
+- **Storage.** The import needs room for the whole disc. The page asks for
+  persistent storage; if the browser declines, it may clear the disc (and
+  saves) under storage pressure. There is no save export yet.
+- **Running twice.** The game's exit is not reported to the page (the
+  runtime stays alive for its threads), so after a run ends, reload to run
+  again.
 - **Presentation packages, FMV, mod-pack overlays, Discord.** These are off,
   as on Linux. Mod packs also run through `x86_interp`, whose memory accesses
   are not routed to the APU.

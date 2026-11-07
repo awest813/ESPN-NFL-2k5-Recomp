@@ -556,10 +556,18 @@ void nfl2k5_diag_slot(const char *where, uint32_t a, uint32_t b, uint32_t c, uin
  * Main Application Entry Point
  * ============================================================================ */
 
+#if defined(__EMSCRIPTEN__)
+extern int nfl2k5_web_mount(void);   /* src/platform/web/web_fs.c */
+#endif
+
 int main(int argc, char **argv)
 {
 #if defined(_WIN32)
     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+#endif
+#if defined(__EMSCRIPTEN__)
+    if (!nfl2k5_web_mount())
+        return 2;
 #endif
 
     const char *root = nfl2k5_project_root();

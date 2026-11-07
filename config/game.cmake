@@ -85,7 +85,7 @@ else()
   if(EMSCRIPTEN)
     # ---- Web (Emscripten), see docs/WEB.md ---------------------------------
     # The POSIX build above plus an OpenSSL stand-in (SHA-256, HMAC-SHA1).
-    target_sources(NFL2K5 PRIVATE src/platform/web/web_crypto.c)
+    target_sources(NFL2K5 PRIVATE src/platform/web/web_crypto.c src/platform/web/web_fs.c)
     target_include_directories(NFL2K5 BEFORE PRIVATE src/platform/web)
   endif()
 endif()
@@ -161,8 +161,16 @@ else()
       -sSTACK_SIZE=16MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB
       -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASMFS -sFORCE_FILESYSTEM=1
       -sEXIT_RUNTIME=0 -sENVIRONMENT=web,worker
+      # The page (web/) starts the game when the player presses Play, after
+      # the disc is in OPFS: a factory instead of a self-starting script.
+      -sMODULARIZE=1 -sEXPORT_NAME=createNFL2K5 -sEXPORTED_RUNTIME_METHODS=ENV
       -sERROR_ON_UNDEFINED_SYMBOLS=1)
     set_target_properties(NFL2K5 PROPERTIES SUFFIX ".js")
+    # The page next to the module: build-web/index.html and friends.
+    add_custom_target(nfl2k5_web_page ALL
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory "${PROJECT_SOURCE_DIR}/web" "${CMAKE_BINARY_DIR}"
+      COMMENT "Web page (web/)" VERBATIM)
+    add_dependencies(NFL2K5 nfl2k5_web_page)
   else()
     target_link_libraries(NFL2K5 PRIVATE xboxrecomp OpenSSL::Crypto)
   endif()

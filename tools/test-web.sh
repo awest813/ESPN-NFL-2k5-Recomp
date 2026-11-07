@@ -6,6 +6,10 @@
 #   recomp_web_dev    the APU device accessors (under node)
 #   wasm_fixed        fixed-address claims and the host heap ceiling
 #   wasm_layout       the real xbox_MemoryLayoutInit on a minimal XBE
+#   web page          the page in headless Chromium: disc import into OPFS,
+#                     COOP/COEP and the service-worker fallback, and the real
+#                     module reading the disc (needs a full link in build-web/
+#                     and Playwright; skipped otherwise)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${NFL2K5_WEB_TEST_DIR:-$ROOT/build-web-tests}"
@@ -25,4 +29,9 @@ for t in wasm_fixed wasm_layout; do
   cmake --build "$OUT/$t" -j "${JOBS:-$(nproc)}"
   ctest --test-dir "$OUT/$t" --output-on-failure
 done
+if [ -f "$ROOT/build-web/NFL2K5.wasm" ] && node -e "require('playwright')" 2>/dev/null; then
+  node "$ROOT/tests/web/test_web_page.js" "$ROOT/build-web"
+else
+  echo "web page test skipped (needs build-web/NFL2K5.wasm from tools/build-web.sh, and Playwright)"
+fi
 echo "web tests passed"

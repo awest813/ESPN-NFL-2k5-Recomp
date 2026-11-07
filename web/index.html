@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESPN NFL 2K5 Web</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #66665f;
+    --line: #dcdcd6; --accent: #b4371f; --ok: #2e7d32; --warn: #a15c00; --err: #b3261e;
+    --log-bg: #fbfbf9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1f1f1d; --text: #ecebe6; --muted: #a3a29b;
+      --line: #34342f; --accent: #e3684d; --ok: #7cc47f; --warn: #e0a14a; --err: #f08a80;
+      --log-bg: #181817;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+            padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em;
+       color: var(--muted); }
+  .checks { display: grid; gap: 6px; }
+  .check { display: flex; gap: 10px; }
+  .check .label { min-width: 170px; font-weight: 600; }
+  .check[data-ok="yes"] .value { color: var(--ok); }
+  .check[data-ok="no"] .value { color: var(--err); }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .error { color: var(--err); }
+  progress { width: 100%; height: 10px; }
+  #progress-text { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  #stage { background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+  #canvas { display: block; width: 100%; aspect-ratio: 4 / 3; outline: none; }
+  #log { background: var(--log-bg); border: 1px solid var(--line); border-radius: 6px;
+         font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         height: 260px; overflow: auto; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #log .stderr { color: var(--muted); }
+  p.note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ESPN NFL 2K5 Web</h1>
+  <p class="sub">Experimental WebAssembly build. You supply the game from your own disc; it is stored
+    in this browser only and never uploaded.</p>
+
+  <section>
+    <h2>Browser</h2>
+    <div class="checks">
+      <div class="check" id="chk-wasm"><span class="label">WebAssembly</span><span class="value">…</span></div>
+      <div class="check" id="chk-isolation"><span class="label">Cross-origin isolation</span><span class="value">…</span></div>
+      <div class="check" id="chk-opfs"><span class="label">Private file system</span><span class="value">…</span></div>
+      <div class="check" id="chk-storage"><span class="label">Storage</span><span class="value">…</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Game files</h2>
+    <div id="disc-none">
+      <p>Import your NFL 2K5 disc: an Xbox disc image (<code>.iso</code> / <code>.xiso</code>) or an
+        extracted disc folder containing <code>default.xbe</code> and <code>vc_53450030</code>.</p>
+    </div>
+    <div id="disc-installed" hidden>
+      <p id="disc-summary"></p>
+      <p id="disc-xbe"></p>
+    </div>
+    <div class="row">
+      <button id="import-image">Import disc image…</button>
+      <button id="import-folder">Import extracted folder…</button>
+      <button id="remove">Remove game files</button>
+    </div>
+    <input id="file-image" type="file" accept=".iso,.xiso,.img,application/octet-stream" hidden>
+    <input id="file-folder" type="file" webkitdirectory hidden>
+    <div id="progress" hidden>
+      <p><progress id="progress-bar" value="0" max="1"></progress></p>
+      <div id="progress-text"></div>
+    </div>
+    <p class="note">The import copies the disc (several GB) into the browser's private storage once.
+      Saves and settings are kept there too, apart from the disc.</p>
+  </section>
+
+  <section>
+    <h2>Play</h2>
+    <div class="row"><button id="play" class="primary" disabled>Play</button></div>
+    <p class="note">The web build boots as far as the runtime goes today; see docs/WEB.md for what
+      works.</p>
+  </section>
+
+  <div id="stage" hidden><canvas id="canvas" tabindex="-1"></canvas></div>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log" aria-live="polite"></div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

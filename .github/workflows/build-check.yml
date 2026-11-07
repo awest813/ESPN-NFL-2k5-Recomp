@@ -122,11 +122,22 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: JOBS=3 tools/build-web.sh
 
+      - name: Web page test (headless Chromium)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+          node tests/web/test_web_page.js build-web
+
       - name: Upload web build
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: nfl2k5-web
           path: |
+            build-web/index.html
+            build-web/app.js
+            build-web/import-worker.js
+            build-web/coi-sw.js
             build-web/NFL2K5.js
             build-web/NFL2K5.wasm

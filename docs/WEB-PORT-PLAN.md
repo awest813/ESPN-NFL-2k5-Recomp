@@ -130,7 +130,9 @@ Each milestone has an exit check that can be run in CI or by hand.
   largest function's wasm size in this document.
 
 **M2: boots to the first menu (software rendering)**. In progress: the
-address space and the AC97 replacement are done (see [WEB.md](WEB.md)). The
+address space, the AC97 replacement, OPFS game files with a disc importer, and
+the COOP/COEP page (server headers or a service worker) are done (see
+[WEB.md](WEB.md)); what remains is booting the retail disc. The
 address space uses an identity layout with a fenced host heap, not the
 segment table sketched below, so the ~430 runtime sites that add the memory
 offset need no change.
