@@ -3,6 +3,7 @@
 /analysis/
 /build/
 /build-web/
+/build-web-tests/
 /logs/
 /saves/
 /downloads/

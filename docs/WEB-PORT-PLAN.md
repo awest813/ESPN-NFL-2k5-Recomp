@@ -129,7 +129,11 @@ Each milestone has an exit check that can be run in CI or by hand.
 - Exit: `NFL2K5.wasm` links in CI. Record its size, compile time and the
   largest function's wasm size in this document.
 
-**M2: boots to the first menu (software rendering)**
+**M2: boots to the first menu (software rendering)**. In progress: the
+address space and the AC97 replacement are done (see [WEB.md](WEB.md)). The
+address space uses an identity layout with a fenced host heap, not the
+segment table sketched below, so the ~430 runtime sites that add the memory
+offset need no change.
 - Compact guest address space (`XBOX_PTR` rework), with a unit test next to
   `tests/memory_layout_posix` that runs under Node with
   `--experimental-wasm-threads`.

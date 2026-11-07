@@ -15,6 +15,29 @@ endif()
 if(NOT NFL2K5_GENERATED)
   message(FATAL_ERROR "Run tools/analyze.ps1 -Recompile before building the game.")
 endif()
+if(EMSCRIPTEN)
+  # Web: no MMIO faults, so the guest's DirectSound code is rewritten to reach
+  # the emulated APU through device accessors (tools/gen-web-devices.py,
+  # src/platform/web/recomp_web_dev.h). The rewritten files replace their
+  # originals in the build; the rest compile as they are.
+  if(NFL2K5_REG_LOCALS AND EXISTS "${NFL2K5_LOCALS_DIR}/recomp_0000.c")
+    set(_nfl2k5_gen_src "${NFL2K5_LOCALS_DIR}")
+  else()
+    set(_nfl2k5_gen_src "${NFL2K5_GEN_DIR}")
+  endif()
+  set(_nfl2k5_dev_out "${CMAKE_BINARY_DIR}/gen-web-devices")
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/gen-web-devices.py"
+                          "${_nfl2k5_gen_src}" "${_nfl2k5_dev_out}"
+                  COMMAND_ERROR_IS_FATAL ANY)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               "${PROJECT_SOURCE_DIR}/tools/gen-web-devices.py" ${NFL2K5_GENERATED})
+  file(STRINGS "${_nfl2k5_dev_out}/replaced.txt" _nfl2k5_replaced)
+  foreach(_f IN LISTS _nfl2k5_replaced)
+    list(REMOVE_ITEM NFL2K5_GENERATED "${_nfl2k5_gen_src}/${_f}")
+    list(APPEND NFL2K5_GENERATED "${_nfl2k5_dev_out}/${_f}")
+  endforeach()
+endif()
 if(WIN32)
 add_executable(NFL2K5 WIN32 src/main.c src/recomp_manual.c src/nfl2k5_input_hle.c src/nfl2k5_controls.c src/nfl2k5_controller_setup.c src/nfl2k5_controller_art.cpp src/nfl2k5_texture_packs.cpp src/nfl2k5_teams.c src/nfl2k5_team_files.c src/nfl2k5_video_menu.c src/nfl2k5_mod_packs.c src/nfl2k5_presentation.cpp src/nfl2k5_local_music.cpp src/nfl2k5_save_library.cpp src/nfl2k5_discord.cpp src/interp/x86_interp.c src/interp/interp_setup.c "${CMAKE_BINARY_DIR}/generated/nfl2k5_func_ranges.c" external/xemu-src/util/miniz/miniz.c src/nfl2k5_wma_encode.cpp src/presentation/webview2_host.cpp src/presentation/portraits.cpp src/nfl2k5.rc src/nfl2k5.manifest ${NFL2K5_GENERATED})
 target_include_directories(NFL2K5 PRIVATE "${NFL2K5_GEN_DIR}" src external/xemu-src/util/miniz)
@@ -121,6 +144,15 @@ else()
     # The C++ sources (save library, texture packs, ...) use exceptions; wasm
     # has native ones, which the guest setjmp bridge uses too.
     target_compile_options(NFL2K5 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fwasm-exceptions>)
+    # Guest memory is linear memory at the guest addresses (xboxrecomp
+    # platform/wasm_fixed.h), which cannot alias. XBOX_PTR folds RAM mirrors
+    # always; this also folds the NV2A tiled aperture onto the contiguous
+    # window, for a title that renders through tiled addresses (the runtime
+    # warns when one does). Costs a compare per guest memory access.
+    option(NFL2K5_WEB_TILED_FOLD "Web: alias the NV2A tiled aperture in generated code" OFF)
+    if(NFL2K5_WEB_TILED_FOLD)
+      target_compile_definitions(NFL2K5 PRIVATE RECOMP_WASM_TILED_FOLD)
+    endif()
     set(NFL2K5_WEB_INITIAL_MEMORY "1073741824" CACHE STRING "Web: initial wasm memory in bytes")
     set(NFL2K5_WEB_PTHREAD_POOL "16" CACHE STRING "Web: workers created before main() (guest + runtime threads)")
     target_link_options(NFL2K5 PRIVATE

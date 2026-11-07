@@ -115,6 +115,9 @@ jobs:
       - name: Runtime and game sources (no generated code)
         run: tools/build-web.sh --no-gen
 
+      - name: Web tests (address space, APU routing)
+        run: tools/test-web.sh
+
       - name: Full game link
         if: github.event_name == 'workflow_dispatch'
         run: JOBS=3 tools/build-web.sh

@@ -1,3 +1,37 @@
+diff --git a/src/apu/apu_mmio_hook.c b/src/apu/apu_mmio_hook.c
+index 9a38a07..37e78bc 100644
+--- a/src/apu/apu_mmio_hook.c
++++ b/src/apu/apu_mmio_hook.c
+@@ -416,4 +416,27 @@ bool apu_hook_handle_mmio(void *raw_ctx, uintptr_t fault_addr,
+     return ok;
+ }
+ 
+-#endif
+\ No newline at end of file
++#endif
++/* Device accessors for hosts without MMIO faults (WebAssembly): generated
++ * code routes an access in the register window here itself instead of
++ * faulting into apu_hook_handle_mmio (src/platform/web/recomp_web_dev.h in
++ * the game). Same semantics as the fault path: the access goes to the
++ * emulated APU when one exists, and returns 0 -- "not routed, use memory" --
++ * when none does, which is what an untrapped window means natively. */
++int xbox_apu_guest_read(uint32_t offset, unsigned size, uint32_t *value)
++{
++    if (!g_apu_state || offset >= APU_MMIO_SIZE)
++        return 0;
++    *value = (uint32_t)mcpx_apu_mmio_read(g_apu_state, offset, size);
++    g_apu_mmio_read_count++;
++    return 1;
++}
++
++int xbox_apu_guest_write(uint32_t offset, unsigned size, uint32_t value)
++{
++    if (!g_apu_state || offset >= APU_MMIO_SIZE)
++        return 0;
++    mcpx_apu_mmio_write(g_apu_state, offset, value, size);
++    g_apu_mmio_write_count++;
++    return 1;
++}
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 index 101118c..119c0dc 100644
 --- a/src/kernel/CMakeLists.txt
@@ -360,11 +394,196 @@ index 7f2db68..fef2056 100644
  
  static int sg_vp_worker_start(void)
  {
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+index c3eab62..f26c937 100644
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -494,6 +494,15 @@ static BOOL ac97_arm_write_trap(void)
+                         " a channel reset will spin\n");
+         return FALSE;
+     }
++#elif defined(__EMSCRIPTEN__)
++    /* No page protection, so no trap. The page stays plain memory and RR
++     * stays set after a reset write unless the title's reset site
++     * acknowledges it itself -- NFL 2K5 does, through the AC97_RESET_ACK
++     * generated-code patch. Not a startup failure: the trap is a fallback. */
++    g_ac97_page = NULL;
++    fprintf(stderr, "  AC97: no write trap on WebAssembly; channel reset needs"
++                    " a patched reset site\n");
++    return TRUE;
+ #else
+ #if defined(__linux__) && defined(__x86_64__)
+     if (!g_ac97_posix_handler_ready || mprotect(g_ac97_page, AC97_TRAP_BYTES, PROT_READ) != 0) {
+@@ -1275,6 +1284,68 @@ void xbox_Nv2aKick(void)
+     }
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++static size_t g_tiled_view_size = 0;
++
++/* Without page protection, two guest behaviours that are routed natively
++ * would go silently wrong on the web instead of faulting, so look for their
++ * footprints:
++ *   - the APU register window is never written as plain memory when the
++ *     device accessors own it, so any nonzero word there is an access the
++ *     accessors did not cover (and the APU never saw);
++ *   - the tiled aperture does not alias the contiguous window (no aliasing in
++ *     linear memory), so any nonzero byte there is a surface written through
++ *     a tiled address that the GPU will never sample.
++ * Each is reported once. The scan runs in 1 MB slices every 50 ms on this
++ * already-polling thread, so a full pass over the tiled aperture takes about
++ * three seconds and no single call is long. */
++static void wasm_unrouted_check(void)
++{
++    static DWORD next_tick;
++    static size_t tiled_cursor;
++    static int apu_said, tiled_said;
++    DWORD now = GetTickCount();
++
++    if ((LONG)(now - next_tick) < 0)
++        return;
++    next_tick = now + 50;
++
++    if (!apu_said && g_mcpx_memory && g_apu_mmio_trapped) {
++        const volatile uint32_t *w = (const volatile uint32_t *)g_mcpx_memory;
++        for (uint32_t off = 0; off < 0x80000u; off += 4) {
++            if ((off - 0x30000u) < 0xF000u || (off - 0x50000u) < 0xF000u)
++                continue;   /* DSP memory windows are plain memory by design */
++            if (w[off / 4]) {
++                fprintf(stderr, "  WARNING: guest wrote APU register 0x%08X as plain"
++                        " memory (0x%08X): code outside the device accessors"
++                        " touched the APU (tools/gen-web-devices.py)\n",
++                        XBOX_MCPX_BASE + off, w[off / 4]);
++                apu_said = 1;
++                break;
++            }
++        }
++    }
++    if (!tiled_said && g_tiled_view && g_tiled_view_size) {
++        const volatile uint64_t *q =
++            (const volatile uint64_t *)((char *)g_tiled_view + tiled_cursor);
++        size_t n = 1024u * 1024u;
++        if (n > g_tiled_view_size - tiled_cursor) n = g_tiled_view_size - tiled_cursor;
++        for (size_t i = 0; i < n / 8; i++) {
++            if (q[i]) {
++                fprintf(stderr, "  WARNING: guest wrote the tiled aperture at 0x%08X;"
++                        " it does not alias the contiguous window on WebAssembly"
++                        " (build with NFL2K5_WEB_TILED_FOLD=ON)\n",
++                        XBOX_TILED_BASE + (uint32_t)(tiled_cursor + i * 8));
++                tiled_said = 1;
++                break;
++            }
++        }
++        tiled_cursor += n;
++        if (tiled_cursor >= g_tiled_view_size) tiled_cursor = 0;
++    }
++}
++#endif
++
+ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+ {
+     volatile uint32_t *regs = (volatile uint32_t *)param;
+@@ -1366,6 +1437,9 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+         *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
+                                + g_memory_offset) = GetTickCount();
+ 
++#if defined(__EMSCRIPTEN__)
++        wasm_unrouted_check();
++#endif
+         Sleep(0);  /* yield; the waiter is spinning on another core */
+     }
+     return 0;
+@@ -1863,8 +1937,12 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+         /* Reserve base + mirrors as one range, and map the base at its head.
+          * VirtualFree releases just the slice about to be used, so each view
+          * replaces our own reservation rather than racing for free space. */
+-#ifndef _WIN32
+-        /* The POSIX shim can release individual slices of a reservation.
++#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
++        /* Not on WebAssembly: the span exists to place mirrors, which it does
++         * not have, and an address-less reservation there is a real
++         * allocation (zero-filled) of the whole span.
++         *
++         * The POSIX shim can release individual slices of a reservation.
+          * Windows MEM_RELEASE requires size zero and releases the whole
+          * reservation; use the fixed-base views below on Windows. */
+         g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
+@@ -2521,9 +2599,20 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+                     VirtualProtect((char *)g_mcpx_memory + 0x50000u, 0xF000u,
+                                    PAGE_READWRITE, &old_protect);
+                 }
++#if defined(__EMSCRIPTEN__)
++                /* VirtualProtect is a no-op here; the registers reach the
++                 * emulated APU through device accessors compiled into the
++                 * DirectSound code instead (tools/gen-web-devices.py), and
++                 * wasm_unrouted_check() reports anything that bypasses them. */
++                if (g_apu_mmio_trapped)
++                    fprintf(stderr, "  APU: 0x%08X..0x%08X routed through"
++                            " device accessors (no MMIO trap on WebAssembly)\n",
++                            XBOX_MCPX_BASE, XBOX_MCPX_BASE + 0x00080000u);
++#else
+                 if (g_apu_mmio_trapped)
+                     fprintf(stderr, "  APU: 0x%08X..0x%08X trapped for MMIO\n",
+                             XBOX_MCPX_BASE, XBOX_MCPX_BASE + 0x00080000u);
++#endif
+                 *(volatile uint32_t *)((char *)g_mcpx_memory
+                                        + MCPX_AC97_CODEC_STATUS)
+                     |= MCPX_AC97_CODEC_READY;
+@@ -2628,6 +2717,15 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+      * intervals. All views alias the same physical pages, so reads and
+      * writes at any mirror address correctly access the base data.
+      */
++#if defined(__EMSCRIPTEN__)
++    /* No mirrors on WebAssembly: linear memory cannot alias, and a mirror's
++     * addresses are the host heap's (wasm_fixed.h). Generated code folds
++     * guest addresses below 2 GB onto RAM instead (XBOX_PTR in
++     * recomp_types.h), which is the same wrap; runtime code that adds the
++     * memory offset to a mirror address by hand is not covered. */
++    fprintf(stderr, "  RAM mirror: none on WebAssembly (generated code folds"
++                    " addresses below 2 GB onto RAM)\n");
++#else
+     {
+         int mirrors_ok = 0;
+         /* The tiled aperture is a specific architectural alias -- physical RAM
+@@ -2679,6 +2777,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+                 mirrors_ok, XBOX_NUM_MIRRORS,
+                 (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
+     }
++#endif
+ 
+     /*
+      * Tiled / write-combined aperture at 0xF0000000.
+@@ -2725,11 +2824,25 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+                 tiled_size,
+                 (LPVOID)tiled_native)
+             : NULL;
++#if defined(__EMSCRIPTEN__)
++        if (g_tiled_view) g_tiled_view_size = tiled_size;
++#endif
+         if (g_tiled_view && !g_contig_memory) {
+             fprintf(stderr, "xbox_MemoryLayoutInit: contiguous window unavailable;"
+                             " cannot verify tiled alias\n");
+             return FALSE;
+         }
++#if defined(__EMSCRIPTEN__)
++        if (g_tiled_view) {
++            /* Linear memory cannot alias, so there is no alias to prove.
++             * Generated code folds tiled addresses onto the contiguous
++             * window when built with NFL2K5_WEB_TILED_FOLD, and
++             * wasm_unrouted_check() warns if a title writes here at all. */
++            fprintf(stderr, "  Tiled aperture: %u MB at Xbox VA 0x%08X (separate"
++                    " memory: no aliasing on WebAssembly)\n",
++                    (unsigned)(tiled_size / (1024 * 1024)), XBOX_TILED_BASE);
++        } else
++#endif
+         if (g_tiled_view) {
+             /* Prove the alias rather than assert it. Everything the title
+              * renders goes through this window and is read back through the
 diff --git a/src/platform/CMakeLists.txt b/src/platform/CMakeLists.txt
-index bb3d822..f56fae5 100644
+index bb3d822..440399f 100644
 --- a/src/platform/CMakeLists.txt
 +++ b/src/platform/CMakeLists.txt
-@@ -24,7 +24,7 @@ if(WIN32)
+@@ -24,9 +24,20 @@ if(WIN32)
      target_include_directories(platform PUBLIC ${XBOXRECOMP_SRC_DIR})
  else()
      add_library(platform STATIC win32_compat.c)
@@ -372,17 +591,31 @@ index bb3d822..f56fae5 100644
 +    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR EMSCRIPTEN)
          target_sources(platform PRIVATE guest_memory.c)
      endif()
++    if(EMSCRIPTEN)
++        # Fixed-address mappings in linear memory (wasm_fixed.h): the host's
++        # static data starts above the low window, and sbrk is wrapped so the
++        # heap stops below WASM_FIXED_CEILING. The base must sit above the
++        # highest low guest address -- 0x10000 + 128 MB of devkit RAM.
++        set(XBOXRECOMP_WASM_GLOBAL_BASE "135266304" CACHE STRING
++            "Web: first host address (decimal); everything below is fixed-mapping space")
++        target_sources(platform PRIVATE wasm_fixed.c)
++        target_link_options(platform INTERFACE
++            "-Wl,--wrap=sbrk" "-sGLOBAL_BASE=${XBOXRECOMP_WASM_GLOBAL_BASE}")
++    endif()
      target_include_directories(platform PUBLIC
+         ${XBOXRECOMP_SRC_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}
 diff --git a/src/platform/guest_memory.c b/src/platform/guest_memory.c
-index 2324386..4afbfc0 100644
+index 2324386..e0d477c 100644
 --- a/src/platform/guest_memory.c
 +++ b/src/platform/guest_memory.c
-@@ -11,12 +11,27 @@
+@@ -11,12 +11,28 @@
  #include <sys/uio.h>
  #include <unistd.h>
  #include <string.h>
 +#elif defined(__EMSCRIPTEN__)
 +#include <string.h>
++#include "wasm_fixed.h"
  #else
 -#error "Checked guest-memory copies require Windows or Linux"
 +#error "Checked guest-memory copies require Windows, Linux or Emscripten"
@@ -391,15 +624,15 @@ index 2324386..4afbfc0 100644
  
 -#if !defined(_WIN32)
 +#if defined(__EMSCRIPTEN__)
-+/* WebAssembly cannot fault on a load or store inside linear memory, and has
-+ * nothing mapped outside it. A copy is therefore safe exactly when the host
-+ * range lies inside the current memory; there is nothing to probe. Guest
-+ * regions the runtime never backed read as whatever the linear memory holds
-+ * there, the same bytes a direct MEM32() would see. */
++/* WebAssembly cannot fault inside linear memory, so "is this mapped" has no
++ * hardware answer -- and the answer matters more than on a native host,
++ * because the host's own heap shares the address space. A guest range is
++ * copyable exactly when it lies inside one fixed mapping (wasm_fixed.h);
++ * anything else, including a stray guest pointer into host memory, is
++ * refused, as an unmapped page would be. */
 +static bool wasm_range_ok(uintptr_t host, size_t size)
 +{
-+    size_t memory = __builtin_wasm_memory_size(0) * (size_t)65536;
-+    return host < memory && size <= memory - host;
++    return wasm_fixed_claimed((const void *)host, size ? size : 1) != 0;
 +}
 +#endif
 +
@@ -407,7 +640,7 @@ index 2324386..4afbfc0 100644
  /* getpid() is a system call; the process never forks, so ask once. */
  static pid_t self_pid(void)
  {
-@@ -49,6 +64,10 @@ bool xbox_guest_memory_read(uintptr_t base, uint64_t address, void *destination,
+@@ -49,6 +65,10 @@ bool xbox_guest_memory_read(uintptr_t base, uint64_t address, void *destination,
      __try { memcpy(destination,(const void *)host,size); }
      __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
      return true;
@@ -418,7 +651,7 @@ index 2324386..4afbfc0 100644
  #else
      if (xbox_guest_memory_direct(base, address, size, false)) {
          memcpy(destination, (const void *)host, size);
-@@ -70,6 +89,10 @@ bool xbox_guest_memory_write(uintptr_t base, uint64_t address, const void *sourc
+@@ -70,6 +90,10 @@ bool xbox_guest_memory_write(uintptr_t base, uint64_t address, const void *sourc
      __try { memcpy((void *)host,source,size); }
      __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
      return true;
@@ -429,7 +662,7 @@ index 2324386..4afbfc0 100644
  #else
      if (xbox_guest_memory_direct(base, address, size, true)) {
          memcpy((void *)host, source, size);
-@@ -235,6 +258,12 @@ bool xbox_guest_memory_direct(uintptr_t base, uint64_t address, size_t size, boo
+@@ -235,6 +259,12 @@ bool xbox_guest_memory_direct(uintptr_t base, uint64_t address, size_t size, boo
          pages_remember(first, last, writable, gen);
          return true;
      }
@@ -442,11 +675,214 @@ index 2324386..4afbfc0 100644
  #else
      (void)base; (void)address; (void)size; (void)writable;
      return false;
+diff --git a/src/platform/wasm_fixed.c b/src/platform/wasm_fixed.c
+new file mode 100644
+index 0000000..2a4cc10
+--- /dev/null
++++ b/src/platform/wasm_fixed.c
+@@ -0,0 +1,141 @@
++/* Fixed-address memory for WebAssembly builds. See wasm_fixed.h. */
++#ifdef __EMSCRIPTEN__
++#include "wasm_fixed.h"
++
++#include <emscripten/heap.h>
++#include <errno.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <string.h>
++
++extern char __global_base;   /* wasm-ld: start of static data (-sGLOBAL_BASE) */
++
++#define MAX_CLAIMS   64
++#define MAX_RELEASED 64
++
++typedef struct { uintptr_t lo, hi; } Range;
++
++/* Writers (map, unmap) serialise on s_lock. Readers (wasm_fixed_claimed, on
++ * the checked-copy path the GPU uses per draw) take no lock: slots are never
++ * moved, a slot is published by storing hi last, and an unmapped slot is
++ * emptied by storing hi = 0 first. A reader racing an unmap may still see
++ * the claim, which is harmless -- the memory does not go anywhere. */
++static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
++static Range s_claims[MAX_CLAIMS];
++static int   s_claim_count;   /* slots ever used; empty slots have hi == 0 */
++/* Ranges that were claimed and released: the guest wrote there, so a new
++ * claim over them must zero them. Everything else is still pristine. */
++static Range s_released[MAX_RELEASED];
++static int   s_released_count;
++
++static int overlaps(Range a, Range b) { return a.lo < b.hi && b.lo < a.hi; }
++
++static int in_fixed_window(uintptr_t lo, uintptr_t hi)
++{
++    uintptr_t low_end = (uintptr_t)&__global_base;
++    if (hi <= low_end)
++        return 1;
++    return lo >= WASM_FIXED_CEILING;
++}
++
++void *wasm_fixed_map(void *address, size_t size)
++{
++    uintptr_t lo = (uintptr_t)address;
++    Range r;
++    void *result = NULL;
++
++    /* Address 0 is the host's NULL; a mapping there could not be told apart
++     * from a failure. Nothing needs it (XBE images start at 0x10000). */
++    if (!address || !size || size > UINTPTR_MAX - lo)
++        return NULL;
++    r.lo = lo;
++    r.hi = lo + size;
++    if (!in_fixed_window(r.lo, r.hi))
++        return NULL;
++
++    pthread_mutex_lock(&s_lock);
++    int slot = -1;
++    for (int i = 0; i < s_claim_count; i++) {
++        if (!s_claims[i].hi) { if (slot < 0) slot = i; continue; }
++        if (overlaps(s_claims[i], r))
++            goto out;
++    }
++    if (slot < 0 && s_claim_count == MAX_CLAIMS)
++        goto out;
++    /* The memory must exist before anyone touches it. Growth only ever adds
++     * zeroed pages, and the heap ceiling means the host never used them. */
++    if (r.hi > emscripten_get_heap_size() && !emscripten_resize_heap(r.hi)) {
++        fprintf(stderr, "wasm_fixed_map: cannot grow memory to 0x%08lX\n",
++                (unsigned long)r.hi);
++        goto out;
++    }
++    for (int i = 0; i < s_released_count; i++) {
++        if (overlaps(s_released[i], r)) {
++            uintptr_t a = s_released[i].lo > r.lo ? s_released[i].lo : r.lo;
++            uintptr_t b = s_released[i].hi < r.hi ? s_released[i].hi : r.hi;
++            memset((void *)a, 0, b - a);
++        }
++    }
++    if (slot < 0)
++        slot = s_claim_count;
++    __atomic_store_n(&s_claims[slot].lo, r.lo, __ATOMIC_RELAXED);
++    __atomic_store_n(&s_claims[slot].hi, r.hi, __ATOMIC_RELEASE);
++    if (slot == s_claim_count)
++        __atomic_store_n(&s_claim_count, s_claim_count + 1, __ATOMIC_RELEASE);
++    result = address;
++out:
++    pthread_mutex_unlock(&s_lock);
++    return result;
++}
++
++size_t wasm_fixed_unmap(const void *address)
++{
++    size_t size = 0;
++    pthread_mutex_lock(&s_lock);
++    for (int i = 0; i < s_claim_count; i++) {
++        if (s_claims[i].hi && s_claims[i].lo == (uintptr_t)address) {
++            Range gone = s_claims[i];
++            size = gone.hi - gone.lo;
++            __atomic_store_n(&s_claims[i].hi, 0, __ATOMIC_RELEASE);
++            if (s_released_count < MAX_RELEASED)
++                s_released[s_released_count++] = gone;
++            else  /* out of bookkeeping: zero now rather than track it */
++                memset((void *)gone.lo, 0, size);
++            break;
++        }
++    }
++    pthread_mutex_unlock(&s_lock);
++    return size;
++}
++
++int wasm_fixed_claimed(const void *address, size_t size)
++{
++    uintptr_t lo = (uintptr_t)address;
++    int n = __atomic_load_n(&s_claim_count, __ATOMIC_ACQUIRE);
++    for (int i = 0; i < n; i++) {
++        uintptr_t hi = __atomic_load_n(&s_claims[i].hi, __ATOMIC_ACQUIRE);
++        uintptr_t c_lo = __atomic_load_n(&s_claims[i].lo, __ATOMIC_RELAXED);
++        if (hi && lo >= c_lo && lo < hi && size <= hi - lo)
++            return 1;
++    }
++    return 0;
++}
++
++/* The heap ceiling. Linked with --wrap=sbrk, so every sbrk call outside libc's
++ * own sbrk.o -- dlmalloc's included -- lands here. Growth past the ceiling
++ * fails with ENOMEM, which malloc reports as out of memory, instead of
++ * handing the host memory that a guest region owns. */
++void *__real_sbrk(intptr_t increment);
++
++void *__wrap_sbrk(intptr_t increment)
++{
++    uintptr_t brk = *emscripten_get_sbrk_ptr();
++    /* sbrk treats the increment as unsigned in 32-bit builds (see libc's
++     * sbrk.c), so a "negative" one is a huge request and is refused too. */
++    if ((uintptr_t)increment > WASM_FIXED_CEILING - brk || brk > WASM_FIXED_CEILING) {
++        errno = ENOMEM;
++        return (void *)-1;
++    }
++    return __real_sbrk(increment);
++}
++#endif
+diff --git a/src/platform/wasm_fixed.h b/src/platform/wasm_fixed.h
+new file mode 100644
+index 0000000..051d48e
+--- /dev/null
++++ b/src/platform/wasm_fixed.h
+@@ -0,0 +1,42 @@
++#ifndef XBOX_WASM_FIXED_H
++#define XBOX_WASM_FIXED_H
++/* Fixed-address memory for WebAssembly builds.
++ *
++ * A native host gives each guest region a mapping at a chosen address, so a
++ * guest address becomes a host pointer by adding one offset. wasm32 has a
++ * single linear memory and no mmap, so the same arithmetic is kept by making
++ * that memory the address space: a fixed mapping at address A is simply the
++ * linear memory at A, and the host is kept out of every range a mapping may
++ * use. Two rules keep it out:
++ *
++ *   - below __global_base: nothing. The host's static data, stack and heap
++ *     all start at the link-time global base (-sGLOBAL_BASE), so a game that
++ *     needs low guest RAM links with a base above it.
++ *   - at and above WASM_FIXED_CEILING: nothing. The heap grows by sbrk, and
++ *     sbrk is wrapped (--wrap=sbrk, see wasm_fixed.c) to refuse growth past
++ *     the ceiling.
++ *
++ * What lies between is the host's. A fixed mapping may claim any range in
++ * the two outer windows that no other mapping holds. There is no aliasing:
++ * two claims are two different pieces of memory, which callers that want a
++ * second view of the same bytes must handle themselves. */
++#ifdef __EMSCRIPTEN__
++#include <stddef.h>
++#include <stdint.h>
++
++#define WASM_FIXED_CEILING 0x80000000u
++
++/* Claim [address, address + size) and return address, or NULL when the range
++ * is not in a fixed window, overlaps another claim, or the memory cannot grow
++ * to cover it. Memory never claimed before reads as zero; a range that was
++ * claimed and released is zeroed again, as a fresh anonymous mapping is. */
++void *wasm_fixed_map(void *address, size_t size);
++
++/* Release the claim that starts at address. Returns its size, or 0 when no
++ * claim starts there. */
++size_t wasm_fixed_unmap(const void *address);
++
++/* True when [address, address + size) lies inside one claim. */
++int wasm_fixed_claimed(const void *address, size_t size);
++#endif
++#endif
 diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
-index 6caf7ee..b45d45d 100644
+index 6caf7ee..eccf301 100644
 --- a/src/platform/win32_compat.c
 +++ b/src/platform/win32_compat.c
-@@ -39,6 +39,8 @@ size_t view_take(const void *addr);
+@@ -34,11 +34,16 @@ size_t view_take(const void *addr);
+ #include <fenv.h>
+ #include <sys/mman.h>
+ #include "guest_memory.h"
++#if defined(__EMSCRIPTEN__)
++#include "wasm_fixed.h"
++#endif
+ #if defined(__APPLE__)
+ #include <sys/sysctl.h>
  #include <sys/stat.h>
  #include <mach/mach.h>
  #include <mach/mach_vm.h>
@@ -455,7 +891,116 @@ index 6caf7ee..b45d45d 100644
  #else
  #include <sys/sysinfo.h>
  #endif
-@@ -2038,6 +2040,13 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
+@@ -1407,6 +1412,21 @@ static LPVOID virtual_alloc_impl(LPVOID address, SIZE_T size, DWORD allocationTy
+ 
+ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
+ {
++#if defined(__EMSCRIPTEN__)
++    /* An address means a fixed mapping (wasm_fixed.h). Committing inside a
++     * range that is already claimed is a no-op: there is no protection to
++     * change. Without an address this is an ordinary allocation below. */
++    if (address) {
++        if ((allocationType & MEM_COMMIT) && !(allocationType & MEM_RESERVE)
++                && wasm_fixed_claimed(address, size))
++            return address;
++        if (!wasm_fixed_map(address, size)) {
++            SetLastError(ERROR_INVALID_ADDRESS);
++            return NULL;
++        }
++        return address;
++    }
++#endif
+     LPVOID result = virtual_alloc_impl(address, size, allocationType, protect);
+     xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
+     return result;
+@@ -1432,6 +1452,12 @@ static BOOL virtual_free_impl(LPVOID address, SIZE_T size, DWORD freeType)
+ 
+ BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
+ {
++#if defined(__EMSCRIPTEN__)
++    if ((freeType & MEM_RELEASE) && wasm_fixed_unmap(address))
++        return TRUE;
++    if (wasm_fixed_claimed(address, size ? size : 1))
++        return TRUE;   /* MEM_DECOMMIT of a fixed range: nothing to drop */
++#endif
+     BOOL result = virtual_free_impl(address, size, freeType);
+     xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
+     return result;
+@@ -1445,6 +1471,14 @@ static BOOL virtual_protect_impl(LPVOID address, SIZE_T size, DWORD newProtect,
+ 
+ BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
+ {
++#if defined(__EMSCRIPTEN__)
++    /* WebAssembly has no page protection. Report success, as Emscripten's
++     * own mprotect does, so protection used as a debugging aid stays
++     * optional; code that relies on a fault must not be built for the web. */
++    if (oldProtect) *oldProtect = PAGE_READWRITE;
++    (void)address; (void)size; (void)newProtect;
++    return TRUE;
++#endif
+     BOOL result = virtual_protect_impl(address, size, newProtect, oldProtect);
+     xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
+     return result;
+@@ -1870,9 +1904,23 @@ HANDLE CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
+                           DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
+ {
+     (void)file; (void)sa; (void)protect;
+-    SIZE_T size = ((SIZE_T)maxSizeHigh << 32) | maxSizeLow;
+-    if (size == 0) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+-
++    /* Combine in 64 bits: SIZE_T is 32 bits on a 32-bit host (wasm32), where
++     * shifting it by 32 is undefined -- clang compiled it to a trap. */
++    uint64_t size64 = ((uint64_t)maxSizeHigh << 32) | maxSizeLow;
++    if (size64 == 0 || size64 > (uint64_t)SIZE_MAX) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
++    SIZE_T size = (SIZE_T)size64;
++
++#if defined(__EMSCRIPTEN__)
++    /* No file descriptors behind mappings, and no aliasing: each view is its
++     * own fixed claim (see MapViewOfFileEx). The object only records size. */
++    (void)name;
++    {
++        w32_object *wo = obj_alloc(K_FILEMAP);
++        wo->fd       = -1;
++        wo->map_size = size;
++        return (HANDLE)wo;
++    }
++#endif
+     int fd = anon_map_fd(name);
+     if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+     if (ftruncate(fd, (off_t)size) != 0) {
+@@ -1902,6 +1950,20 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
+ 
+     off_t  off = ((off_t)offHigh << 32) | offLow;
+     SIZE_T len = count ? count : (o->map_size - (SIZE_T)off);
++#if defined(__EMSCRIPTEN__)
++    /* A view is a fixed claim at the requested address. It cannot alias
++     * another view of the same mapping, so a second view at a different
++     * address is separate memory -- callers that depend on aliasing (RAM
++     * mirrors, the NV2A tiled aperture) see that, see xbox_memory_layout.c.
++     * Without an address there is nowhere fixed to put it: refuse, as a
++     * full address space would. */
++    (void)access; (void)off;
++    if (!baseAddr || !wasm_fixed_map(baseAddr, len)) {
++        SetLastError(ERROR_INVALID_ADDRESS);
++        return NULL;
++    }
++    return baseAddr;
++#endif
+     int prot   = PROT_READ | ((access != FILE_MAP_READ) ? PROT_WRITE : 0);
+     int flags  = MAP_SHARED;
+ 
+@@ -1948,6 +2010,10 @@ LPVOID MapViewOfFile(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow,
+ 
+ BOOL UnmapViewOfFile(LPCVOID baseAddr)
+ {
++#if defined(__EMSCRIPTEN__)
++    if (wasm_fixed_unmap(baseAddr))
++        return TRUE;
++#endif
+     size_t len = view_take(baseAddr);
+     if (len == 0) return FALSE;
+     return munmap((void *)baseAddr, len) == 0;
+@@ -2038,6 +2104,13 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
      b->ullAvailPhys     = avail;
      b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
      b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;
@@ -469,3 +1014,253 @@ index 6caf7ee..b45d45d 100644
  #else
      struct sysinfo si;
      if (sysinfo(&si) != 0) return FALSE;
+diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
+index 0e3de94..97d843d 100644
+--- a/templates/runtime/recomp_types.h
++++ b/templates/runtime/recomp_types.h
+@@ -386,7 +386,36 @@ void recomp_trace_esp(const char *name, const char *tag);
+  * uintptr_t cast preserves the overflow bits, landing us 4GB+ past
+  * our mapping and causing access violations.
+  */
++#if defined(__EMSCRIPTEN__)
++/* WebAssembly: guest memory is the wasm linear memory itself at
++ * g_xbox_mem_offset (xboxrecomp platform/wasm_fixed.h), and the host's heap
++ * lives in the guest addresses between RAM and 2 GB -- where a native host
++ * maps RAM mirrors. Fold those addresses onto RAM, which is the mirror wrap
++ * the hardware does and keeps generated code out of host memory: below 2 GB
++ * an address is taken modulo RECOMP_WASM_RAM_SPAN, from 2 GB up it is used as
++ * is (contiguous window, device apertures). Four integer operations and no
++ * branch or load.
++ *
++ * RECOMP_WASM_TILED_FOLD additionally maps the NV2A tiled aperture
++ * (0xF0000000..0xF3FFFFFF) onto the contiguous window it aliases on
++ * hardware; linear memory cannot alias, so a title that renders through
++ * tiled addresses needs it. Off by default: it costs a compare per access. */
++#ifndef RECOMP_WASM_RAM_SPAN
++#define RECOMP_WASM_RAM_SPAN 0x08000000u   /* 128 MB, the largest RAM map */
++#endif
++static inline uint32_t recomp_wasm_va(uint32_t a)
++{
++    a &= (RECOMP_WASM_RAM_SPAN - 1u) | (0u - (a >> 31));
++#ifdef RECOMP_WASM_TILED_FOLD
++    if (a - 0xF0000000u < 0x04000000u)
++        a -= 0x70000000u;
++#endif
++    return a;
++}
++#define XBOX_PTR(addr) ((uintptr_t)recomp_wasm_va((uint32_t)(addr)) + g_xbox_mem_offset)
++#else
+ #define XBOX_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
++#endif
+ 
+ /** Read/write N bytes at a flat Xbox memory address. */
+ #define MEM8(addr)   (*(volatile uint8_t  *)XBOX_PTR(addr))
+diff --git a/tests/wasm_fixed/CMakeLists.txt b/tests/wasm_fixed/CMakeLists.txt
+new file mode 100644
+index 0000000..44fdac2
+--- /dev/null
++++ b/tests/wasm_fixed/CMakeLists.txt
+@@ -0,0 +1,10 @@
++# Emscripten only: emcmake cmake -S . -B build && cmake --build build && ctest --test-dir build
++cmake_minimum_required(VERSION 3.20)
++project(wasm_fixed_test C)
++add_executable(test_wasm_fixed test_wasm_fixed.c ../../src/platform/wasm_fixed.c)
++target_include_directories(test_wasm_fixed PRIVATE ../../src/platform)
++target_compile_options(test_wasm_fixed PRIVATE -pthread)
++target_link_options(test_wasm_fixed PRIVATE -pthread -Wl,--wrap=sbrk -sGLOBAL_BASE=135266304
++    -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sENVIRONMENT=node,worker -sEXIT_RUNTIME=1)
++enable_testing()
++add_test(NAME wasm_fixed COMMAND node $<TARGET_FILE:test_wasm_fixed>)
+diff --git a/tests/wasm_fixed/test_wasm_fixed.c b/tests/wasm_fixed/test_wasm_fixed.c
+new file mode 100644
+index 0000000..48c0d26
+--- /dev/null
++++ b/tests/wasm_fixed/test_wasm_fixed.c
+@@ -0,0 +1,65 @@
++/* wasm_fixed: fixed claims land where asked, refuse host memory and double
++ * claims, and the host heap never grows into a fixed window -- even when the
++ * program allocates until malloc gives up. Run under Node (see CMakeLists). */
++#include "wasm_fixed.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++extern char __global_base;
++static int failures;
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)
++
++int main(void)
++{
++    uint8_t *ram    = (uint8_t *)0x00010000u;   /* guest RAM view */
++    uint8_t *contig = (uint8_t *)0x80010000u;   /* contiguous window */
++    uint8_t *top    = (uint8_t *)0xFD010000u;   /* device apertures */
++    const size_t MB = 1024u * 1024u;
++
++    CHECK((uintptr_t)&__global_base >= 0x10000u + 128u * MB);
++    CHECK(wasm_fixed_map(ram, 128 * MB) == ram);
++    CHECK(wasm_fixed_map(contig, 64 * MB) == contig);
++    CHECK(wasm_fixed_map(top, 16 * MB) == top);
++    CHECK(wasm_fixed_map(ram + MB, MB) == NULL);            /* overlaps a claim */
++    CHECK(wasm_fixed_map((void *)0x09000000u, MB) == NULL); /* host memory */
++    CHECK(wasm_fixed_map((void *)0x7FF00000u, 2 * MB) == NULL); /* straddles the ceiling */
++    CHECK(wasm_fixed_claimed(contig + 4, 4));
++    CHECK(!wasm_fixed_claimed(contig + 64 * MB, 4));
++
++    /* Fresh claims read as zero; then fill the windows with a pattern. */
++    CHECK(ram[0] == 0 && contig[64 * MB - 1] == 0 && top[5] == 0);
++    memset(ram, 0xA5, 128 * MB);
++    memset(contig, 0x5A, 64 * MB);
++    memset(top, 0xC3, 16 * MB);
++
++    /* Exhaust the heap. Every block must be host memory, and none may reach
++     * a window; afterwards the patterns must be intact. */
++    size_t total = 0, n = 0;
++    uintptr_t highest = 0;
++    for (;;) {
++        uint8_t *p = malloc(16 * MB);
++        if (!p) break;
++        CHECK((uintptr_t)p >= (uintptr_t)&__global_base);
++        CHECK((uintptr_t)p + 16 * MB <= WASM_FIXED_CEILING);
++        if ((uintptr_t)p + 16 * MB > highest) highest = (uintptr_t)p + 16 * MB;
++        p[0] = 1; p[16 * MB - 1] = 1;
++        total += 16 * MB; n++;
++    }
++    printf("heap: %zu MB in %zu blocks, highest end 0x%08lX\n",
++           total / MB, n, (unsigned long)highest);
++    CHECK(total >= 1024 * MB);   /* the host still has ~1.8 GB */
++    for (size_t i = 0; i < 128 * MB; i += 4093) CHECK(ram[i] == 0xA5);
++    for (size_t i = 0; i < 64 * MB; i += 4093)  CHECK(contig[i] == 0x5A);
++    for (size_t i = 0; i < 16 * MB; i += 4093)  CHECK(top[i] == 0xC3);
++
++    /* Release and reclaim: the range is zeroed like a fresh mapping. */
++    CHECK(wasm_fixed_unmap(top) == 16 * MB);
++    CHECK(wasm_fixed_map(top, 16 * MB) == top);
++    CHECK(top[0] == 0 && top[16 * MB - 1] == 0);
++
++    if (failures) { printf("%d failure(s)\n", failures); return 1; }
++    printf("wasm_fixed: all checks passed\n");
++    return 0;
++}
+diff --git a/tests/wasm_layout/CMakeLists.txt b/tests/wasm_layout/CMakeLists.txt
+new file mode 100644
+index 0000000..02a3738
+--- /dev/null
++++ b/tests/wasm_layout/CMakeLists.txt
+@@ -0,0 +1,13 @@
++# Emscripten only. Needs SDL3 built for Emscripten (tools/build-web.sh does):
++#   emcmake cmake -S . -B build -DSDL3_DIR=<sdl3-wasm>/lib/cmake/SDL3 -DCMAKE_C_FLAGS=-pthread
++#   cmake --build build && ctest --test-dir build
++cmake_minimum_required(VERSION 3.20)
++project(wasm_layout_test C)
++add_subdirectory(../.. xboxrecomp)
++add_executable(test_wasm_layout test_wasm_layout.c)
++target_link_libraries(test_wasm_layout PRIVATE xboxrecomp)
++target_link_options(test_wasm_layout PRIVATE -pthread -sALLOW_MEMORY_GROWTH=1
++    -sINITIAL_MEMORY=512MB -sMAXIMUM_MEMORY=4GB -sPTHREAD_POOL_SIZE=8
++    -sENVIRONMENT=node,worker -sEXIT_RUNTIME=1 -sERROR_ON_UNDEFINED_SYMBOLS=0)
++enable_testing()
++add_test(NAME wasm_layout COMMAND node $<TARGET_FILE:test_wasm_layout>)
+diff --git a/tests/wasm_layout/test_wasm_layout.c b/tests/wasm_layout/test_wasm_layout.c
+new file mode 100644
+index 0000000..f0e4b59
+--- /dev/null
++++ b/tests/wasm_layout/test_wasm_layout.c
+@@ -0,0 +1,97 @@
++/* The real xbox_MemoryLayoutInit on WebAssembly, fed a minimal XBE: every
++ * guest region lands at guest VA + the memory offset, generated-code
++ * addressing (XBOX_PTR) folds RAM mirrors, checked copies accept guest
++ * regions and refuse host memory, and the host heap stays out of the guest
++ * windows afterwards. Run under Node (see CMakeLists.txt). */
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "xbox_memory_layout.h"
++#include "platform/guest_memory.h"
++#include "platform/wasm_fixed.h"
++#include "../../templates/runtime/recomp_types.h"
++
++static int failures;
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); failures++; } } while (0)
++
++static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
++
++int main(void)
++{
++    /* XBE: header at 0x10000 (size 0x1000), one section at VA 0x11000. */
++    static uint8_t xbe[0x2000];
++    memcpy(xbe, "XBEH", 4);
++    put32(xbe + 0x104, 0x10000);      /* base address */
++    put32(xbe + 0x108, 0x1000);       /* size of headers */
++    put32(xbe + 0x10C, 0x2000);       /* size of image */
++    put32(xbe + 0x11C, 1);            /* section count */
++    put32(xbe + 0x120, 0x10200);      /* section headers VA */
++    uint8_t *sh = xbe + 0x200;
++    put32(sh + 0x04, 0x11000);        /* VA */
++    put32(sh + 0x08, 0x1000);         /* virtual size */
++    put32(sh + 0x0C, 0x1000);         /* raw offset */
++    put32(sh + 0x10, 0x100);          /* raw size */
++    memset(xbe + 0x1000, 0x7E, 0x100);
++
++    setenv("RECOMP_AC97_READY", "1", 1);   /* the APU/AC97 path, as NFL 2K5 runs */
++    CHECK(xbox_MemoryLayoutInit(xbe, sizeof xbe));
++
++    uintptr_t off = (uintptr_t)xbox_GetMemoryOffset();
++    printf("memory offset 0x%lX\n", (unsigned long)off);
++    const struct { const char *name; uint32_t va, size; } regions[] = {
++        { "RAM",        0x00010000u, 64u << 20 },
++        { "contiguous", 0x80000000u, 64u << 20 },
++        { "tiled",      0xF0000000u, 64u << 20 },
++        { "NV2A",       0xFD000000u, 16u << 20 },
++        { "MCPX",       0xFE800000u,  8u << 20 },
++        { "flash",      0xFF000000u,  1u << 20 },
++    };
++    for (unsigned i = 0; i < sizeof regions / sizeof regions[0]; i++) {
++        int ok = wasm_fixed_claimed((void *)(off + regions[i].va), regions[i].size - (regions[i].va == 0x10000u ? 0x10000u : 0));
++        printf("  %-10s 0x%08X claimed: %s\n", regions[i].name, regions[i].va, ok ? "yes" : "NO");
++        CHECK(ok);
++    }
++
++    /* The section landed at its VA. */
++    CHECK(MEM8(0x11000) == 0x7E && MEM8(0x110FF) == 0x7E && MEM8(0x11100) == 0);
++
++    /* Generated-code addressing: mirrors fold onto RAM, high regions do not. */
++    MEM32(0x00100000) = 0xA1B2C3D4u;
++    CHECK(MEM32(0x08100000) == 0xA1B2C3D4u);      /* 128 MB mirror */
++    CHECK(MEM32(0x40100000) == 0xA1B2C3D4u);
++    MEM32(0x80001000) = 0x11223344u;
++    CHECK(*(volatile uint32_t *)(off + 0x80001000u) == 0x11223344u);
++    CHECK(MEM32(0x00001000) != 0x11223344u);      /* contiguous is its own storage */
++    MEM32(0xFD001804) = 0x55u;
++    CHECK(*(volatile uint32_t *)(off + 0xFD001804u) == 0x55u);
++
++    /* Checked copies: guest regions yes, host memory no. */
++    uint32_t v = 0;
++    CHECK(xbox_guest_memory_read(off, 0x80001000u, &v, 4) && v == 0x11223344u);
++    CHECK(xbox_guest_memory_read(off, 0xFD001804u, &v, 4) && v == 0x55u);
++    CHECK(!xbox_guest_memory_read(off, 0x20000000u, &v, 4));   /* host heap */
++    CHECK(!xbox_guest_memory_write(off, 0x30000000u, &v, 4));
++    CHECK(xbox_guest_memory_direct(off, 0x80001000u, 4, true));
++    CHECK(!xbox_guest_memory_direct(off, 0x20000000u, 4, false));
++
++    /* The host keeps allocating below the ceiling and never into a window. */
++    MEM32(0x83FFFFF0) = 0xDEADBEEFu;
++    size_t total = 0;
++    void *keep[256]; int n = 0;
++    while (n < 256) {
++        void *p = malloc(8u << 20);
++        if (!p) break;
++        CHECK((uintptr_t)p + (8u << 20) <= WASM_FIXED_CEILING);
++        memset(p, 0xEE, 8u << 20);
++        keep[n++] = p; total += 8u << 20;
++    }
++    printf("host heap after init: %zu MB allocatable\n", total >> 20);
++    CHECK(total >= (1024u << 20));
++    CHECK(MEM32(0x83FFFFF0) == 0xDEADBEEFu && MEM32(0x00100000) == 0xA1B2C3D4u);
++    while (n) free(keep[--n]);
++
++    if (failures) { printf("%d failure(s)\n", failures); return 1; }
++    printf("wasm layout: all checks passed\n");
++    return 0;
++}

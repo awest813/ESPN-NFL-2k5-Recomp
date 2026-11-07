@@ -386,7 +386,36 @@ void recomp_trace_esp(const char *name, const char *tag);
  * uintptr_t cast preserves the overflow bits, landing us 4GB+ past
  * our mapping and causing access violations.
  */
+#if defined(__EMSCRIPTEN__)
+/* WebAssembly: guest memory is the wasm linear memory itself at
+ * g_xbox_mem_offset (xboxrecomp platform/wasm_fixed.h), and the host's heap
+ * lives in the guest addresses between RAM and 2 GB -- where a native host
+ * maps RAM mirrors. Fold those addresses onto RAM, which is the mirror wrap
+ * the hardware does and keeps generated code out of host memory: below 2 GB
+ * an address is taken modulo RECOMP_WASM_RAM_SPAN, from 2 GB up it is used as
+ * is (contiguous window, device apertures). Four integer operations and no
+ * branch or load.
+ *
+ * RECOMP_WASM_TILED_FOLD additionally maps the NV2A tiled aperture
+ * (0xF0000000..0xF3FFFFFF) onto the contiguous window it aliases on
+ * hardware; linear memory cannot alias, so a title that renders through
+ * tiled addresses needs it. Off by default: it costs a compare per access. */
+#ifndef RECOMP_WASM_RAM_SPAN
+#define RECOMP_WASM_RAM_SPAN 0x08000000u   /* 128 MB, the largest RAM map */
+#endif
+static inline uint32_t recomp_wasm_va(uint32_t a)
+{
+    a &= (RECOMP_WASM_RAM_SPAN - 1u) | (0u - (a >> 31));
+#ifdef RECOMP_WASM_TILED_FOLD
+    if (a - 0xF0000000u < 0x04000000u)
+        a -= 0x70000000u;
+#endif
+    return a;
+}
+#define XBOX_PTR(addr) ((uintptr_t)recomp_wasm_va((uint32_t)(addr)) + g_xbox_mem_offset)
+#else
 #define XBOX_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
+#endif
 
 /** Read/write N bytes at a flat Xbox memory address. */
 #define MEM8(addr)   (*(volatile uint8_t  *)XBOX_PTR(addr))
