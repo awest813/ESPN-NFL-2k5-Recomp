@@ -234,14 +234,16 @@ static void sdl_pads_refresh(void)
     int count = 0;
     SDL_JoystickID *ids;
 
-    if (s_last_scan_ms && now - s_last_scan_ms < 1000)
+    SDL_LockMutex(s_lock);
+    if (s_last_scan_ms && now - s_last_scan_ms < 1000) {
+        SDL_UnlockMutex(s_lock);
         return;
+    }
     s_last_scan_ms = now;
 
     if (!SDL_WasInit(SDL_INIT_GAMEPAD))
         SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 
-    SDL_LockMutex(s_lock);
     for (int i = 0; i < 4; i++) {
         if (s_pads[i] && !SDL_GamepadConnected(s_pads[i])) {
             SDL_CloseGamepad(s_pads[i]);
@@ -252,8 +254,10 @@ static void sdl_pads_refresh(void)
     ids = SDL_GetGamepads(&count);
     if (ids) {
         for (int i = 0; i < count; i++) {
-            if (SDL_GetGamepadFromID(ids[i]) != NULL)
-                continue;
+            int ours = 0;
+            for (int slot = 0; slot < 4; slot++)
+                if (s_pads[slot] && SDL_GetGamepadID(s_pads[slot]) == ids[i]) ours = 1;
+            if (ours) continue;
             for (int slot = 0; slot < 4; slot++) {
                 if (!s_pads[slot]) {
                     s_pads[slot] = SDL_OpenGamepad(ids[i]);
@@ -271,6 +275,9 @@ static void sdl_pads_refresh(void)
     }
     SDL_UnlockMutex(s_lock);
 }
+
+/* Negate without overflowing -32768, preserving an exact neutral zero. */
+static short invert_axis(short v) { return v == -32768 ? 32767 : (short)-v; }
 
 static void read_sdl_pad(int slot, RawPad *s)
 {
@@ -307,9 +314,9 @@ static void read_sdl_pad(int slot, RawPad *s)
     s->btn[C_RT] = (unsigned char)(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) >> 7);
 
     s->lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
-    s->ly = (short)(-1 - SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
+    s->ly = invert_axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
     s->rx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
-    s->ry = (short)(-1 - SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+    s->ry = invert_axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
     SDL_UnlockMutex(s_lock);
 }
 
@@ -473,9 +480,11 @@ unsigned nfl2k5_controls_ports(void)
 
 int nfl2k5_controls_get(int port, XBOX_GAMEPAD *g, int use_pads)
 {
-    RawPad s;
-    controls_init();
+    RawPad s = {0};
+    if (!g) return 0;
     memset(g, 0, sizeof *g);
+    if (port < 0 || port >= 4) return 0;
+    controls_init();
     sdl_pads_refresh();
 
     if (use_pads && port >= 0 && port < 4) {

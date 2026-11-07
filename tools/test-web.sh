@@ -44,6 +44,7 @@ cmake --build "$OUT/sdlgpu_web" -j "${JOBS:-$(nproc)}"
 if [ "$HAVE_PW" = 1 ]; then
   node "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
   node "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
+  node "$ROOT/tests/web/test_browser_saves.js" "$OUT/smoke"
 else
   echo "web audio/video test skipped (needs Playwright)"
 fi

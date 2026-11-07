@@ -37,17 +37,17 @@ const check = (cond, what) => { if (!cond) { failures++; console.log('FAIL:', wh
 const PAD_STUB = () => {
   window.__pads = [];
   navigator.getGamepads = () => window.__pads;
-  window.__connectPad = () => {
-    const pad = { id: 'Test Pad (STANDARD GAMEPAD)', index: 0, connected: true, mapping: 'standard',
+  window.__connectPad = (index = 0) => {
+    const pad = { id: 'Test Pad ' + index + ' (STANDARD GAMEPAD)', index, connected: true, mapping: 'standard',
                   timestamp: performance.now(), axes: [0, 0, 0, 0],
                   buttons: Array.from({ length: 17 }, () => ({ pressed: false, touched: false, value: 0 })) };
-    window.__pads = [pad];
+    window.__pads[index] = pad;
     const e = new Event('gamepadconnected');
     e.gamepad = pad;
     window.dispatchEvent(e);
   };
-  window.__pressPad = (i, down) => {
-    const pad = window.__pads[0];
+  window.__pressPad = (i, down, index = 0) => {
+    const pad = window.__pads[index];
     pad.buttons[i] = { pressed: down, touched: down, value: down ? 1 : 0 };
     pad.timestamp = performance.now();
   };
@@ -140,6 +140,25 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       check(!!(await hasLog(page, /^\[SMOKE\] opened /, 5000)), 'controller: opens as a gamepad');
       await page.evaluate(() => window.__pressPad(0, true));
       check(!!(await hasLog(page, /^\[SMOKE\] pad A down$/, 5000)), 'controller: button press read');
+      check(!!(await hasLog(page, /^\[SMOKE\] controls disabled neutral: 1$/, 1000)), 'scripted input: disabled controller on port 2 is neutral');
+      check(!!(await hasLog(page, /^\[SMOKE\] controls 0: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'game controls read a pad already opened by another SDL caller');
+      await page.evaluate(() => { __pressPad(0,false); __pressPad(6,true); __pressPad(7,true); __pressPad(9,true); __pressPad(12,true); __pads[0].axes = [1,0,0,-1]; });
+      const mapped = await hasLog(page, /^\[SMOKE\] controls 0: connected=1 buttons=17 A=0 LT=255 RT=255 sticks=32767,0,0,32767$/, 5000);
+      if (!mapped) console.log('controller states:',await page.evaluate(() => smokeLog.filter(l => l.includes('[SMOKE] controls 0:'))));
+      check(!!mapped, 'game controls: Start, D-pad, triggers and both stick directions');
+      await page.evaluate(() => { smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 0:')); for (let i=0;i<17;i++) __pressPad(i,false); __pads[0].axes=[0,0,0,0]; });
+      check(!!(await hasLog(page, /^\[SMOKE\] pad A up$/, 5000)), 'controller: release reaches SDL');
+      check(!!(await hasLog(page, /^\[SMOKE\] controls 0: connected=1 buttons=0 A=0 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'game controls: releasing everything returns an exact neutral state');
+      await page.evaluate(() => __connectPad(1));
+      await page.evaluate(() => __pressPad(0,true,1));
+      check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'second controller maps to a separate Xbox port');
+      await page.evaluate(() => {
+        const pad = __pads[1]; pad.connected=false; __pads[1]=null;
+        const e = new Event('gamepaddisconnected'); e.gamepad=pad; dispatchEvent(e);
+      });
+      check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=0 buttons=0 A=0 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'unplugging clears held buttons and sticks');
+      await page.evaluate(() => { smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 1:')); __connectPad(1); __pressPad(0,true,1); });
+      check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'controller reconnects and resumes input on the second port');
       await page.close();
     }
     {

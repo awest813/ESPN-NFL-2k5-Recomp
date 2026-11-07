@@ -19,7 +19,8 @@ const KNOWN_XBE = {
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const state = { installed: null, importing: false, running: false, launched: false,
-  checked: false, supported: false, build: false, gpu: false, launchError: '' };
+  checked: false, supported: false, build: false, gpu: false, launchError: '',
+  saveBusy: false, saveCount: 0, saveRecoveryError: false };
 
 // ---- log ---------------------------------------------------------------------
 
@@ -111,16 +112,25 @@ function renderDisc() {
       $('disc-xbe').textContent += ' The disc has no vc_53450030 folder, so it is probably incomplete.';
   }
   const valid = !!info && !!KNOWN_XBE[info.xbeSha256] && info.hasVc53450030;
-  const ready = valid && state.checked && state.supported && state.build && !state.importing && !state.launched;
+  const ready = valid && state.checked && state.supported && state.build && !state.importing && !state.launched && !state.saveBusy && !state.saveRecoveryError;
   $('play').disabled = !ready;
-  $('import-image').disabled = $('import-folder').disabled = !state.checked || !state.supported || state.importing || state.launched;
-  $('remove').disabled = !info || state.importing || state.launched;
+  $('import-image').disabled = $('import-folder').disabled = !state.checked || !state.supported || state.importing || state.launched || state.saveBusy;
+  $('remove').disabled = !info || state.importing || state.launched || state.saveBusy;
+  const savesDisabled = !state.checked || !state.supported || state.importing || state.launched || state.saveBusy;
+  $('export-saves').disabled = savesDisabled || !state.saveCount || state.saveRecoveryError;
+  $('import-saves').disabled = savesDisabled || state.saveRecoveryError;
+  $('refresh-saves').disabled = savesDisabled;
+  $('persist-storage').disabled = savesDisabled || !navigator.storage?.persist;
+  $('save-data').setAttribute('aria-busy', String(state.saveBusy));
   $('library').setAttribute('aria-busy', String(state.importing));
   $('disc-badge').textContent = state.importing ? 'Importing' : info ? (valid ? 'Imported' : 'Needs attention') : 'Not imported';
   $('disc-badge').dataset.state = state.importing ? 'busy' : valid ? 'ready' : info ? 'error' : '';
   let label = 'Getting ready', badge = 'Checking browser', message = 'Checking your browser and game files…', status = 'busy';
   if (state.launchError) {
     label = 'Launch interrupted'; badge = 'Reload to retry'; message = state.launchError; status = 'error';
+  } else if (state.saveRecoveryError) {
+    label = 'Save recovery needed'; badge = 'Storage paused'; status = 'error';
+    message = 'Your retained saves could not be recovered. Free browser storage, then refresh save storage or reload to retry.';
   } else if (state.launched) {
     label = state.running ? 'Game running' : 'Starting game'; badge = state.running ? 'In session' : 'Loading';
     message = 'Your game is below. Click the screen to use keyboard controls.'; status = 'ready';
@@ -157,9 +167,16 @@ function libraryMessage(text, kind = 'error') {
 
 // ---- import ------------------------------------------------------------------
 
-function runImport(msg) {
-  if (state.importing || state.launched || !state.supported) return Promise.resolve(null);
+async function runImport(msg) {
+  if (state.importing || state.launched || state.saveBusy || !state.supported) return null;
   state.importing = true;
+  renderDisc();
+  try { return await NFL2K5Storage.withLock(() => importDisc(msg)); }
+  catch (e) { libraryMessage(e.message); }
+  finally { state.importing = false; renderDisc(); }
+}
+
+function importDisc(msg) {
   libraryMessage('');
   renderDisc();
   $('progress').hidden = false;
@@ -174,7 +191,6 @@ function runImport(msg) {
       if (finished) return;
       finished = true;
       if (worker) worker.terminate();
-      state.importing = false;
       $('progress').hidden = true;
       if (m.type === 'done') {
         const secs = ((performance.now() - started) / 1000).toFixed(1);
@@ -210,9 +226,10 @@ function runImport(msg) {
 }
 
 async function removeDisc() {
-  if (!state.installed || state.importing || state.launched) return;
+  if (!state.installed || state.importing || state.launched || state.saveBusy) return;
   if (!confirm('Remove the imported game files from this browser? Saves are kept.')) return;
-  try {
+  state.saveBusy = true; renderDisc();
+  try { await NFL2K5Storage.withLock(async () => {
     const root = await navigator.storage.getDirectory();
     try {
       const original = await root.getDirectoryHandle('original');
@@ -222,7 +239,9 @@ async function removeDisc() {
     state.installed = null;
     libraryMessage('Game files removed. Your saves and settings are still stored here.', 'ok');
     log('Removed the imported game files.');
+  });
   } catch (e) { libraryMessage('Could not remove game files: ' + e.message); }
+  state.saveBusy = false;
   renderDisc();
   refreshStorage();
 }
@@ -231,7 +250,7 @@ async function removeDisc() {
 
 // Synchronous up to the AudioContext: browsers only allow sound that starts
 // inside the click (see web/launch.js).
-function play() {
+async function play() {
   if ($('play').disabled || state.launched) return;
   const audio = NFL2K5Launch.createAudio();
   const canvas = $('canvas');
@@ -242,6 +261,19 @@ function play() {
     canvas.requestFullscreen = (options) => screen.requestFullscreen(options);
   state.launched = true;
   renderDisc();
+  let release;
+  try {
+    release = await NFL2K5Storage.acquireSession();
+    await NFL2K5Storage.run('recover');
+  } catch (e) {
+    release?.();
+    audio?.close().catch(() => {});
+    state.launched = false;
+    if (e.code === 'RECOVERY') state.saveRecoveryError = true;
+    libraryMessage(e.message); renderDisc(); return;
+  }
+  // Keep the session lock for this page's lifetime, even after a runtime abort.
+  $('save-summary').textContent = 'Game session active. Finish saving in-game, then reload the launcher to manage backups.';
   $('stage').hidden = false;
   $('stage').scrollIntoView({ block: 'start' });
   NFL2K5Launch.watchSound(audio, $('sound'), (st) => log('Sound: ' + st));
@@ -284,10 +316,77 @@ async function checkBuild() {
   } catch { return false; } finally { clearTimeout(timer); }
 }
 
+function connectedPads() {
+  try { return navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(p => p?.connected) : []; }
+  catch { return null; }
+}
 function updateControllers() {
-  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  const pads = connectedPads();
+  if (!pads) {
+    $('controller-status').textContent = 'Controller access is blocked by the browser. Keyboard controls remain available.';
+    return;
+  }
   $('controller-status').textContent = pads.length ? 'Connected: ' + pads.map(p => p.id).join(', ') :
     'No controller detected. Press a button on your controller to connect.';
+}
+let controllerFrame = 0;
+function testControllers() {
+  cancelAnimationFrame(controllerFrame);
+  if (!$('controller-test').open || document.hidden) return;
+  const pads = connectedPads();
+  const text = pads?.length ? pads.map(p => {
+    const names = ['A / Cross', 'B / Circle', 'X / Square', 'Y / Triangle', 'LB / White', 'RB / Black', 'LT', 'RT', 'Back', 'Start', 'Left stick', 'Right stick', 'D-pad up', 'D-pad down', 'D-pad left', 'D-pad right', 'Home'];
+    const buttons = Array.from(p.buttons, (b,i) => b.pressed || b.value > 0.05 ? `${p.mapping === 'standard' ? names[i] || i : i}: ${b.value.toFixed(2)}` : '').filter(Boolean);
+    return `${p.id}\nMapping: ${p.mapping || 'device-specific'}\nButtons: ${buttons.join(', ') || 'released'}\nAxes: ${Array.from(p.axes, a => a.toFixed(2)).join(', ')}`;
+  }).join('\n\n') : pads ? 'Press a controller button to connect.' : 'Controller access is blocked by the browser.';
+  if ($('controller-readout').textContent !== text) $('controller-readout').textContent = text;
+  controllerFrame = requestAnimationFrame(testControllers);
+}
+
+// ---- browser saves ----------------------------------------------------------
+function saveMessage(text, kind = 'error') {
+  $('save-message').textContent = text;
+  $('save-message').className = kind;
+  $('save-message').hidden = !text;
+}
+async function refreshSaves() {
+  if (!state.supported || state.launched || state.importing || state.saveBusy) return;
+  state.saveBusy = true; renderDisc();
+  try {
+    const result = await NFL2K5Storage.withLock(() => NFL2K5Storage.run('status'));
+    state.saveCount = result.files; state.saveRecoveryError = false;
+    $('save-summary').textContent = result.files ? `${result.files} save/settings files · ${mb(result.bytes)} · updated ${new Date(result.latest).toLocaleString()}` : 'No saves or settings yet. Use Save inside the game to create your first save.';
+  } catch (e) {
+    state.saveRecoveryError = e.code === 'RECOVERY';
+    $('save-summary').textContent = e.message;
+  } finally { state.saveBusy = false; renderDisc(); }
+}
+function downloadBackup(result) {
+  const url = URL.createObjectURL(result.blob), link = document.createElement('a');
+  link.href = url; link.download = `nfl2k5-saves-${new Date().toISOString().slice(0,10)}.json`; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function manageSaves(action, file) {
+  if (!state.supported || state.launched || state.importing || state.saveBusy) return;
+  state.saveBusy = true; renderDisc(); saveMessage('Working…', 'note');
+  try {
+    await NFL2K5Storage.withLock(async () => {
+      if (action === 'restore') {
+        const info = await NFL2K5Storage.run('inspect', file);
+        if (!confirm(`Restore ${info.files} files (${mb(info.bytes)})? Matching saves and settings will be replaced. Other files are kept. Download a current backup first if you want to keep both versions.`)) {
+          saveMessage('Restore cancelled.', 'note'); return;
+        }
+      }
+      const result = await NFL2K5Storage.run(action, file, text => saveMessage(text, 'note'));
+      if (action === 'export') downloadBackup(result);
+      saveMessage(action === 'export' ? 'Backup downloaded. Keep it somewhere safe.' : `Restored ${result.files} files. Your saves are ready to load in-game.`, 'ok');
+    });
+  } catch (e) {
+    if (e.code === 'RECOVERY') state.saveRecoveryError = true;
+    saveMessage(e.message);
+  } finally {
+    state.saveBusy = false; renderDisc(); await refreshSaves(); await refreshStorage();
+  }
 }
 
 // ---- start -------------------------------------------------------------------
@@ -313,6 +412,23 @@ async function main() {
   state.installed = opfs ? await readMarker() : null;
   state.checked = true;
   renderDisc();
+  await refreshSaves();
+  if (!opfs) $('save-summary').textContent = 'Save storage is unavailable in this browser.';
+
+  $('export-saves').onclick = () => manageSaves('export');
+  $('import-saves').onclick = () => $('file-saves').click();
+  $('refresh-saves').onclick = refreshSaves;
+  $('file-saves').onchange = e => {
+    const file = e.target.files[0]; e.target.value = '';
+    if (file) manageSaves('restore', file);
+  };
+  $('persist-storage').onclick = async () => {
+    try {
+      const kept = await navigator.storage.persist();
+      saveMessage(kept ? 'Persistent storage enabled. Keep a downloaded backup too.' : 'The browser did not grant persistent storage. Download backups to protect your saves.', kept ? 'ok' : 'warn');
+      await refreshStorage();
+    } catch (e) { saveMessage('Could not request persistent storage: ' + e.message); }
+  };
 
   $('file-image').onchange = (e) => {
     const f = e.target.files[0];
@@ -342,8 +458,8 @@ async function main() {
   };
   const drop = $('drop-zone');
   for (const type of ['dragover', 'dragleave', 'drop']) drop.addEventListener(type, e => {
-    e.preventDefault(); drop.dataset.dragging = String(type === 'dragover' && !state.importing && !state.launched);
-    if (type !== 'drop' || state.importing || state.launched) return;
+    e.preventDefault(); drop.dataset.dragging = String(type === 'dragover' && !state.importing && !state.launched && !state.saveBusy);
+    if (type !== 'drop' || state.importing || state.launched || state.saveBusy) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length !== 1 || !/\.(iso|xiso|img)$/i.test(files[0].name)) {
       libraryMessage('Drop one ISO/XISO image here. Use Choose folder for an extracted disc.'); return;
@@ -354,6 +470,11 @@ async function main() {
   window.addEventListener('drop', e => e.preventDefault());
   window.addEventListener('gamepadconnected', updateControllers);
   window.addEventListener('gamepaddisconnected', updateControllers);
+  $('controller-test').addEventListener('toggle', testControllers);
+  document.addEventListener('visibilitychange', testControllers);
+  window.addEventListener('beforeunload', e => {
+    if (state.importing || state.saveBusy) { e.preventDefault(); e.returnValue = ''; }
+  });
   updateControllers();
   $('canvas').addEventListener('contextmenu', (e) => e.preventDefault());
 

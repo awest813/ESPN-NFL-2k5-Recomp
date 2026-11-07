@@ -189,6 +189,45 @@ async function playAndCheckXbe(page, want, label) {
       await context.close();
     }
     {
+      const context = await browser.newContext();
+      await context.addInitScript(() => {
+        navigator.getGamepads = () => { throw new DOMException('blocked','SecurityError'); };
+        navigator.storage.persist = async () => false;
+      });
+      const page = await context.newPage();
+      await page.goto('http://127.0.0.1:18765/');
+      await page.waitForSelector('body[data-ready="1"]');
+      check(/Keyboard controls remain available/.test(await page.textContent('#controller-status')), 'denied controller access does not break launcher setup');
+      await page.evaluate(async () => {
+        const saves = await (await navigator.storage.getDirectory()).getDirectoryHandle('saves',{create:true});
+        const w = await (await saves.getFileHandle('season.dat',{create:true})).createWritable();
+        await w.write(new Uint8Array([0,255,42])); await w.close();
+      });
+      await page.click('#refresh-saves');
+      await page.waitForFunction(() => !document.querySelector('#export-saves').disabled);
+      const [backup] = await Promise.all([page.waitForEvent('download'),page.click('#export-saves')]);
+      const bytes = fs.readFileSync(await backup.path());
+      const archive = JSON.parse(bytes);
+      check(archive.files.length === 1 && archive.files[0].path === 'saves/season.dat', 'launcher downloads a portable save backup');
+      await page.waitForFunction(() => !document.querySelector('#import-saves').disabled);
+      page.once('dialog', d => d.accept());
+      await page.setInputFiles('#file-saves',{name:'backup.json',mimeType:'application/json',buffer:bytes});
+      await page.waitForFunction(() => document.querySelector('#save-message').textContent.startsWith('Restored 1 files'));
+      check(true,'launcher restores backup and reports success');
+      await page.waitForFunction(() => !document.querySelector('#persist-storage').disabled);
+      await page.click('#persist-storage');
+      check(/did not grant/.test(await page.textContent('#save-message')), 'persistent-storage refusal explains how to protect saves');
+      await page.evaluate(async () => { window.releaseTestSession = await NFL2K5Storage.acquireSession(); });
+      const other = await context.newPage(); await other.goto('http://127.0.0.1:18765/');
+      await other.waitForSelector('body[data-ready="1"]');
+      check(/Another NFL 2K5 tab/.test(await other.textContent('#save-summary')), 'launcher explains cross-tab storage exclusion');
+      await page.evaluate(() => releaseTestSession());
+      await other.click('#refresh-saves');
+      await other.waitForFunction(() => !document.querySelector('#export-saves').disabled);
+      check(true,'launcher can refresh saves after another session closes');
+      await context.close();
+    }
+    {
       const {context, page} = await newPage(browser, 'http://127.0.0.1:18765/');
       await page.evaluate(() => { window.Worker = class { constructor() { throw Error('worker unavailable'); } }; });
       await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
@@ -227,6 +266,23 @@ async function playAndCheckXbe(page, want, label) {
       await page.click('#diagnostics summary');
       const [download] = await Promise.all([page.waitForEvent('download'), page.click('#download-log')]);
       check(download.suggestedFilename() === 'nfl2k5-web-log.txt', 'diagnostic log can be downloaded');
+      await context.close();
+    }
+    {
+      const context = await browser.newContext();
+      await context.addInitScript(() => {
+        window.testPad = {id:'Launcher test controller',connected:true,mapping:'standard',
+          buttons:[{pressed:true,value:1},...Array.from({length:5},()=>({pressed:false,value:0})),{pressed:true,value:0.5}],axes:[0.25,-0.5,0,0]};
+        navigator.getGamepads = () => [testPad];
+      });
+      const page = await context.newPage(); await page.goto('http://127.0.0.1:18765/');
+      await page.waitForSelector('body[data-ready="1"]');
+      await page.click('#controller-test summary');
+      await page.waitForFunction(() => document.querySelector('#controller-readout').textContent.includes('LT: 0.50'));
+      check(/A \/ Cross: 1.00/.test(await page.textContent('#controller-readout')) &&
+        /0.25, -0.50/.test(await page.textContent('#controller-readout')), 'controller tester displays named buttons, analog triggers and stick values');
+      await page.evaluate(() => {testPad.connected=false;dispatchEvent(new Event('gamepaddisconnected'));});
+      check(/No controller detected/.test(await page.textContent('#controller-status')), 'launcher excludes disconnected controller objects');
       await context.close();
     }
     // 2. Extracted folder, chosen one level above the disc.

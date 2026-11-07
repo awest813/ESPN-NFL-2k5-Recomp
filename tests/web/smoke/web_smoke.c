@@ -20,6 +20,39 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "xinput_xbox.h"
+
+int nfl2k5_web_mount(void);
+int nfl2k5_controls_get(int port, XBOX_GAMEPAD *g, int use_pads);
+void nfl2k5_controls_start(void);
+
+/* Exercise the same C/WasmFS mount as the game, including durable close. */
+static int storage_smoke(const char *mode)
+{
+    static const unsigned char bytes[] = {0, 255, 128, 1, 2, 13, 10, 42};
+    const char *path = "/nfl2k5/saves/UDATA/53450030/0123456789ab/SAVEGAME.DAT";
+    unsigned char actual[sizeof bytes + 1];
+    if (!nfl2k5_web_mount()) return 1;
+    if (!strcmp(mode, "write")) {
+        mkdir("/nfl2k5/saves", 0777); mkdir("/nfl2k5/saves/UDATA", 0777);
+        mkdir("/nfl2k5/saves/UDATA/53450030", 0777);
+        mkdir("/nfl2k5/saves/UDATA/53450030/0123456789ab", 0777);
+        FILE *f = fopen(path, "wb");
+        if (!f || fwrite(bytes, 1, sizeof bytes, f) != sizeof bytes || fflush(f) || fsync(fileno(f)) || fclose(f)) {
+            puts("[SMOKE] storage write FAILED"); return 1;
+        }
+        puts("[SMOKE] storage write durable");
+    } else {
+        FILE *f = fopen(path, "rb");
+        if (!f) { puts("[SMOKE] storage read FAILED"); return 1; }
+        size_t n = fread(actual, 1, sizeof actual, f); fclose(f);
+        if (n != sizeof bytes || memcmp(actual, bytes, sizeof bytes)) { puts("[SMOKE] storage bytes FAILED"); return 1; }
+        puts("[SMOKE] storage read exact");
+    }
+    return 0;
+}
 
 int  nfl2k5_web_sdl_start(void);
 int  xbox_MemoryLayoutInit(const void *xbe, size_t size);
@@ -124,11 +157,18 @@ static int SDLCALL audio_thread(void *arg)
 
 int main(void)
 {
+    if (getenv("SMOKE_STORAGE")) return storage_smoke(getenv("SMOKE_STORAGE"));
     static uint8_t xbe[0x2000];
     SDL_Gamepad *pad = NULL;
     int last_count = -1, last_a = 0;
 
     if (!nfl2k5_web_sdl_start()) return 1;
+    nfl2k5_controls_start();
+    XBOX_GAMEPAD blank;
+    memset(&blank, 0xCC, sizeof blank);
+    int absent = nfl2k5_controls_get(1, &blank, 0);
+    XBOX_GAMEPAD zero = {0};
+    printf("[SMOKE] controls disabled neutral: %d\n", !absent && !memcmp(&blank, &zero, sizeof blank));
 
     /* Minimal XBE so the real memory layout exists (guest RAM at its VA). */
     memcpy(xbe, "XBEH", 4);
@@ -151,6 +191,8 @@ int main(void)
         gpu_start();
     printf("[SMOKE] ready\n");
     Uint64 last_report = SDL_GetTicks();
+    XBOX_GAMEPAD previous[2] = {{0}};
+    int previous_connected[2] = {-1, -1};
 
     for (;;) {
         xbox_FramebufferSnapshot(FB_VA, FB_PITCH);   /* what a flip does */
@@ -169,6 +211,16 @@ int main(void)
             SDL_UpdateGamepads();
             int a = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
             if (a != last_a) { printf("[SMOKE] pad A %s\n", a ? "down" : "up"); last_a = a; }
+        }
+        for (int port = 0; port < 2; port++) {
+            XBOX_GAMEPAD g;
+            int connected = nfl2k5_controls_get(port, &g, 1);
+            if (connected != previous_connected[port] || memcmp(&g, &previous[port], sizeof g)) {
+                printf("[SMOKE] controls %d: connected=%d buttons=%u A=%u LT=%u RT=%u sticks=%d,%d,%d,%d\n",
+                    port, connected, g.wButtons, g.bAnalogButtons[0], g.bAnalogButtons[6], g.bAnalogButtons[7],
+                    g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY);
+                previous[port] = g; previous_connected[port] = connected;
+            }
         }
         if (g_dev && SDL_GetTicks() - last_report >= 1000) {
             printf("[SMOKE] gpu presents/s: %d\n", SDL_SetAtomicInt(&g_presents, 0));

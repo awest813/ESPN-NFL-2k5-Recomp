@@ -100,6 +100,11 @@ footer { color:#91a0ab; font-size:11px; text-align:center; padding:12px; line-he
 #screen:fullscreen #canvas { max-height:100%; object-fit:contain; }
 #sound { display:block; margin:12px auto; background:var(--accent); border-color:var(--accent); }
 #reload { margin-top:10px; width:100%; }
+#save-data { margin-top:24px; }
+#save-data .row { flex-wrap:wrap; }
+#controller-test { margin-top:14px; }
+#controller-test summary { cursor:pointer; }
+#controller-readout { white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.7 monospace; color:var(--muted); }
 @media(max-width:760px) {
   .masthead { padding:20px 22px; } nav { gap:15px; } .preview { display:none; }
   main { padding:32px 20px 20px; } .hero { gap:30px; } .cover-title { font-size:90px; }

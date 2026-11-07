@@ -87,6 +87,20 @@ keyboard bindings. The game toolbar provides fullscreen and restart.
 Restart reloads the page to reset the runtime; unsaved progress is lost.
 Removing game files preserves the separate save/settings storage.
 
+**Save data** shows the local save/settings count and offers portable JSON
+backup and restore. Use the game's normal Save/Load menus; finish saving and
+reload the launcher before managing backups. Restore merges files, replacing
+matching names and keeping unrelated files. Backups include `saves/` plus
+`controls.ini`, `nfl2k5_game.ini` and `nfl2k5_video.ini`, excluding the disc.
+Limits are 4096 files, 32 MiB per file and 128 MiB total decoded data. Each file
+has a SHA-256 checksum; all files are staged and checked before replacement.
+A durable journal retains originals until commit and rolls back interrupted
+restores on the next visit. Recovery failure blocks launching until resolved.
+Web Locks prevent another launcher tab from importing, restoring or launching
+against storage while a game session is alive (where the browser supports them).
+The controller tester shows live buttons, triggers and axes without starting
+the game. Browser-denied controller access leaves keyboard controls available.
+
 - **Cross-origin isolation.** The game's threads share one wasm memory,
   which needs `SharedArrayBuffer`, which browsers only give a page served
   with `Cross-Origin-Opener-Policy: same-origin` and
@@ -198,13 +212,22 @@ so CI runs it on every push. It checks:
   unused;
 - with `RECOMP_WEB_SDL_AUDIO=1`, the tone goes through SDL's output instead;
 - keys reach the game only while the canvas has focus;
-- a controller connected after startup is seen and its button read (a
-  Gamepad API stand-in fires the browser's real connect event);
+- controllers connected after startup reach the game's actual controls layer,
+  including a pad already opened by another SDL caller, buttons, triggers,
+  sticks, two independent ports, release, unplug and reconnect (a Gamepad API
+  stand-in fires the browser's real connect event);
 - with no click, the prompt shows and a click turns sound on.
 
 The last check emulates the autoplay block at the API, because Playwright's
 navigation itself counts as user activation, so a real block cannot be
 produced.
+
+`tests/web/test_browser_saves.js` checks durable binary C writes through the
+real WasmFS OPFS backend, reading after a fresh mount, backup/restore and
+loading the restored file from C. It also checks archive validation, injected
+write failure rollback, interrupted/committed journals, retained recovery
+files on failure, and two-tab session locking. These tests use isolated
+synthetic saves and never touch an existing browser library.
 
 ## Hardware rendering: WebGPU
 
@@ -458,7 +481,9 @@ These compile today but are inert or wrong at run time:
   shortcuts. Keys still work while the canvas has focus.
 - **Storage.** The import needs room for the whole disc. The page asks for
   persistent storage; if the browser declines, it may clear the disc (and
-  saves) under storage pressure. There is no save export yet.
+  saves) under storage pressure. Download backups from **Save data**; these
+  remain useful even if the browser clears its own storage. Storage belongs to
+  the exact site origin, including the port; another origin has its own library.
 - **Running twice.** The game's exit is not reported to the page (the
   runtime stays alive for its threads), so after a run ends, reload to run
   again.
