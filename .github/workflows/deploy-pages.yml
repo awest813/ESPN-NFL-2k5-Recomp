@@ -1,0 +1,63 @@
+name: Deploy web game to Pages
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'src/**'
+      - 'config/**'
+      - 'tools/build-web.sh'
+      - 'tools/prepare-pages.mjs'
+      - 'tools/test-web.sh'
+      - 'tests/web/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 7.0.0
+      - name: Build complete browser runtime
+        run: JOBS=2 tools/build-web.sh
+      - name: Install browser test dependencies
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - name: Verify launcher and static-host isolation
+        run: node tests/web/test_web_page.js build-web
+      - name: Prepare public files
+        run: node tools/prepare-pages.mjs
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist-pages
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4

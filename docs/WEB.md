@@ -72,6 +72,23 @@ plus the following:
 
 ## Playing in a browser
 
+### GitHub Pages deployment
+
+The `Deploy web game to Pages` workflow builds and tests the complete runtime
+on pushes to `main`, then publishes the allowlisted `dist-pages/` artifact.
+`node tools/prepare-pages.mjs` creates that artifact from a local build too.
+Only launcher files and the recompiled runtime are published; game discs,
+browser libraries and saves stay local. The deployed project lives at
+`https://awest813.github.io/ESPN-NFL-2k5-Recomp/`.
+
+Pages does not provide the COOP/COEP headers the game needs, so the launcher
+installs its project-scoped isolation service worker and reloads once.
+Relative asset/worker URLs also work under the repository's URL prefix.
+Each visitor imports their own disc. Browser storage for this origin is
+separate from localhost; download a save backup to move existing saves.
+
+### Local play
+
     tools/build-web.sh                 # build-web/: index.html, app.js, NFL2K5.js/.wasm, ...
     python3 tools/serve-web.py         # http://127.0.0.1:8080/
 

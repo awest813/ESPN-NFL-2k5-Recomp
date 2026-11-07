@@ -4,6 +4,9 @@
 /build/
 /build-web/
 /build-web-tests/
+/dist-pages/
+/dist-cloudflare/
+/.wrangler/
 /logs/
 /saves/
 /downloads/
