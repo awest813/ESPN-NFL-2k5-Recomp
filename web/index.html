@@ -1,125 +1,29 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESPN NFL 2K5 Web</title>
-<style>
-  :root {
-    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #66665f;
-    --line: #dcdcd6; --accent: #b4371f; --ok: #2e7d32; --warn: #a15c00; --err: #b3261e;
-    --log-bg: #fbfbf9;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #151514; --panel: #1f1f1d; --text: #ecebe6; --muted: #a3a29b;
-      --line: #34342f; --accent: #e3684d; --ok: #7cc47f; --warn: #e0a14a; --err: #f08a80;
-      --log-bg: #181817;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 20px; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-            padding: 16px; margin-bottom: 16px; }
-  h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em;
-       color: var(--muted); }
-  .checks { display: grid; gap: 6px; }
-  .check { display: flex; gap: 10px; }
-  .check .label { min-width: 170px; font-weight: 600; }
-  .check[data-ok="yes"] .value { color: var(--ok); }
-  .check[data-ok="no"] .value { color: var(--err); }
-  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
-           background: var(--panel); color: var(--text); cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button:disabled { opacity: .45; cursor: default; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .ok { color: var(--ok); } .warn { color: var(--warn); } .error { color: var(--err); }
-  progress { width: 100%; height: 10px; }
-  #progress-text { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  #stage { position: relative; background: #000; border-radius: 8px; overflow: hidden;
-           margin-bottom: 16px; display: flex; justify-content: center; }
-  /* SDL sizes the canvas to the game's window; never wider than the page.
-     #gpucanvas, the WebGPU renderer's output, lies exactly over it once the
-     renderer presents; input stays with #canvas underneath. */
-  #screen { position: relative; display: inline-block; max-width: 100%; }
-  #canvas { display: block; max-width: 100%; height: auto; outline: none; }
-  #gpucanvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  #sound { position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
-           background: rgba(0,0,0,.75); color: #fff; border: 1px solid rgba(255,255,255,.35);
-           border-radius: 6px; padding: 8px 14px; cursor: pointer; }
-  #log { background: var(--log-bg); border: 1px solid var(--line); border-radius: 6px;
-         font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-         height: 260px; overflow: auto; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #log .stderr { color: var(--muted); }
-  p.note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
-</style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#101820">
+<title>ESPN NFL 2K5 · Web launcher</title><link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main>
-  <h1>ESPN NFL 2K5 Web</h1>
-  <p class="sub">Experimental WebAssembly build. You supply the game from your own disc; it is stored
-    in this browser only and never uploaded.</p>
-
-  <section>
-    <h2>Browser</h2>
-    <div class="checks">
-      <div class="check" id="chk-wasm"><span class="label">WebAssembly</span><span class="value">…</span></div>
-      <div class="check" id="chk-isolation"><span class="label">Cross-origin isolation</span><span class="value">…</span></div>
-      <div class="check" id="chk-opfs"><span class="label">Private file system</span><span class="value">…</span></div>
-      <div class="check" id="chk-storage"><span class="label">Storage</span><span class="value">…</span></div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Game files</h2>
-    <div id="disc-none">
-      <p>Import your NFL 2K5 disc: an Xbox disc image (<code>.iso</code> / <code>.xiso</code>) or an
-        extracted disc folder containing <code>default.xbe</code> and <code>vc_53450030</code>.</p>
-    </div>
-    <div id="disc-installed" hidden>
-      <p id="disc-summary"></p>
-      <p id="disc-xbe"></p>
-    </div>
-    <div class="row">
-      <button id="import-image">Import disc image…</button>
-      <button id="import-folder">Import extracted folder…</button>
-      <button id="remove">Remove game files</button>
-    </div>
-    <input id="file-image" type="file" accept=".iso,.xiso,.img,application/octet-stream" hidden>
-    <input id="file-folder" type="file" webkitdirectory hidden>
-    <div id="progress" hidden>
-      <p><progress id="progress-bar" value="0" max="1"></progress></p>
-      <div id="progress-text"></div>
-    </div>
-    <p class="note">The import copies the disc (several GB) into the browser's private storage once.
-      Saves and settings are kept there too, apart from the disc.</p>
-  </section>
-
-  <section>
-    <h2>Play</h2>
-    <div class="row"><button id="play" class="primary" disabled>Play</button></div>
-    <p class="note">Click the game to give it the keyboard. Controllers connect when you press one of
-      their buttons. The web build boots as far as the runtime goes today; see docs/WEB.md.</p>
-  </section>
-
-  <div id="stage" hidden>
-    <div id="screen">
-      <canvas id="canvas" tabindex="-1"></canvas>
-      <canvas id="gpucanvas" hidden></canvas>
-    </div>
-    <button id="sound" hidden>Sound is off: click here or press a key to turn it on</button>
-  </div>
-
-  <section>
-    <h2>Log</h2>
-    <div id="log" aria-live="polite"></div>
-  </section>
-</main>
-<script src="launch.js"></script>
-<script src="app.js"></script>
-</body>
-</html>
+<a class="skip" href="#main">Skip to launcher</a>
+<header class="masthead"><a class="brand" href="#main" aria-label="NFL 2K5 launcher"><b>2K5</b><span>NFL FOOTBALL<small>WEB EDITION</small></span></a><nav aria-label="Main navigation"><a href="#library">Game files</a><a href="#controls">Controls</a><a href="#diagnostics">Diagnostics</a></nav><span class="preview">Experimental build</span></header>
+<main id="main">
+<div class="hero">
+<div><p class="eyebrow"><i class="live-dot"></i> ORIGINAL XBOX · IN YOUR BROWSER</p><h1>ESPN NFL <span>2K5</span></h1><p class="intro">Back on the field.<br>Bring your own disc and pick up the playbook.</p>
+<div class="launch-card"><div class="launch-heading"><strong id="launch-label">Getting ready</strong><span id="launch-badge" class="badge">Checking browser</span></div><p id="launch-status" role="status" aria-live="polite">Checking your browser and game files…</p><button id="play" class="primary play-button" disabled>▶ &nbsp; Play game</button><button id="reload" hidden>Reload launcher</button><p class="privacy">Your game files stay on this device. No account needed.</p></div></div>
+<div class="cover" aria-hidden="true"><div class="cover-top"><span>ESPN</span><span>NFL FOOTBALL</span></div><div class="cover-title">2K<span>5</span></div><div class="field"><i></i><i></i><i></i><i></i><i></i><span>50</span><b></b></div><div class="cover-bottom"><span>THE 2004 SEASON</span><span>WEB EDITION ↗</span></div></div>
+</div>
+<div id="stage" hidden><div class="game-toolbar"><strong id="game-status">Starting game</strong><div class="row"><button id="fullscreen">Fullscreen</button><button id="restart">Restart game</button></div></div><div id="screen"><canvas id="canvas" tabindex="0" aria-label="NFL 2K5 game. Click to use keyboard controls."></canvas><canvas id="gpucanvas" hidden aria-hidden="true"></canvas></div><button id="sound" hidden>Enable game sound</button><p class="note">Click the game for keyboard controls. Press a controller button to connect.</p></div>
+<div class="content-grid">
+<section id="library" class="panel"><div class="section-heading"><div><p class="eyebrow">01 / YOUR LIBRARY</p><h2>Bring your game.</h2></div><span id="disc-badge" class="badge">Not imported</span></div>
+<div id="disc-none"><p>Import your Xbox disc image or an extracted game folder once. It will be ready here next time.</p></div><div id="disc-installed" hidden><p id="disc-summary"></p><p id="disc-xbe" class="note"></p></div>
+<div id="drop-zone" class="drop-zone"><span class="import-icon" aria-hidden="true">↓</span><p>Drop an ISO here, or choose your files.</p><div class="row"><button id="import-image" class="secondary">Choose disc image</button><button id="import-folder">Choose folder</button></div><p class="note">ISO / XISO · Folder with <code>default.xbe</code> and <code>vc_53450030</code></p></div>
+<input id="file-image" type="file" accept=".iso,.xiso,.img,application/octet-stream" hidden><input id="file-folder" type="file" webkitdirectory hidden>
+<div id="progress" hidden><div class="progress-heading"><strong>Importing game</strong><span id="progress-percent">0%</span></div><progress id="progress-bar" value="0" max="1" aria-label="Game import progress"></progress><p id="progress-text"></p></div><p id="library-message" role="alert" hidden></p><div class="library-footer"><p class="note">Allow several GB of browser storage. Saves and settings are kept separately.</p><button id="remove" class="text-button" disabled>Remove game files</button></div></section>
+<section id="controls" class="panel"><p class="eyebrow">02 / TAKE CONTROL</p><h2>Ready at kickoff.</h2><p>Use a controller, or play with your keyboard. Click the game first to give it focus.</p><dl class="key-list"><div><dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dd></div><div><dt>D-pad / menus</dt><dd><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dd></div><div><dt>A / B / X / Y</dt><dd><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd><kbd>V</kbd></dd></div><div><dt>Start / Back</dt><dd><kbd>Enter</kbd><kbd>Backspace</kbd></dd></div><div><dt>Left / right trigger</dt><dd><kbd>Q</kbd><kbd>E</kbd></dd></div></dl><p class="note">Default bindings. In-game settings can change these controls.</p><div class="controller-state" id="controller-status" role="status">No controller detected. Press a button on your controller to connect.</div></section>
+</div>
+<details id="diagnostics" class="panel diagnostics"><summary>Browser &amp; diagnostics <span class="note">Compatibility checks and game log</span></summary><div class="checks">
+<div class="check" id="chk-wasm"><span class="label">WebAssembly</span><span class="value">Checking…</span></div><div class="check" id="chk-isolation"><span class="label">Shared memory</span><span class="value">Checking…</span></div><div class="check" id="chk-opfs"><span class="label">Game storage</span><span class="value">Checking…</span></div><div class="check" id="chk-gpu"><span class="label">Hardware graphics</span><span class="value">Checking…</span></div><div class="check" id="chk-build"><span class="label">Game runtime</span><span class="value">Checking…</span></div><div class="check" id="chk-storage"><span class="label">Storage usage</span><span class="value">Checking…</span></div></div><div class="log-heading"><h3>Game log</h3><button id="download-log">Download log</button></div><div id="log" role="log" aria-label="Game log"></div></details>
+<footer>ESPN NFL 2K5 · Experimental web port. Requires your own Xbox game files.<br>Game data is stored locally and is never uploaded.</footer>
+</main><script src="launch.js"></script><script src="app.js"></script>
+</body></html>

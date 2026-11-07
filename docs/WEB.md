@@ -7,9 +7,10 @@ register routing without faults ([below](#audio-registers-without-faults)),
 the page itself, with game files in the browser's private file system
 ([below](#playing-in-a-browser)), and video, input and sound in the browser
 ([below](#video-input-and-sound)), and the hardware renderer on WebGPU
-([below](#hardware-rendering-webgpu)). In a browser, the module mounts the
-imported disc and reads `default.xbe` from it. Booting further needs the
-retail disc, which this has not been tried with yet.
+([below](#hardware-rendering-webgpu)). In Chrome on Windows, the retail disc
+imports into OPFS and runs through kickoff returns and offensive plays.
+The November 7 gameplay sample averaged 37.2 FPS, with heavier views still
+dipping below 30; see [measurements](WEB-RENDERING-NOTES.md#gameplay-verification).
 
 ## Result (2026-11-06, emsdk 7.0.0, 4-core container)
 
@@ -21,9 +22,9 @@ retail disc, which this has not been tried with yet.
 | V8 compile, whole module, eager | 0.26 s Liftoff, 4.1 s TurboFan (Node 24). The browser compiles lazily and in tiers. |
 | `tools/build-web.sh` from scratch | 143 s (SDL3, runtime, game; the 34 generated chunks take about 90 s with `-j4`) |
 
-`WebAssembly.validate` passes and the module compiles in V8. The game itself
-has not run yet, but the runtime's real memory-layout init does, under Node,
-in `tools/test-web.sh`.
+`WebAssembly.validate` passes and the module compiles in V8.
+`tools/test-web.sh` also exercises the runtime's memory-layout initialization
+under Node.
 
 ## Build
 
@@ -74,7 +75,17 @@ plus the following:
     tools/build-web.sh                 # build-web/: index.html, app.js, NFL2K5.js/.wasm, ...
     python3 tools/serve-web.py         # http://127.0.0.1:8080/
 
-Open the page, import your disc, press Play.
+Open the page, import your disc, and press Play. The browser skips the startup
+movie. Click the game to focus it. The default keyboard bindings include
+Enter for Start, Z for A, X for B, and the arrow keys for the D-pad.
+
+The launcher supports drag-and-drop disc images, checks disc compatibility
+and runtime availability before enabling Play, and keeps technical checks
+and the downloadable log under **Browser & diagnostics**. It shows import
+progress and recoverable worker errors, connected controllers and default
+keyboard bindings. The game toolbar provides fullscreen and restart.
+Restart reloads the page to reset the runtime; unsaved progress is lost.
+Removing game files preserves the separate save/settings storage.
 
 - **Cross-origin isolation.** The game's threads share one wasm memory,
   which needs `SharedArrayBuffer`, which browsers only give a page served
@@ -204,8 +215,9 @@ of 2026-11-06). So the web build implements the part of the API the
 renderer uses, 46 functions on SDL's own types, on WebGPU: Dawn's
 `webgpu.h`, through Emscripten's `emdawnwebgpu` port.
 `sdlgpu/webgpu/sdl_gpu_webgpu.h` redirects the renderer's calls there. The
-renderer itself is unchanged except that it loads WGSL; 2D, 3D, the texture
-cache, pipelines and presenting all come along.
+renderer loads WGSL and includes fixes for NV2A clipping, player lighting
+and cube textures. The existing 2D, 3D, texture-cache and presentation paths
+provide the rest of the rendering.
 
 - **One GPU thread.** A WebGPU device belongs to the JavaScript context that
   made it, and it only makes progress when that context returns to its event
@@ -222,7 +234,8 @@ cache, pipelines and presenting all come along.
     GPU work splits the submission. That keeps SDL's ordering.
 - **Binding layout.** Bind groups follow SDL's convention:
   - group 1: vertex uniforms;
-  - group 2: four textures at bindings 0–3, their samplers at 4–7;
+  - group 2: four 2D textures at bindings 0–3, four cube textures at 4–7,
+    and their respective samplers at 8–15;
   - group 3: fragment uniforms;
   - uniforms are dynamic offsets into one buffer per submit.
 - **Blits and mipmaps,** which WebGPU doesn't have, are small fullscreen
@@ -232,9 +245,40 @@ cache, pipelines and presenting all come along.
   Rerun it after changing a shader (`cargo install naga-cli`). It splits
   combined samplers, rewrites the alpha-test switches as `if` chains (naga
   refuses `return` in a case), and turns off WGSL's derivative-uniformity
-  check, since the per-stage branches are uniform per draw. Vertex programs
-  compiled at run time need glslang, which the web build doesn't have, so
-  they stay on the CPU, as on any Linux build without glslang.
+  check, since the per-stage branches are uniform per draw. It also embeds
+  the hand-written `shaders/vp.wgsl` template. The runtime inserts each NV2A
+  vertex program as straight-line WGSL and caches the resulting shader.
+  This path does not need glslang or a GLSL compiler in the browser.
+- **GPU vertex programs.** Referenced input attributes are packed into the
+  vertex buffer, with shader locations mapped to their compact offsets.
+  Each stream's complete index range is validated once per batch, constants
+  are decoded once, and invalid ranges retain checked per-vertex fetching.
+  The GPU runs the program and clips in homogeneous coordinates, respecting
+  the guest's depth-clip setting. Programs that write constants and affine
+  presentation programs with near-zero W retain the CPU path.
+  `RECOMP_SDLGPU_NOVP=1` forces CPU vertex processing for comparisons.
+- **Player lighting.** The fragment shader evaluates the retail player's
+  dependent dot-product stages for diffuse and reflected specular lighting.
+  Cube uploads retain all six faces and generate mipmaps per face.
+- **CPU vertex processing.** Instructions are decoded once per batch and
+  reused for its vertices. The cache checks the original instruction words
+  after program uploads; constants remain live, including shader writes.
+  Each vertex fetches only the input attributes referenced by the program.
+  `RECOMP_VP_FETCH_ALL=1` restores all-input fetching for comparisons.
+- **Submission cost.** Identical consecutive uniform uploads reuse buffer
+  space. Replay rebinds uniforms and textures only when their state changes,
+  with each render pass restoring its required bindings. Pipelines use
+  hashed lookup and an 8,192-entry pool; the former 1,024-entry pool filled
+  during offensive plays and forced vertex processing back onto the CPU.
+- **Texture reuse.** The per-frame hash memo mixes the full texture address
+  and probes collisions, including for 64 KB-aligned Xbox allocations.
+  Material bind groups are reused across draws and submissions and
+  invalidated when a referenced texture is released.
+- **Render-to-texture.** Matching linear ARGB/XRGB surfaces are copied to a
+  separate GPU texture with mipmaps. This also supports sampling the current
+  render target without feedback. Pending readers finish before a snapshot
+  is replaced or freed. XRGB samples force alpha to one. Incompatible
+  texture layouts retain the readback and decode path.
 - **Presenting.** The page has a `<canvas id="gpucanvas">` over SDL's canvas
   (with `pointer-events: none`, so input stays with SDL's).
   - `-sOFFSCREENCANVASES_TO_PTHREAD=#gpucanvas` hands it to the program's
@@ -249,7 +293,12 @@ cache, pipelines and presenting all come along.
     vsync.
 - **On by default.** At startup `src/platform/web/web_sdl.c` starts the GPU
   thread. With a device, `RECOMP_SDLGPU=1` is the default; without WebGPU
-  the game draws in software. `?env=RECOMP_SDLGPU=0` forces software.
+  the game draws in software. Direct WebGPU presentation is enabled by
+  default. `?env=RECOMP_SDLGPU_PRESENT=0` presents through the SDL canvas
+  while retaining WebGPU drawing. `?env=RECOMP_SDLGPU=0` forces software drawing.
+  The direct presenter defaults to the 640×448 action area of the game's
+  720×480 widescreen scanout. Use **Crop sides** in Video Settings to adjust
+  or disable overscan cropping.
 
 Every page that loads a module with this kernel needs a `#gpucanvas`, and the
 module links with em++, because the WebGPU port's library is C++.
@@ -258,20 +307,47 @@ Tests, in headless Chromium with WebGPU on SwiftShader (flags in the tests):
 
 - `external/xboxrecomp/tests/sdlgpu_web` drives the redirected API as the
   renderer does: the generated WGSL, its vertex layout and formats, its pass
-  structure. 20 checks:
+  structure. Checks include:
   - clear and download, byte for byte;
   - unaligned upload/download;
   - flat 2D orientation, texturing with point sampling and wrap, alpha
     test, blending, scissor including out-of-range rectangles;
+  - overlapping inclusive and exclusive NV2A window clips, including blend
+    coverage and the last included pixel;
   - depth load and clear ops and the depth test;
   - mipmap generation;
+  - six cube faces and their mipmaps, dependent diffuse and reflected
+    specular lighting, and repeated bindings across render passes;
   - the 3D pipeline with stencil;
   - presenting, with the canvas read back;
   - no WebGPU validation errors.
+- `python tests/web/test_vp_interpreter.py` builds the applied runtime's
+  CPU vertex interpreter with Emscripten and compares it byte for byte
+  against the original interpreter in Node. It checks output registers,
+  constant writes, program-cache invalidation and diagnostic registers,
+  and reports an informational throughput benchmark.
+- `python tests/web/test_vp_wgsl.py` generates cases from the live WGSL
+  translator and CPU interpreter. Then `node tests/web/test_vp_wgsl.js`
+  checks 2,048 GPU executions and renders a triangle using the production
+  packed vertex layout. Node needs Playwright available via `NODE_PATH`.
+- `python tests/web/test_texture_hash.py` verifies aligned texture reuse,
+  explicit refresh, frame boundaries, owned snapshots and palette changes.
+- `python tests/web/test_vertex_fetch.py` compares 640,000 prepared and
+  checked fetches with the original implementation, including every format,
+  constant streams, inline arrays and invalid bounds.
+- `python tests/web/test_pipeline_cache.py` checks all 8,192 cache entries,
+  collision lookup, full-pool reuse and retry after creation failure.
 - `tests/web/test_web_av.js` registers a presenter written like the
   renderer's in the smoke module. `fb_present.c` hands it the window, the
   overlay shows its frame, and presents run at 60 per second, paced by
   animation frames.
+
+Use `?env=RECOMP_SDLGPU_PROFILE=1` to report frames per second and time
+spent preparing textures, preparing vertices and submitting GPU work.
+Preparation can flush queued draws, so its timing can overlap submission
+timing. The log also reports hash bytes, decodes, readbacks, GPU texture
+copies, vertex-upload bytes and reasons for CPU vertex fallback. Compare
+equivalent scenes when measuring changes.
 
 The renderer's own test (`tests/sdlgpu_posix`) no longer compiles against
 the renderer upstream: the renderer reads executor state (`s_vp`,
@@ -370,18 +446,14 @@ These compile today but are inert or wrong at run time:
 - **Aliasing.** There are no RAM mirrors and no tiled alias for *runtime*
   code that adds the memory offset to such an address by hand; generated
   code is covered by the fold. Nothing in NFL 2K5 is known to need this.
-- **Audio has not been heard.** The APU routing is tested against a fake
-  APU, and the layout init with the APU path runs under Node. The real
-  DirectSound handshake can only be exercised once the game boots.
-- **Not booted with the retail disc.** Past the XBE check, expect whatever
-  stalls the browser's thread scheduling brings out. Neither renderer's
-  speed in a browser has been measured. The WebGPU renderer has run the
-  API checks above but not a game frame. Every create and submit is a
-  round trip to the GPU thread (about 80 µs), which may matter with many
-  small submits.
+- **Rendering fidelity.** Some pregame stadium frames show geometry
+  and compositing errors. The WebGPU renderer still needs comparison against
+  reference captures across gameplay and presentation sequences.
+- **Local music conversion.** The browser cannot launch FFmpeg, so conversion
+  of user-supplied music is unavailable.
 - **Audio latency** is the native build's: about 128 ms queued, which is
   generous for a browser. It hasn't been tuned against real game load.
-- **Not tried on the web yet:** fullscreen, pointer lock for "mouse as
+- **Not tried on the web yet:** pointer lock for "mouse as
   controller", rumble, and a remapping of F1/F2 away from browser
   shortcuts. Keys still work while the canvas has focus.
 - **Storage.** The import needs room for the whole disc. The page asks for

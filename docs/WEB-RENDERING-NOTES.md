@@ -1,0 +1,62 @@
+# Rendering and performance comparisons
+
+Reviewed November 7, 2026, while fixing player lighting and measuring the
+WebGPU port. These are architectural comparisons, not FPS comparisons
+between different games or machines.
+
+| Project | Relevant approach | Implication for NFL 2K5 |
+| --- | --- | --- |
+| [Ninja Gaiden Black recomp](https://github.com/gamboozino/ngbrecomp/blob/master/docs/renderer.md) | Hooks Xbox Direct3D calls and translates vertex programs for a Vulkan renderer. Its documentation measures which calls and inlined state the game actually uses. | GPU vertex-program execution is the main remaining opportunity here. Moving to Direct3D hooks would require a separate audit of NFL 2K5's pushbuffer writes and device state. |
+| [GTA3-WASM](https://github.com/Antriksh1984/GTA3-WASM/blob/main/manual.md) | Builds the reverse-engineered re3 engine for WebAssembly and WebGL2, with local game-data import. | Useful browser integration reference. Its renderer starts from engine source, so it does not establish the cost of interpreting NV2A vertex programs. |
+| [Devil May Cry 3 recomp preview](https://github.com/sindufha/Devil-may-cry-3-recomp/blob/main/docs/TROUBLESHOOTING.md) | Android project targeting a specific PC executable. Its performance guidance compares matching gameplay scenes and records driver, resolution and device conditions. | Record the matchup, camera and presentation state when comparing profiles. Menu FPS cannot establish gameplay performance. |
+
+## Current NFL 2K5 measurements
+
+`RECOMP_SDLGPU_PROFILE=1` separates texture preparation, CPU vertex
+processing and submission timings. Texture preparation can flush draws,
+so those timings can overlap. The log also reports rendered frames.
+
+The browser now translates NV2A vertex programs directly to WGSL and runs
+them on WebGPU. The profiler's `vp` count reports these draws. Programs
+that write constants and affine presentation programs retain the CPU path.
+Use `RECOMP_SDLGPU_NOVP=1` for a comparison with CPU processing.
+
+GPU inputs contain only referenced attributes, packed without gaps.
+Compatible render-target textures stay on the GPU, including snapshots of
+the current target, with XRGB alpha preserved. Texture hash memoization
+handles aligned guest addresses; material bindings survive across frames
+and are invalidated on texture destruction.
+
+The CPU fallback decodes instruction fields once per batch and avoids
+redundant uniform uploads and bindings. `tests/web/test_vp_interpreter.py` compares the live
+interpreter against a frozen pre-optimization reference. The focused
+24-instruction benchmark measured about 1.23–1.25 times the throughput
+in local runs. This is not an end-to-end game FPS measurement.
+`tests/web/test_vp_wgsl.py` and its JavaScript runner compare 2,048 GPU
+vertex executions against the CPU oracle, including temporary registers,
+and render through the production packed attribute layout.
+
+## Gameplay verification
+
+A two-minute local Chrome test on November 7, 2026 averaged **37.2 FPS**
+across the kickoff return and first offensive plays of Indianapolis at
+San Francisco. The 24 five-second samples ranged from **28.5 to 51.9 FPS**.
+This exceeds 30 FPS on average; heavy views still briefly dip below 30.
+Later offensive views in the extended run reached 26.1 FPS, so this is
+not a locked 30 FPS result.
+The test used hardware WebGPU on Intel `gen-12hp`, default web video/crop
+settings and `RECOMP_SDLGPU_PROFILE=1`. It recorded zero CPU vertex
+fallbacks and zero render-target readbacks throughout the sample.
+[Recorded samples](performance/2026-11-07-web-gameplay.json) preserve the
+frame counts and stage timings. This covers the tested sequence rather
+than a complete match or every hardware configuration.
+
+The final fixes include direct WGSL vertex programs, packed and validated
+input streams, GPU surface snapshots and material reuse, and an 8,192-entry
+pipeline pool with hashed lookup. The old 1,024-entry pool filled during
+offensive gameplay and forced draws back onto CPU vertex processing.
+
+Player lighting now implements the retail dependent dot-product stages
+and true cube textures. Chrome captures confirm visible jersey folds and
+lighting, but full fidelity still requires matched Xbox or xemu captures.
+Presentation sequences and gameplay also need broader performance work.

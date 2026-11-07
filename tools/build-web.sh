@@ -29,13 +29,16 @@ cd "$ROOT"
 
 # xboxrecomp: submodule plus the web patch.
 [ -f external/xboxrecomp/CMakeLists.txt ] || git submodule update --init external/xboxrecomp
-if git -C external/xboxrecomp apply --check ../../config/xboxrecomp-web.patch 2>/dev/null; then
-  git -C external/xboxrecomp apply ../../config/xboxrecomp-web.patch
+# Apply from the parent worktree so this also works when the submodule's Git
+# metadata is inaccessible. Accept Windows checkouts with CRLF line endings.
+web_patch=(git -c core.whitespace=cr-at-eol apply --ignore-space-change --directory=external/xboxrecomp)
+if "${web_patch[@]}" --check config/xboxrecomp-web.patch 2>/dev/null; then
+  "${web_patch[@]}" config/xboxrecomp-web.patch
   echo "applied config/xboxrecomp-web.patch"
-elif git -C external/xboxrecomp apply --reverse --check ../../config/xboxrecomp-web.patch 2>/dev/null; then
+elif "${web_patch[@]}" --reverse --check config/xboxrecomp-web.patch 2>/dev/null; then
   : # already applied
 else
-  echo "config/xboxrecomp-web.patch does not apply to external/xboxrecomp ($(git -C external/xboxrecomp rev-parse --short HEAD))" >&2
+  echo "config/xboxrecomp-web.patch does not apply to external/xboxrecomp" >&2
   exit 1
 fi
 

@@ -36,6 +36,18 @@ game assets are distributed with it.
 
 An extracted disc folder must contain `default.xbe` and `vc_53450030`.
 
+## Experimental web version
+
+The WebAssembly build includes a browser launcher with local disc import,
+controller status, keyboard controls, fullscreen and launch diagnostics.
+After building, run `python tools/serve-web.py` and open
+[the local launcher](http://127.0.0.1:8080/). Import your own USA Xbox disc
+image or extracted folder; the game files remain in browser storage.
+
+See [web build instructions](docs/WEB.md) and
+[rendering and performance measurements](docs/WEB-RENDERING-NOTES.md).
+The tested gameplay sample averaged 37.2 FPS; heavy views still dip below 30.
+
 ## New features
 
 ### Settings (F1)

@@ -214,11 +214,13 @@ extern "C" long nfl2k5_wma_transcode_utf8(const char *src, const char *dst)
 
 #else /* POSIX: FFmpeg wmav2 transcode + ASF Extended Content Description strip */
 
+#ifndef __EMSCRIPTEN__
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
+#endif
 
 extern "C" int nfl2k5_asf_strip_tags(const wchar_t *path)
 {
@@ -228,6 +230,13 @@ extern "C" int nfl2k5_asf_strip_tags(const wchar_t *path)
     return nfl2k5_asf_strip_tags_utf8(utf8);
 }
 
+#ifdef __EMSCRIPTEN__
+// The browser cannot start FFmpeg. Leave the source and destination intact.
+extern "C" long nfl2k5_wma_transcode_utf8(const char *, const char *)
+{
+    return -1;
+}
+#else
 extern "C" long nfl2k5_wma_transcode_utf8(const char *src, const char *dst)
 {
     unlink(dst);
@@ -261,6 +270,7 @@ extern "C" long nfl2k5_wma_transcode_utf8(const char *src, const char *dst)
     nfl2k5_asf_strip_tags_utf8(dst);
     return 0;
 }
+#endif
 
 extern "C" long nfl2k5_wma_transcode(const wchar_t *src, const wchar_t *dst)
 {

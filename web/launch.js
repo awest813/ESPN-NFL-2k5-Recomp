@@ -21,7 +21,10 @@ window.NFL2K5Launch = (() => {
     if (!Ctx) return null;
     let ctx;
     try { ctx = new Ctx({ latencyHint: 'interactive', sampleRate }); }
-    catch { ctx = new Ctx({ latencyHint: 'interactive' }); }
+    catch {
+      try { ctx = new Ctx({ latencyHint: 'interactive' }); }
+      catch { return null; }
+    }
     if (ctx.state !== 'running') ctx.resume().catch(() => {});
     return ctx;
   }
@@ -55,13 +58,14 @@ window.NFL2K5Launch = (() => {
   // script: the module's .js; factory: its EXPORT_NAME. Resolves to the
   // module once it is running (its main runs on a worker meanwhile).
   // onGpuPresent(on): the WebGPU renderer took over (or gave back) the screen.
-  async function start({ script, factory, canvas, audioContext, env = [], print, printErr, onAbort, onGpuPresent }) {
+  async function start({ script, factory, canvas, audioContext, env = [], print, printErr, onAbort, onGpuPresent, onProgress }) {
     if (typeof window[factory] !== 'function') await loadScript(script);
     if (canvas) canvas.focus();
     const mod = await window[factory]({
       canvas,
       SDL3: audioContext ? { audioContext } : undefined,
       print, printErr, onAbort, onGpuPresent,
+      setStatus: (text) => { if (onProgress) onProgress(text); },
       preRun: [(m) => {
         for (const kv of env) {
           const i = kv.indexOf('=');

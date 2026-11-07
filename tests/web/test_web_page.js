@@ -80,7 +80,19 @@ function sameDisc(got, want, withEmptyDirs) {
 }
 
 async function playAndCheckXbe(page, want, label) {
+  // Let the synthetic fixture through the UI compatibility check so this
+  // integration test still reaches the runtime's independent hash guard.
+  await page.evaluate(hash => { KNOWN_XBE[hash] = 'synthetic test fixture'; renderDisc(); }, want.xbe_sha256);
   await page.click('#play');
+  if (label === 'image') {
+    const target = await page.evaluate(async () => {
+      await document.querySelector('#canvas').requestFullscreen();
+      const id = document.fullscreenElement?.id;
+      await document.exitFullscreen();
+      return id;
+    });
+    check(target === 'screen', 'SDL fullscreen keeps both presentation canvases on screen');
+  }
   const mount = await waitLog(page, /\[WEB\] Game files: OPFS at \/nfl2k5/, 60000);
   check(!!mount, `${label}: module mounted OPFS`);
   check(!!(await waitLog(page, /Mounted game disc root: \/nfl2k5\/original\/disc/, 30000)),
@@ -103,11 +115,36 @@ async function playAndCheckXbe(page, want, label) {
     {
       const { context, page } = await newPage(browser, 'http://127.0.0.1:18765/');
       check(await page.evaluate(() => self.crossOriginIsolated), 'isolated server: crossOriginIsolated');
+      const gpuLayout = await page.evaluate(() => {
+        const stage = document.querySelector('#stage');
+        const input = document.querySelector('#canvas');
+        const gpu = document.querySelector('#gpucanvas');
+        const original = [input.width, input.height, gpu.width, gpu.height];
+        stage.hidden = false;
+        input.width = input.height = 0;
+        gpu.width = 1280;
+        gpu.height = 720;
+        gpu.hidden = false;
+        gpu.scrollIntoView({ block: 'center' });
+        const bounds = gpu.getBoundingClientRect();
+        const point = [bounds.x + bounds.width / 2, bounds.y + bounds.height / 2];
+        const target = document.elementFromPoint(...point);
+        gpu.style.pointerEvents = 'auto';
+        const gpuOnTop = document.elementFromPoint(...point) === gpu;
+        gpu.style.removeProperty('pointer-events');
+        gpu.hidden = stage.hidden = true;
+        [input.width, input.height, gpu.width, gpu.height] = original;
+        return { width: bounds.width, height: bounds.height, inputActive: target === input, gpuOnTop };
+      });
+      check(gpuLayout.width > 0 && gpuLayout.height > 0, 'GPU canvas sizes the screen when SDL releases its buffer');
+      check(gpuLayout.inputActive, 'SDL canvas still receives pointer input over the GPU frame');
+      check(gpuLayout.gpuOnTop, 'GPU canvas paints above the SDL input canvas');
       check(await page.$eval('#play', (b) => b.disabled), 'Play disabled before a disc is imported');
       await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
       check(!!(await waitLog(page, /^Imported 7 files/, 60000)), 'image import finished');
       check(sameDisc(await opfsDisc(page), want, true), 'image: every file in OPFS matches the disc, empty dirs kept');
-      check(!(await page.$eval('#play', (b) => b.disabled)), 'Play enabled after import');
+      check(await page.$eval('#play', (b) => b.disabled), 'unsupported XBE cannot launch from the page');
+      check(/Check your game files/.test(await page.textContent('#launch-label')), 'unsupported disc explains the next step');
       await playAndCheckXbe(page, want, 'image');
       await page.reload();
       await page.waitForSelector('body[data-ready="1"]');
@@ -115,6 +152,81 @@ async function playAndCheckXbe(page, want, label) {
             /7 files/.test(await page.textContent('#disc-summary')), 'disc still installed after reload');
       check(/not one this build runs/.test(await page.textContent('#disc-xbe')),
             'non-retail default.xbe is flagged');
+      await context.close();
+    }
+    // Missing runtime, worker failures and mobile layout are launcher states,
+    // independent of the retail game binary.
+    {
+      const {context, page} = await newPage(browser, 'http://127.0.0.1:18765/');
+      await page.evaluate(() => {
+        const transfer = new DataTransfer(); transfer.items.add(new File(['bad'], 'readme.txt'));
+        document.querySelector('#drop-zone').dispatchEvent(new DragEvent('drop', {dataTransfer: transfer, bubbles: true}));
+      });
+      check(/Drop one ISO/.test(await page.textContent('#library-message')), 'invalid dropped files explain supported imports');
+      await page.evaluate(() => {
+        const input = document.createElement('input'); input.type = 'file'; input.id = 'drop-fixture'; input.hidden = true;
+        document.body.appendChild(input);
+      });
+      await page.setInputFiles('#drop-fixture', path.join(TMP, 'test.xiso'));
+      await page.evaluate(() => {
+        const transfer = new DataTransfer(); transfer.items.add(document.querySelector('#drop-fixture').files[0]);
+        document.querySelector('#drop-zone').dispatchEvent(new DragEvent('drop', {dataTransfer: transfer, bubbles: true}));
+        document.querySelector('#drop-fixture').remove();
+      });
+      check(!!(await waitLog(page, /^Imported 7 files/, 60000)), 'drag-and-drop disc import finished');
+      check(sameDisc(await opfsDisc(page), want, true), 'dropped image imports byte for byte');
+      await context.close();
+    }
+    {
+      const context = await browser.newContext({ viewport: {width: 390, height: 844} });
+      const page = await context.newPage();
+      await page.route('**/NFL2K5.wasm', route => route.fulfill({status: 404, body: ''}));
+      await page.goto('http://127.0.0.1:18765/');
+      await page.waitForSelector('body[data-ready="1"]');
+      check(await page.$eval('#play', b => b.disabled) && /runtime missing/i.test(await page.textContent('#launch-label')),
+            'missing runtime blocks launch with a recovery message');
+      check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile launcher fits without horizontal scrolling');
+      await context.close();
+    }
+    {
+      const {context, page} = await newPage(browser, 'http://127.0.0.1:18765/');
+      await page.evaluate(() => { window.Worker = class { constructor() { throw Error('worker unavailable'); } }; });
+      await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
+      await page.waitForFunction(() => !document.querySelector('#library-message').hidden);
+      check(/worker unavailable/.test(await page.textContent('#library-message')) &&
+            !(await page.$eval('#import-image', b => b.disabled)), 'worker startup failure is visible and import can be retried');
+      await context.close();
+    }
+    {
+      const {context, page} = await newPage(browser, 'http://127.0.0.1:18765/');
+      await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
+      await waitLog(page, /^Imported 7 files/, 60000);
+      await page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const saves = await root.getDirectoryHandle('saves', {create: true});
+        await saves.getFileHandle('keep.dat', {create: true});
+      });
+      page.once('dialog', dialog => dialog.accept());
+      await page.click('#remove');
+      await page.waitForFunction(() => document.querySelector('#disc-installed').hidden);
+      check(await page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const saves = await root.getDirectoryHandle('saves');
+        return !!(await saves.getFileHandle('keep.dat'));
+      }), 'removing game files preserves saves');
+      await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
+      await page.waitForFunction(() => !document.querySelector('#disc-installed').hidden);
+      await page.evaluate(hash => {
+        KNOWN_XBE[hash] = 'synthetic test fixture'; renderDisc();
+        NFL2K5Launch.start = async options => { options.onAbort('simulated startup failure'); return {}; };
+      }, want.xbe_sha256);
+      await page.click('#play');
+      await page.waitForFunction(() => !document.querySelector('#reload').hidden);
+      check(await page.$eval('#play', b => b.disabled) && /simulated startup failure/.test(await page.textContent('#launch-status')),
+            'aborted startup offers reload and prevents a duplicate runtime');
+      await page.click('#diagnostics summary');
+      const [download] = await Promise.all([page.waitForEvent('download'), page.click('#download-log')]);
+      check(download.suggestedFilename() === 'nfl2k5-web-log.txt', 'diagnostic log can be downloaded');
       await context.close();
     }
     // 2. Extracted folder, chosen one level above the disc.
