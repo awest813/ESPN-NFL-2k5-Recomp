@@ -165,41 +165,26 @@ async function removeDisc() {
 
 // ---- game --------------------------------------------------------------------
 
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('Could not load ' + src + ' (run tools/build-web.sh)'));
-    document.head.appendChild(s);
-  });
-}
-
-async function play() {
+// Synchronous up to the AudioContext: browsers only allow sound that starts
+// inside the click (see web/launch.js).
+function play() {
+  const audio = NFL2K5Launch.createAudio();
   state.running = true;
   renderDisc();
   $('stage').hidden = false;
+  NFL2K5Launch.watchSound(audio, $('sound'), (st) => log('Sound: ' + st));
   log('Starting the game…');
-  try {
-    if (typeof createNFL2K5 !== 'function') await loadScript('NFL2K5.js');
-    const env = params.getAll('env');
-    await createNFL2K5({
-      canvas: $('canvas'),
-      print: (t) => log(t),
-      printErr: (t) => log(t, 'stderr'),
-      preRun: [(mod) => {
-        for (const kv of env) {
-          const i = kv.indexOf('=');
-          if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
-        }
-      }],
-      onAbort: (what) => log('Aborted: ' + what, 'error'),
-    });
-  } catch (e) {
+  NFL2K5Launch.start({
+    script: 'NFL2K5.js', factory: 'createNFL2K5', canvas: $('canvas'), audioContext: audio,
+    env: params.getAll('env'),
+    print: (t) => log(t),
+    printErr: (t) => log(t, 'stderr'),
+    onAbort: (what) => log('Aborted: ' + what, 'error'),
+  }).catch((e) => {
     log('The game stopped: ' + (e && e.message ? e.message : e), 'error');
     state.running = false;
     renderDisc();
-  }
+  });
 }
 
 // ---- start -------------------------------------------------------------------

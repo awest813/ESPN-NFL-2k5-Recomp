@@ -40,8 +40,13 @@
   .ok { color: var(--ok); } .warn { color: var(--warn); } .error { color: var(--err); }
   progress { width: 100%; height: 10px; }
   #progress-text { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  #stage { background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
-  #canvas { display: block; width: 100%; aspect-ratio: 4 / 3; outline: none; }
+  #stage { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+           margin-bottom: 16px; display: flex; justify-content: center; }
+  /* SDL sizes the canvas to the game's window; never wider than the page. */
+  #canvas { display: block; max-width: 100%; height: auto; outline: none; }
+  #sound { position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
+           background: rgba(0,0,0,.75); color: #fff; border: 1px solid rgba(255,255,255,.35);
+           border-radius: 6px; padding: 8px 14px; cursor: pointer; }
   #log { background: var(--log-bg); border: 1px solid var(--line); border-radius: 6px;
          font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
          height: 260px; overflow: auto; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -93,17 +98,21 @@
   <section>
     <h2>Play</h2>
     <div class="row"><button id="play" class="primary" disabled>Play</button></div>
-    <p class="note">The web build boots as far as the runtime goes today; see docs/WEB.md for what
-      works.</p>
+    <p class="note">Click the game to give it the keyboard. Controllers connect when you press one of
+      their buttons. The web build boots as far as the runtime goes today; see docs/WEB.md.</p>
   </section>
 
-  <div id="stage" hidden><canvas id="canvas" tabindex="-1"></canvas></div>
+  <div id="stage" hidden>
+    <canvas id="canvas" tabindex="-1"></canvas>
+    <button id="sound" hidden>Sound is off: click here or press a key to turn it on</button>
+  </div>
 
   <section>
     <h2>Log</h2>
     <div id="log" aria-live="polite"></div>
   </section>
 </main>
+<script src="launch.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

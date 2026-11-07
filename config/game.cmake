@@ -85,7 +85,8 @@ else()
   if(EMSCRIPTEN)
     # ---- Web (Emscripten), see docs/WEB.md ---------------------------------
     # The POSIX build above plus an OpenSSL stand-in (SHA-256, HMAC-SHA1).
-    target_sources(NFL2K5 PRIVATE src/platform/web/web_crypto.c src/platform/web/web_fs.c)
+    target_sources(NFL2K5 PRIVATE src/platform/web/web_crypto.c src/platform/web/web_fs.c
+                                  src/platform/web/web_sdl.c)
     target_include_directories(NFL2K5 BEFORE PRIVATE src/platform/web)
   endif()
 endif()

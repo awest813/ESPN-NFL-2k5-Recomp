@@ -6,6 +6,8 @@
 #   recomp_web_dev    the APU device accessors (under node)
 #   wasm_fixed        fixed-address claims and the host heap ceiling
 #   wasm_layout       the real xbox_MemoryLayoutInit on a minimal XBE
+#   web audio/video   the presenter, input and sound paths in headless
+#                     Chromium via tests/web/smoke (needs Playwright)
 #   web page          the page in headless Chromium: disc import into OPFS,
 #                     COOP/COEP and the service-worker fallback, and the real
 #                     module reading the disc (needs a full link in build-web/
@@ -29,7 +31,17 @@ for t in wasm_fixed wasm_layout; do
   cmake --build "$OUT/$t" -j "${JOBS:-$(nproc)}"
   ctest --test-dir "$OUT/$t" --output-on-failure
 done
-if [ -f "$ROOT/build-web/NFL2K5.wasm" ] && node -e "require('playwright')" 2>/dev/null; then
+HAVE_PW=0
+node -e "require('playwright')" 2>/dev/null && HAVE_PW=1
+emcmake cmake -S "$ROOT/tests/web/smoke" -B "$OUT/smoke" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DSDL3_DIR="$SDL_DIR" -DCMAKE_C_FLAGS="-pthread -msimd128" >/dev/null
+cmake --build "$OUT/smoke" -j "${JOBS:-$(nproc)}"
+if [ "$HAVE_PW" = 1 ]; then
+  node "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
+else
+  echo "web audio/video test skipped (needs Playwright)"
+fi
+if [ -f "$ROOT/build-web/NFL2K5.wasm" ] && [ "$HAVE_PW" = 1 ]; then
   node "$ROOT/tests/web/test_web_page.js" "$ROOT/build-web"
 else
   echo "web page test skipped (needs build-web/NFL2K5.wasm from tools/build-web.sh, and Playwright)"

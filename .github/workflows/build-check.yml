@@ -115,7 +115,12 @@ jobs:
       - name: Runtime and game sources (no generated code)
         run: tools/build-web.sh --no-gen
 
-      - name: Web tests (address space, APU routing)
+      - name: Playwright and Chromium (browser tests)
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+
+      - name: Web tests (address space, APU routing, audio/video/input)
         run: tools/test-web.sh
 
       - name: Full game link
@@ -124,10 +129,7 @@ jobs:
 
       - name: Web page test (headless Chromium)
         if: github.event_name == 'workflow_dispatch'
-        run: |
-          npm install --no-save playwright@1.63.0
-          npx playwright install --with-deps chromium
-          node tests/web/test_web_page.js build-web
+        run: node tests/web/test_web_page.js build-web
 
       - name: Upload web build
         if: github.event_name == 'workflow_dispatch'
@@ -137,6 +139,7 @@ jobs:
           path: |
             build-web/index.html
             build-web/app.js
+            build-web/launch.js
             build-web/import-worker.js
             build-web/coi-sw.js
             build-web/NFL2K5.js

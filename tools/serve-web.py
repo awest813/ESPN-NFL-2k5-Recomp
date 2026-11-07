@@ -53,8 +53,10 @@ def main():
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--no-isolation', action='store_true')
     a = ap.parse_args()
+    if not os.path.isdir(a.directory):
+        sys.exit(f'{a.directory} does not exist: run tools/build-web.sh first')
     if not os.path.exists(os.path.join(a.directory, 'index.html')):
-        sys.exit(f'{a.directory} has no index.html: run tools/build-web.sh first')
+        print(f'note: {a.directory} has no index.html', file=sys.stderr)
     Handler.isolation = not a.no_isolation
     handler = functools.partial(Handler, directory=a.directory)
     with http.server.ThreadingHTTPServer((a.host, a.port), handler) as httpd:

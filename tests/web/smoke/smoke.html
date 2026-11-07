@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>NFL2K5 web smoke</title>
+<style>body{margin:0;background:#111;color:#ddd;font:13px monospace}#canvas{display:block}</style></head>
+<body>
+<!-- tests/web/test_web_av.js: Start runs the same launcher as the page's Play.
+     ?auto=1 starts without a click, to test the "sound is off" path. -->
+<button id="start">Start</button>
+<button id="sound" hidden>Sound is off</button>
+<canvas id="canvas" tabindex="-1"></canvas>
+<script src="launch.js"></script>
+<script>
+  window.smokeLog = [];
+  function go() {
+    const audio = NFL2K5Launch.createAudio();
+    window.smokeAudio = audio;
+    NFL2K5Launch.watchSound(audio, document.getElementById('sound'));
+    NFL2K5Launch.start({ script: 'web_smoke.js', factory: 'createSmoke',
+      canvas: document.getElementById('canvas'), audioContext: audio,
+      print: (t) => { smokeLog.push(t); console.log(t); },
+      printErr: (t) => { smokeLog.push(t); console.log(t); } });
+  }
+  document.getElementById('start').onclick = go;
+  if (new URLSearchParams(location.search).get('auto') === '1') go();
+</script>
+</body>
+</html>

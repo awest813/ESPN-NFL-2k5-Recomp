@@ -4,8 +4,9 @@ Milestone M1 of [WEB-PORT-PLAN.md](WEB-PORT-PLAN.md) is done: the game
 **compiles and links** with Emscripten. Two of the M2 runtime pieces are in:
 the guest address space ([below](#guest-address-space)) and APU/AC97
 register routing without faults ([below](#audio-registers-without-faults)),
-and the page itself, with game files in the browser's private file system
-([below](#playing-in-a-browser)). In a browser, the module mounts the
+the page itself, with game files in the browser's private file system
+([below](#playing-in-a-browser)), and video, input and sound in the browser
+([below](#video-input-and-sound)). In a browser, the module mounts the
 imported disc and reads `default.xbe` from it. Booting further needs the
 retail disc, which this has not been tried with yet.
 
@@ -117,6 +118,62 @@ Open the page, import your disc, press Play.
   `default.xbe`'s;
 - the install survives a reload.
 
+## Video, input and sound
+
+The game's own SDL code runs unchanged; on the web it runs on workers
+(PROXY_TO_PTHREAD), which changes four things.
+
+- **Video.** The presenter thread (`video/fb_present.c`) creates the window
+  on the canvas `#canvas`. SDL proxies the DOM work to the page's thread.
+  WebGL can't be created on a worker without handing it the canvas, so the
+  presenter uses SDL's software renderer, which draws each frame with
+  `putImageData` (`SDL_HINT_RENDER_DRIVER=software` by default on the web).
+  SDL's framebuffer code needs Emscripten's `Browser` library but doesn't
+  declare it, so `fb_present.c` does (`EM_JS_DEPS`).
+- **Window and keyboard events.** The browser delivers these to the thread
+  that created the window as queued calls. A worker runs those only when it
+  returns to its event loop, which the presenter loop never does, so the
+  loop now runs its queue each pass. Keys are taken from the canvas only
+  (`SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT=#canvas`). The page focuses the
+  canvas at start, and clicking it gives the game the keyboard.
+- **Controllers.** Browsers only reveal a gamepad after one of its buttons
+  is pressed, through a connect event delivered the same queued way to the
+  thread that initialised SDL's gamepad subsystem. On the web that is a
+  small pump thread (`src/platform/web/web_sdl.c`), started first in
+  `main()`. It initialises the subsystem before any game code can and runs
+  its queue, so a pad that appears mid-game is seen.
+- **Sound.** Browsers keep an `AudioContext` suspended unless it starts in a
+  user gesture, and SDL creates its own context long after the click. So
+  `web/launch.js` creates and resumes one inside the Play click, before any
+  `await` (Safari requires that), and hands it to SDL as
+  `Module.SDL3.audioContext`. If sound is still blocked, for example after
+  `?autoplay=1`, a "Sound is off" prompt shows over the game and the next
+  click or key press anywhere turns sound on. SDL's Emscripten audio
+  pulls samples on the page's thread (`ScriptProcessorNode`) from the APU
+  output's `SDL_AudioStream`.
+
+Bug found on the way, affecting Linux too: the presenter's software
+fallback called the GPU presenter function pointer in the branch where it
+is NULL. That is a crash whenever the SDL GPU renderer is off, Linux's
+default. The call is gone.
+
+`tests/web/test_web_av.js` checks all of this in headless Chromium,
+through a smoke module (`tests/web/smoke`) that runs the real presenter,
+input and APU audio output without the game. It needs no generated code,
+so CI runs it on every push. It checks:
+
+- a guest framebuffer reaches the canvas;
+- SDL uses the page's `AudioContext`, and a 440 Hz tone reaches Web Audio's
+  output buffers;
+- keys reach the game only while the canvas has focus;
+- a controller connected after startup is seen and its button read (a
+  Gamepad API stand-in fires the browser's real connect event);
+- with no click, the prompt shows and a click turns sound on.
+
+The last check emulates the autoplay block at the API, because Playwright's
+navigation itself counts as user activation, so a real block cannot be
+produced.
+
 ## Guest address space
 
 A native host maps each guest region at `base + guest address` and turns a
@@ -213,10 +270,15 @@ These compile today but are inert or wrong at run time:
   DirectSound handshake can only be exercised once the game boots.
 - **Renderer.** SDL_GPU 3.2.20 has no WebGPU backend, so `RECOMP_SDLGPU`
   finds no device and drawing stays on the software rasterizer.
-- **Not booted with the retail disc.** Past the XBE check, expect the M2
-  work in the plan: SDL video with the guest main on a worker, audio
-  unlock on the first click, and whatever stalls the browser's thread
-  scheduling brings out.
+- **Not booted with the retail disc.** Past the XBE check, expect whatever
+  stalls the browser's thread scheduling brings out. Video is the
+  software path, and its speed in a browser is unmeasured.
+- **Audio uses `ScriptProcessorNode`** (SDL 3.2's Emscripten backend), which
+  is deprecated and runs on the page's thread. An `AudioWorklet` output
+  reading a shared ring is the plan's later step.
+- **Not tried on the web yet:** fullscreen, pointer lock for "mouse as
+  controller", rumble, and a remapping of F1/F2 away from browser
+  shortcuts. Keys still work while the canvas has focus.
 - **Storage.** The import needs room for the whole disc. The page asks for
   persistent storage; if the browser declines, it may clear the disc (and
   saves) under storage pressure. There is no save export yet.

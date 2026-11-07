@@ -558,6 +558,7 @@ void nfl2k5_diag_slot(const char *where, uint32_t a, uint32_t b, uint32_t c, uin
 
 #if defined(__EMSCRIPTEN__)
 extern int nfl2k5_web_mount(void);   /* src/platform/web/web_fs.c */
+extern int nfl2k5_web_sdl_start(void);   /* src/platform/web/web_sdl.c */
 #endif
 
 int main(int argc, char **argv)
@@ -566,7 +567,7 @@ int main(int argc, char **argv)
     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
 #endif
 #if defined(__EMSCRIPTEN__)
-    if (!nfl2k5_web_mount())
+    if (!nfl2k5_web_mount() || !nfl2k5_web_sdl_start())
         return 2;
 #endif
 

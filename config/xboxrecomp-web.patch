@@ -1014,6 +1014,82 @@ index 6caf7ee..eccf301 100644
  #else
      struct sysinfo si;
      if (sysinfo(&si) != 0) return FALSE;
+diff --git a/src/video/fb_present.c b/src/video/fb_present.c
+index 605a947..2bd0a55 100644
+--- a/src/video/fb_present.c
++++ b/src/video/fb_present.c
+@@ -12,10 +12,22 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include "video_player.h"   /* xbox_FramebufferDumpBmp */
++#ifdef __EMSCRIPTEN__
++#include <emscripten/em_js.h>
++#include <emscripten/threading.h>
++/* SDL's software framebuffer on Emscripten draws through Emscripten's
++ * Browser.createContext, but does not declare it (it does for audio), so
++ * nothing linked it in: "Browser is not defined" on the first present. */
++EM_JS_DEPS(xbox_fb_present, "$Browser");
++#endif
+ 
+ extern ptrdiff_t xbox_GetMemoryOffset(void);
+ 
++#ifdef __EMSCRIPTEN__
++#define FB_TITLE          "ESPN NFL 2K5 Web"   /* SDL sets the page's title */
++#else
+ #define FB_TITLE          "ESPN NFL 2K5 - LINUX V0.5"
++#endif
+ #define FB_GUEST_RAM_SIZE 0x04000000u
+ 
+ enum {
+@@ -260,6 +272,18 @@ static int SDLCALL fb_thread_sdl(void *data) {
+ 
+     g_fb.ultrawide = getenv("RECOMP_ULTRAWIDE") && *getenv("RECOMP_ULTRAWIDE") != '0';
+ 
++#ifdef __EMSCRIPTEN__
++    /* This thread is a worker (pthread), not the page's main thread:
++     *  - WebGL cannot be created here without handing the canvas over to
++     *    this worker, so the fallback renderer is SDL's software one, which
++     *    presents through the main thread (putImageData);
++     *  - keys are taken from the canvas only, so the rest of the page keeps
++     *    its keyboard (the page focuses the canvas when the game starts).
++     * Both are defaults the page or the environment can override. */
++    SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "software", SDL_HINT_DEFAULT);
++    SDL_SetHintWithPriority(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas", SDL_HINT_DEFAULT);
++#endif
++
+     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+         fprintf(stderr, "  [FBWIN] SDL_Init failed: %s\n", SDL_GetError());
+         SDL_SetAtomicInt(&g_fb.running, 0);
+@@ -303,6 +327,13 @@ static int SDLCALL fb_thread_sdl(void *data) {
+ 
+     while (SDL_GetAtomicInt(&g_fb.running)) {
+         SDL_Event ev;
++#ifdef __EMSCRIPTEN__
++        /* The browser delivers the window's input, focus and resize events
++         * to the thread that created it -- this one -- as queued calls, and
++         * a worker only runs those when it returns to its event loop, which
++         * this loop never does. Run them here, ahead of SDL_PollEvent. */
++        emscripten_current_thread_process_queued_calls();
++#endif
+         while (SDL_PollEvent(&ev)) {
+             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                 fprintf(stderr, "[WINDOW] SDL quit requested -- shutting down game\n");
+@@ -351,12 +382,9 @@ static int SDLCALL fb_thread_sdl(void *data) {
+                     );
+                     fb_texture_opaque(g_fb.fallback_texture);
+                 }
+-                if (!presenter(win, g_fb.ultrawide)) {
+-                    SDL_SetAtomicPointer((void **)&g_fb.presenter, NULL);
+-                    SDL_SetAtomicInt(&g_fb.gpu_present, 0);   /* back to the SDL_Renderer */
+-                    gpu_expected_until = 0;
+-                }
+-
++                /* No presenter here (this branch is presenter == NULL):
++                 * calling it, as this used to, jumped through a null
++                 * pointer the first time the software fallback ran. */
+                 fb_draw_sdl_fallback();
+             }
+         }
 diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
 index 0e3de94..97d843d 100644
 --- a/templates/runtime/recomp_types.h
