@@ -2586,6 +2586,154 @@ diff --git a/src/kernel/sdlgpu/shaders/flat2d.frag b/src/kernel/sdlgpu/shaders/f
          c = (t * c + 127u) / 255u;
      }
      if (sh.alpha_test != 0u && !alpha_pass(c.a))
+diff --git a/src/nv2a/qemu_shim.h b/src/nv2a/qemu_shim.h
+--- a/src/nv2a/qemu_shim.h
++++ b/src/nv2a/qemu_shim.h
+@@ -374,7 +374,12 @@
+     LARGE_INTEGER freq, count;
+     QueryPerformanceFrequency(&freq);
+     QueryPerformanceCounter(&count);
+-    return (int64_t)(count.QuadPart * 1000000000LL / freq.QuadPart);
++    /* Scale the whole seconds and fractional part separately. In the web
++     * build QPC is already nanoseconds: multiplying that large counter first
++     * overflows int64_t and makes device clocks jump backwards. Supported
++     * host QPC frequencies are at most 1 GHz, so the remainder product fits. */
++    return (count.QuadPart / freq.QuadPart) * 1000000000LL
++         + (count.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart;
+ }
+ #define QEMU_CLOCK_VIRTUAL 0
+
+diff --git a/src/apu/apu_shim.h b/src/apu/apu_shim.h
+--- a/src/apu/apu_shim.h
++++ b/src/apu/apu_shim.h
+@@ -48,7 +48,10 @@
+     LARGE_INTEGER freq, count;
+     QueryPerformanceFrequency(&freq);
+     QueryPerformanceCounter(&count);
+-    return (int64_t)(count.QuadPart * 1000000LL / freq.QuadPart);
++    /* Divide before scaling so long-running/epoch-based QPC values cannot
++     * overflow the intermediate product (the browser QPC uses nanoseconds). */
++    return (count.QuadPart / freq.QuadPart) * 1000000LL
++         + (count.QuadPart % freq.QuadPart) * 1000000LL / freq.QuadPart;
+ }
+ #endif
+
+diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
+--- a/src/apu/apu_core.c
++++ b/src/apu/apu_core.c
+@@ -34,6 +34,8 @@
+ uint8_t *g_apu_ram_ptr = NULL;
+
+ MCPXAPUState *g_state = NULL;
++/* Opt-in timing: keep extra clock reads off the normal audio/MMIO path. */
++static bool s_apu_lock_profile;
+
+ /* Forward declarations for software mixer */
+ static void mixer_init(void);
+@@ -494,12 +496,25 @@
+  * APU frame thread (background processing)
+  * ============================================================ */
+
++/* A behind-schedule mixer can run continuously without throttle ever
++ * releasing its mutex. Hand queued register writes the lock at a frame
++ * boundary; never let them modify voices partway through se_frame(). */
++static void mcpx_apu_service_mmio_waiters(MCPXAPUState *d)
++{
++    while (qatomic_fetch_add(&d->mmio_waiters, 0) > 0 && !qatomic_read(&d->exiting))
++        qemu_cond_wait(&d->cond, &d->lock);
++}
++
+ static void *mcpx_apu_frame_thread(void *arg)
+ {
+     MCPXAPUState *d = MCPX_APU_DEVICE(arg);
++    int64_t profile_since = 0, profile_total = 0, profile_max = 0;
++    unsigned profile_frames = 0;
+     qemu_mutex_lock(&d->lock);
+
+     while (!qatomic_read(&d->exiting)) {
++        mcpx_apu_service_mmio_waiters(d);
++        if (qatomic_read(&d->exiting)) break;
+         if (d->pause_requested && !g_test_tone.active && !g_mixer_active_count) {
+             d->is_idle = true;
+             qemu_cond_signal(&d->idle_cond);
+@@ -571,7 +586,24 @@
+
+         if (apu_active && !g_test_tone.active) {
+             /* Full pipeline: VP voices → DSP → monitor → waveOut */
++            int64_t started = s_apu_lock_profile ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
+             se_frame(d);
++            if (s_apu_lock_profile) {
++                int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++                int64_t duration = now - started;
++                profile_total += duration;
++                if (duration > profile_max) profile_max = duration;
++                profile_frames++;
++                if (!profile_since) profile_since = started;
++                if (now - profile_since >= 5000000) {
++                    fprintf(stderr, "[APU-PERF] frames=%u busy=%.1fms max=%.1fms over=%.1fms\n",
++                            profile_frames, profile_total / 1000.0, profile_max / 1000.0,
++                            (now - profile_since) / 1000.0);
++                    profile_since = now;
++                    profile_total = profile_max = 0;
++                    profile_frames = 0;
++                }
++            }
+             /* As xemu's frame loop: a frame that raised a notifier or trapped
+              * the front end updates the interrupt line. */
+             if (d->set_irq) {
+@@ -648,6 +680,7 @@
+
+     g_apu_ram_ptr = ram_ptr;
+     g_state = d;
++    s_apu_lock_profile = getenv("RECOMP_APU_LOCK_PROFILE") != NULL;
+     d->ram_ptr = ram_ptr;
+
+     d->set_irq = false;
+@@ -766,9 +799,33 @@
+      * were overwritten by the voice processor: NFL 2K5's music streamer saw
+      * its positions jump and restarted the song every 1-5 s, and announcer
+      * lines were cut (2026-10-01). The lock is a recursive critical section. */
++    int64_t started = s_apu_lock_profile ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
++    qatomic_fetch_add(&d->mmio_waiters, 1);
+     qemu_mutex_lock(&d->lock);
++    int64_t acquired = s_apu_lock_profile ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
+     mcpx_apu_dispatch_mmio(d, (hwaddr)addr, val, size, true);
++    if (qatomic_fetch_add(&d->mmio_waiters, -1) == 1)
++        qemu_cond_signal(&d->cond);
+     qemu_mutex_unlock(&d->lock);
++    if (s_apu_lock_profile) {
++        static XBOX_THREAD_LOCAL int64_t since, wait_total, wait_max, dispatch_max;
++        static XBOX_THREAD_LOCAL unsigned writes;
++        int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++        int64_t wait = acquired - started, dispatch = now - acquired;
++        wait_total += wait;
++        if (wait > wait_max) wait_max = wait;
++        if (dispatch > dispatch_max) dispatch_max = dispatch;
++        writes++;
++        if (!since) since = started;
++        if (now - since >= 5000000) {
++            fprintf(stderr, "[APU-LOCK] thread=%u writes=%u wait=%.1fms max=%.1fms dispatch-max=%.1fms\n",
++                    (unsigned)GetCurrentThreadId(), writes, wait_total / 1000.0,
++                    wait_max / 1000.0, dispatch_max / 1000.0);
++            since = now;
++            wait_total = wait_max = dispatch_max = 0;
++            writes = 0;
++        }
++    }
+ }
+
+ /* ============================================================
+diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
+--- a/src/apu/apu_state.h
++++ b/src/apu/apu_state.h
+@@ -460,6 +460,7 @@
+
+     QemuThread apu_thread;
+     QemuMutex lock;
++    volatile int mmio_waiters; /* writers announced before taking lock */
+     QemuCond cond;
+     QemuCond idle_cond;
+     bool pause_requested;
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -6775,7 +6923,19 @@ index 0000000..4bc11e6
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
-@@ -494,6 +494,15 @@
+@@ -25,6 +25,11 @@
+ #endif
+ #include <string.h>
+ #include <setjmp.h>
++#ifdef __EMSCRIPTEN__
++#include <emscripten/threading.h>
++#include <limits.h>
++#include "xbox_ggl.h"
++#endif
+ #if !defined(_WIN32)
+ #include <unistd.h>   /* _exit */
+ #if defined(__linux__) && defined(__x86_64__)
+@@ -494,6 +499,15 @@
                          " a channel reset will spin\n");
          return FALSE;
      }
@@ -6791,7 +6951,77 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
  #else
  #if defined(__linux__) && defined(__x86_64__)
      if (!g_ac97_posix_handler_ready || mprotect(g_ac97_page, AC97_TRAP_BYTES, PROT_READ) != 0) {
-@@ -1275,6 +1284,68 @@
+@@ -642,6 +656,42 @@
+     return s_async;
+ }
+
++#ifdef __EMSCRIPTEN__
++/* Browser fence handoff. Old completed-kick snapshots must not overwrite a
++ * newer semaphore release from the render thread. Fence numbers wrap at 32
++ * bits, with less than half the sequence space outstanding at once. */
++static void web_fence_publish(volatile uint32_t *fence, uint32_t value)
++{
++    if ((uintptr_t)fence & 3u) { *fence = value; return; }
++    uint32_t previous = __atomic_load_n(fence, __ATOMIC_RELAXED);
++    while ((int32_t)(value - previous) > 0) {
++        if (__atomic_compare_exchange_n(fence, &previous, value, 0,
++                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
++            emscripten_futex_wake((void *)fence, INT_MAX);
++            return;
++        }
++    }
++}
++
++int xbox_Nv2aWaitFence(uint32_t semaphore_va, uint32_t target)
++{
++    if (!pb_async_on() || (semaphore_va & 3u) || !fence_readable(semaphore_va, 4))
++        return 0;
++    volatile uint32_t *fence = (volatile uint32_t *)((uintptr_t)semaphore_va + g_memory_offset);
++    uint32_t value = __atomic_load_n(fence, __ATOMIC_ACQUIRE);
++    if ((int32_t)(value - target) >= 0) return 1;
++    int depth = xbox_ggl_release_all();
++    do {
++        /* The expected-value check also handles a release between our load
++         * and the wait. A timeout covers guest stores outside the executor. */
++        emscripten_futex_wait((void *)fence, value, 10.0);
++        value = __atomic_load_n(fence, __ATOMIC_ACQUIRE);
++    } while ((int32_t)(value - target) < 0);
++    xbox_ggl_reacquire(depth);
++    return 1;
++}
++#endif
++
+ /* The snapshot published for one mirror, or 0 when nothing is published
+  * yet (the tick then leaves the guest value alone). */
+ static int pb_async_done(PbSnap *out)
+@@ -827,7 +877,11 @@
+             get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
+             if (!fence_readable(get_ptr, 4))
+                 continue;
++#ifdef __EMSCRIPTEN__
++            web_fence_publish((volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset), done.fput[i]);
++#else
+             *(volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset) = done.fput[i];
++#endif
+             continue;
+         }
+
+@@ -1185,8 +1239,13 @@
+         if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4))
+             continue;
+         sem = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
+-        if (fence_readable(sem, 4))
++        if (fence_readable(sem, 4)) {
++#ifdef __EMSCRIPTEN__
++            web_fence_publish((volatile uint32_t *)((uintptr_t)sem + g_memory_offset), value);
++#else
+             *(volatile uint32_t *)((uintptr_t)sem + g_memory_offset) = value;
++#endif
++        }
+     }
+ }
+
+@@ -1275,6 +1334,68 @@
      }
  }
 
@@ -6860,7 +7090,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -1366,6 +1437,9 @@
+@@ -1366,6 +1487,9 @@
          *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
                                 + g_memory_offset) = GetTickCount();
 
@@ -6870,7 +7100,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
          Sleep(0);  /* yield; the waiter is spinning on another core */
      }
      return 0;
-@@ -1863,8 +1937,12 @@
+@@ -1863,8 +1987,12 @@
          /* Reserve base + mirrors as one range, and map the base at its head.
           * VirtualFree releases just the slice about to be used, so each view
           * replaces our own reservation rather than racing for free space. */
@@ -6885,7 +7115,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
           * Windows MEM_RELEASE requires size zero and releases the whole
           * reservation; use the fixed-base views below on Windows. */
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
-@@ -2521,9 +2599,20 @@
+@@ -2521,9 +2649,20 @@
                      VirtualProtect((char *)g_mcpx_memory + 0x50000u, 0xF000u,
                                     PAGE_READWRITE, &old_protect);
                  }
@@ -6906,7 +7136,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
                  *(volatile uint32_t *)((char *)g_mcpx_memory
                                         + MCPX_AC97_CODEC_STATUS)
                      |= MCPX_AC97_CODEC_READY;
-@@ -2628,6 +2717,15 @@
+@@ -2628,6 +2767,15 @@
       * intervals. All views alias the same physical pages, so reads and
       * writes at any mirror address correctly access the base data.
       */
@@ -6922,7 +7152,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      {
          int mirrors_ok = 0;
          /* The tiled aperture is a specific architectural alias -- physical RAM
-@@ -2679,6 +2777,7 @@
+@@ -2679,6 +2827,7 @@
                  mirrors_ok, XBOX_NUM_MIRRORS,
                  (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
      }
@@ -6930,7 +7160,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 
      /*
       * Tiled / write-combined aperture at 0xF0000000.
-@@ -2725,11 +2824,25 @@
+@@ -2725,11 +2874,25 @@
                  tiled_size,
                  (LPVOID)tiled_native)
              : NULL;

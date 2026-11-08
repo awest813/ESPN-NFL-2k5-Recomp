@@ -393666,6 +393666,12 @@ loc_0042641D: ;
     _fa = (uint32_t)(eax) & 0xFFFFFFFFu; _fas = (int32_t)(int32_t)(_fa); /* sub result */
 
 loc_00426427: ;
+    /* NFL2K5-GENPATCH:WEB_GPU_FENCE_WAIT */
+#ifdef __EMSCRIPTEN__
+    /* Block on actual GPU progress without holding the guest CPU. */
+    { extern int xbox_Nv2aWaitFence(uint32_t, uint32_t);
+      if (xbox_Nv2aWaitFence(edx, esi - eax)) goto loc_00426431; }
+#endif
     ecx = MEM32(edx);
     edi = esi;
     _fb = (uint32_t)(ecx) & 0xFFFFFFFFu; _fbs = (int32_t)(int32_t)(_fb); /* sub source, before the write */

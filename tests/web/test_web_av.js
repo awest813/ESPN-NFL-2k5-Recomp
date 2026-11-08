@@ -224,7 +224,7 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       await gpu.close();
     }
   } finally {
-    await browser.close().catch(() => {});
+    if (browser.isConnected()) await browser.close().catch(() => {});
     server.kill();
   }
   console.log(failures ? `${failures} failure(s)` : 'web audio/video: all checks passed');

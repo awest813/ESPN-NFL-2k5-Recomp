@@ -96,3 +96,29 @@ Emscripten's `sched_yield` only processes its event queue. A one-millisecond
 sleep was tested and removed after it caused severe startup stalls while
 guest interrupt handlers waited for register acknowledgements. Replacing
 this poller requires preserving that handshake's latency.
+
+## Device timer overflow and gameplay stalls
+
+The QEMU compatibility clocks scaled QPC with `counter * units / frequency`.
+The browser's epoch-based nanosecond counter overflows that signed 64-bit
+intermediate, corrupting the APU free-running timer and GPU PTIMER. They now
+scale whole seconds and the remaining fraction separately. Regression tests
+run the production conversions under undefined-behavior checks with epoch
+values, three QPC frequencies, the old overflow boundary, and the APU's
+expected 32-bit timer wrap. The old conversion fails this test.
+
+Browser D3D fence waits now park on the shared semaphore and release the
+guest lock until the renderer publishes progress. Fence publication uses an
+atomic compare/exchange: a completed-kick snapshot cannot overwrite a newer
+semaphore release. Wrap-aware comparisons also accept a renderer which has
+already progressed beyond the requested fence. Wasm pthread tests cover
+publication races, stale snapshots, multiple waiters, spurious wakes and
+restoring the guest lock after wakeup.
+
+`RECOMP_APU_LOCK_PROFILE=1` logs audio processing time and per-thread waits
+for the audio register lock, separating mixer contention from GPU waits.
+It exposed a 733 ms register-write wait during gameplay. The mixer now
+hands pending MMIO writers the mutex between voice frames, even while
+catching up without a throttle sleep. Writes still serialize against each
+complete voice frame. A threaded test reproduces that continuously busy
+mixer and verifies 10,000 writes, continued mixing and shutdown.

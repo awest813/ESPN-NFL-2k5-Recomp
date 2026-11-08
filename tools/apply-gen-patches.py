@@ -31,6 +31,13 @@ LENIENT = "--lenient" in sys.argv
 
 # (id, function, anchor line (stripped match), insert 'before' or 'after', code)
 PATCHES = [
+    ("WEB_GPU_FENCE_WAIT", "sub_004262F0", "loc_00426427: ;", "after", """\
+#ifdef __EMSCRIPTEN__
+    /* Block on actual GPU progress without holding the guest CPU. */
+    { extern int xbox_Nv2aWaitFence(uint32_t, uint32_t);
+      if (xbox_Nv2aWaitFence(edx, esi - eax)) goto loc_00426431; }
+#endif
+"""),
     ("CELEBRATION_PREVIEW_CUSTOM", "sub_001B6B40", "loc_001B6B40: ;", "after", """\
     if (ecx >= 37u) { extern uint32_t nfl2k5_celebration_resource(uint32_t); eax = nfl2k5_celebration_resource(ecx); esp += 4; return; }
 """),
