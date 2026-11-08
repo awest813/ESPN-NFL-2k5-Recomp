@@ -11,6 +11,7 @@ def main():
     live = core[core.index("static size_t vertex_attr_bytes("):core.index("static uint32_t surface_bpp(")]
     xf = (kernel / "sdlgpu/sdlgpu_xf.inc.c").read_text(encoding="utf-8")
     prepared = xf[xf.index("static void sg_vp_prepare_inputs("):xf.index("/* RECOMP_SDLGPU_NOVP")]
+    prepared += xf[xf.index("static uint32_t sg_vp_vertex("):xf.index("/* Draw the batch with its vertex program")]
     reference = (Path(__file__).parent / "fixtures/vertex_fetch_reference.inc.c").read_text(encoding="utf-8")
     harness = r'''
 #include <stdint.h>
@@ -24,7 +25,7 @@ def main():
 typedef struct { uint32_t offset, type, size, stride; } VertexAttr;
 static struct { VertexAttr attr[16]; int inline_active; unsigned inline_count; void *inline_buf; } s_gpu;
 static float s_attr_inline[16][4];
-static struct { unsigned inmask; uint8_t active[16], active_count; float *in; uint32_t input_stride, linear_first, nv; int linear; struct { const uint8_t *base; float value[4]; int constant; } attr[16]; } s_sgvp;
+static struct { unsigned inmask; uint8_t active[16], active_count; float *in; uint32_t input_stride, linear_first, nv, gen, map[65536], map_gen[65536]; int linear; struct { const uint8_t *base; float value[4]; int constant; } attr[16]; } s_sgvp;
 static float packed_input[64*16*4];
 static uint8_t memory[65536], inline_memory[8192];
 static void *xbox_GetMemoryOffset(void) { return memory; }
@@ -61,7 +62,18 @@ int main(void) {
         for (unsigned index=0;index<32;index++) for (unsigned slot=0;slot<count;slot++) {
             float expected[4];
             reference_fetch_attr(&s_gpu.attr[s_sgvp.active[slot]],index+3,expected);
-            assert(!memcmp(expected,packed_input+index*count*4+slot*4,16));
+            assert(sg_vp_vertex(index+3)==index);
+            assert(!memcmp(expected,packed_input+sg_vp_vertex(index+3)*count*4+slot*4,16));
+        }
+        s_sgvp.linear=0; s_sgvp.nv=0; s_sgvp.gen++;
+        for (unsigned index=0;index<64;index++) {
+            unsigned mapped=sg_vp_vertex(index);
+            assert(sg_vp_vertex(index)==mapped);
+            for (unsigned slot=0;slot<count;slot++) {
+                float expected[4];
+                reference_fetch_attr(&s_gpu.attr[s_sgvp.active[slot]],index,expected);
+                assert(!memcmp(expected,packed_input+mapped*count*4+slot*4,16));
+            }
         }
         for (unsigned index = 0; index < 64; index++) {
             float expected[4], actual[4], checked[4];

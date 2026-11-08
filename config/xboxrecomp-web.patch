@@ -1243,7 +1243,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } s_sg;
 
 
-@@ -117,27 +119,31 @@
+@@ -117,27 +119,32 @@
   * changes, and when full. */
  #define SG_QUEUE_MAX_DRAWS 8192
 
@@ -1255,6 +1255,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      uint32_t vertex_count;
 -    SDL_GPUTexture *tex[4];
 -    SDL_GPUSampler *sampler[4];
++    uint32_t vertex_stride;
 +    SDL_GPUTexture *tex[8];
 +    SDL_GPUSampler *sampler[8];
      int tex_count;
@@ -1278,7 +1279,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +191,21 @@
+@@ -185,9 +192,22 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
@@ -1286,6 +1287,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    uint64_t texture_ticks, vertex_ticks, submit_ticks;
 +    uint64_t texture_hash_bytes;
 +    uint64_t vertex_upload_bytes;
++    uint32_t merged_draws;
 +    uint32_t texture_decodes, texture_downloads, texture_gpu_copies;
 +    uint32_t vp_affine, vp_program_pending, vp_pipeline_failed;
      uint32_t why[SG_FB_COUNT];
@@ -1300,7 +1302,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -206,11 +224,26 @@
+@@ -206,11 +226,27 @@
          s_sg_stats.since_ms = now;
      if (now - s_sg_stats.since_ms < 5000)
          return;
@@ -1322,13 +1324,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +                (double)s_sg_stats.texture_downloads / s_sg_stats.frames,
 +                (double)s_sg_stats.texture_gpu_copies / s_sg_stats.frames);
 +        fprintf(stderr, " | vertices %.2f MiB/frame", (double)s_sg_stats.vertex_upload_bytes / (1048576.0 * s_sg_stats.frames));
++        fprintf(stderr, " | merged %.2f/frame", (double)s_sg_stats.merged_draws / s_sg_stats.frames);
 +        fprintf(stderr, " | VP fallback affine %u program %u pipeline %u",
 +                s_sg_stats.vp_affine, s_sg_stats.vp_program_pending, s_sg_stats.vp_pipeline_failed);
 +    }
      fprintf(stderr, "\n");
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
-@@ -246,7 +279,11 @@
+@@ -246,7 +282,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -1340,7 +1343,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,6 +305,9 @@
+@@ -268,6 +308,9 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -1350,7 +1353,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_vpcache.inc.c"
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
-@@ -310,8 +350,10 @@
+@@ -310,8 +353,10 @@
              sg_present_flip();
          else
              sg_download_all();
@@ -1504,7 +1507,41 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          fprintf(stderr, "  [SDLGPU] drawing unavailable: %s\n", SDL_GetError());
          return 0;
      }
-@@ -171,20 +187,24 @@
+@@ -154,6 +170,33 @@
+     return grown;
+ }
+
++/* Adjacent triangles with identical state can share one draw. Vertex/index
++ * uploads remain ordered; rebasing the appended indices preserves every
++ * original triangle, including order-dependent blending and stencil. */
++static int sg_queue_merge(SgQueue *q, const SgQueuedDraw *n) {
++    if (!q->count || !n->vertex_count || !n->vertex_stride) return 0;
++    SgQueuedDraw *p = &q->draws[q->count - 1u];
++    if (p->pipe != n->pipe || p->vertex_stride != n->vertex_stride ||
++        (uint64_t)p->vertex_offset + (uint64_t)p->vertex_count * p->vertex_stride != n->vertex_offset ||
++        !!p->index_count != !!n->index_count || p->tex_count != n->tex_count ||
++        p->vs_offset != n->vs_offset || p->vs_size != n->vs_size || p->fs_size != n->fs_size ||
++        p->stencil_ref != n->stencil_ref ||
++        memcmp(&p->scissor, &n->scissor, sizeof p->scissor) ||
++        memcmp(&p->window_clip, &n->window_clip, sizeof p->window_clip) ||
++        memcmp(&p->blend_constant, &n->blend_constant, sizeof p->blend_constant) ||
++        memcmp(p->tex, n->tex, (size_t)n->tex_count * sizeof n->tex[0]) ||
++        memcmp(p->sampler, n->sampler, (size_t)n->tex_count * sizeof n->sampler[0]) ||
++        memcmp(p->fs, n->fs, n->fs_size)) return 0;
++    if (n->index_count) {
++        if ((uint64_t)p->index_offset + (uint64_t)p->index_count * 4u != n->index_offset) return 0;
++        uint32_t *indices = (uint32_t *)(q->idata + n->index_offset);
++        for (uint32_t i = 0; i < n->index_count; i++) indices[i] += p->vertex_count;
++        p->index_count += n->index_count;
++    }
++    p->vertex_count += n->vertex_count;
++    return 1;
++}
++
+ /* Add one draw to the queue: its vertices, new textures and uniforms are
+  * copied, so the caller's buffers can be reused at once. Returns 0 only
+  * when memory runs out. */
+@@ -171,20 +214,24 @@
 
      for (i = 0; i < (uint32_t) d->tex_count; i++)
          if (d->tex[i].upload)
@@ -1534,15 +1571,18 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (!(g = sg_grow(q->udata, &q->ucap, q->ubytes + d->vs_uniform_size, 1))) return 0;
      q->udata = (uint8_t *)g;
 
-@@ -199,6 +219,7 @@
+@@ -197,8 +244,10 @@
+     qd->pipe = d->pipe;
+     qd->vertex_offset = q->vbytes;
      qd->vertex_count = d->vertex_count;
++    qd->vertex_stride = d->vertex_count ? d->vertex_bytes / d->vertex_count : 0;
      memcpy(q->vdata + q->vbytes, d->vertices, d->vertex_bytes);
      q->vbytes += d->vertex_bytes;
 +    s_sg_stats.vertex_upload_bytes += d->vertex_bytes;
 
      qd->index_offset = q->ibytes;
      qd->index_count = d->index_count;
-@@ -222,18 +243,22 @@
+@@ -222,18 +271,22 @@
      qd->tex_count = d->tex_count;
      for (i = 0; i < (uint32_t) d->tex_count; i++) {
          SgTextureUse *t = &d->tex[i];
@@ -1568,7 +1608,22 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      qd->blend_constant = (SDL_FColor){
          (float) ((s_gpu.blend_color >> 16) & 0xFF) / 255.0f, (float) ((s_gpu.blend_color >> 8) & 0xFF) / 255.0f,
          (float) (s_gpu.blend_color & 0xFF) / 255.0f, (float) (s_gpu.blend_color >> 24) / 255.0f,
-@@ -265,6 +290,7 @@
+@@ -243,7 +296,13 @@
+     qd->fs_size = d->fs_uniform_size;
+    // memcpy(qd->vs, d->vs_uniform, d->vs_uniform_size);
+     memcpy(qd->fs, d->fs_uniform, d->fs_uniform_size);
+-    q->count++;
++#ifdef __EMSCRIPTEN__
++    static int merge = -1;
++    if (merge < 0) merge = getenv("RECOMP_SDLGPU_NOMERGE") == NULL;
++    if (merge && sg_queue_merge(q, qd)) s_sg_stats.merged_draws++;
++    else
++#endif
++        q->count++;
+
+     /* The GPU copy will be the newer one. Anything that reads the surface on
+      * the CPU flushes the queue first (sg_cpu_access, sg_flip). */
+@@ -265,6 +324,7 @@
          q->upload_surface = 0;
          return 1;
      }
@@ -1576,7 +1631,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      sbytes = q->upload_surface ? s->w * s->h * 4 : 0;
      total = q->vbytes + q->ibytes + sbytes + q->tbytes;
-@@ -278,10 +304,12 @@
+@@ -278,10 +338,12 @@
          }
          /* Transfer layout: vertices | indices | surface | textures */
          memcpy(stage, q->vdata, q->vbytes);
@@ -1591,7 +1646,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
 
-@@ -310,11 +338,14 @@
+@@ -310,11 +372,14 @@
              }
              for (i = 0; i < q->upload_count; i++) {
                  const SgQueuedUpload *u = &q->uploads[i];
@@ -1611,7 +1666,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
              }
              SDL_EndGPUCopyPass(copy);
              for (i = 0; i < q->upload_count; i++)
-@@ -329,14 +360,22 @@
+@@ -329,14 +394,22 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
@@ -1635,7 +1690,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,9 +389,14 @@
+@@ -350,9 +423,14 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -1653,7 +1708,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
-@@ -360,9 +404,16 @@
+@@ -360,9 +438,16 @@
                  if (qd->index_count) {
                      SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
                      SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -1673,7 +1728,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  }
              }
              SDL_EndGPURenderPass(pass);
-@@ -385,6 +436,7 @@
+@@ -385,6 +470,7 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -1681,7 +1736,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +508,7 @@
+@@ -456,7 +542,7 @@
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},

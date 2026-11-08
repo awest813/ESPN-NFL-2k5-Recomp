@@ -25,6 +25,7 @@ mkdir -p "$OUT"
 python3 -I "$ROOT/tests/web/test_gen_web_devices.py"
 python3 -I "$ROOT/tests/web/test_frame_pacing.py"
 python3 -I "$ROOT/tests/web/test_vertex_fetch.py"
+python3 -I "$ROOT/tests/web/test_draw_merge.py"
 
 emcc -O2 -I"$ROOT/src/platform/web" "$ROOT/tests/web/test_recomp_web_dev.c" -o "$OUT/test_recomp_web_dev.js"
 node "$OUT/test_recomp_web_dev.js"
