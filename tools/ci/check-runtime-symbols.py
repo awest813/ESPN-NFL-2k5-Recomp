@@ -7,7 +7,7 @@ was never published, so a fresh clone could not link. A full link needs the
 retail game's generated code, which CI cannot have, so this is the cheap
 stand-in.
 
-Usage: python tools/ci/check-runtime-symbols.py [game_src] [runtime_src]
+Usage: python tools/ci/check-runtime-symbols.py [game_src] [runtime_src] [web_patch]
 """
 import pathlib
 import re
@@ -35,6 +35,16 @@ if not runtime.is_dir():
 # A definition: the name followed by a parameter list and then a body,
 # not a semicolon (which would only be a declaration).
 runtime_text = "\n".join(text for _, text in sources(runtime))
+# Browser-only functions may be published in the versioned web patch while
+# native CI uses the pinned submodule. Count added definitions, never removed
+# lines or patch headers. Native compilation still checks its own variant.
+if len(sys.argv) > 3:
+    patch = pathlib.Path(sys.argv[3])
+    if not patch.is_file():
+        sys.exit(f"web runtime patch not found: {patch}")
+    runtime_text += "\n" + "\n".join(
+        line[1:] for line in patch.read_text(encoding="utf-8").splitlines()
+        if line.startswith("+") and not line.startswith("+++"))
 missing = []
 for name, where in sorted(needed.items()):
     if not re.search(r'\b' + re.escape(name) + r'\s*\([^;{]*\)\s*\{', runtime_text):
