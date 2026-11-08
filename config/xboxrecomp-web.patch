@@ -6860,24 +6860,17 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -1366,7 +1437,16 @@
+@@ -1366,6 +1437,9 @@
          *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
                                 + g_memory_offset) = GetTickCount();
 
 +#if defined(__EMSCRIPTEN__)
 +        wasm_unrouted_check();
-+        /* sched_yield (Sleep(0)) only pumps Emscripten's event queue; it
-+         * does not yield a worker's CPU. Bound this background MMIO poller
-+         * to 1 kHz so it leaves execution time for guest and GPU workers.
-+         * Pushbuffer submission remains synchronous in xbox_Nv2aKick. */
-+        Sleep(1);
-+#else
-         Sleep(0);  /* yield; the waiter is spinning on another core */
 +#endif
+         Sleep(0);  /* yield; the waiter is spinning on another core */
      }
      return 0;
- }
-@@ -1863,8 +1943,12 @@
+@@ -1863,8 +1937,12 @@
          /* Reserve base + mirrors as one range, and map the base at its head.
           * VirtualFree releases just the slice about to be used, so each view
           * replaces our own reservation rather than racing for free space. */
@@ -6892,7 +6885,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
           * Windows MEM_RELEASE requires size zero and releases the whole
           * reservation; use the fixed-base views below on Windows. */
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
-@@ -2521,9 +2605,20 @@
+@@ -2521,9 +2599,20 @@
                      VirtualProtect((char *)g_mcpx_memory + 0x50000u, 0xF000u,
                                     PAGE_READWRITE, &old_protect);
                  }
@@ -6913,7 +6906,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
                  *(volatile uint32_t *)((char *)g_mcpx_memory
                                         + MCPX_AC97_CODEC_STATUS)
                      |= MCPX_AC97_CODEC_READY;
-@@ -2628,6 +2723,15 @@
+@@ -2628,6 +2717,15 @@
       * intervals. All views alias the same physical pages, so reads and
       * writes at any mirror address correctly access the base data.
       */
@@ -6929,7 +6922,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      {
          int mirrors_ok = 0;
          /* The tiled aperture is a specific architectural alias -- physical RAM
-@@ -2679,6 +2783,7 @@
+@@ -2679,6 +2777,7 @@
                  mirrors_ok, XBOX_NUM_MIRRORS,
                  (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
      }
@@ -6937,7 +6930,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 
      /*
       * Tiled / write-combined aperture at 0xF0000000.
-@@ -2725,11 +2830,25 @@
+@@ -2725,11 +2824,25 @@
                  tiled_size,
                  (LPVOID)tiled_native)
              : NULL;

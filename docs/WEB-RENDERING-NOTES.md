@@ -90,7 +90,8 @@ pointer keys before its 33-bit hash shifts, which were undefined on wasm32.
 Tests cover clock units and monotonicity, plus 10,000 aligned handles through
 registry growth, invalid lookups, removal and tombstone reuse.
 
-The browser's background MMIO acknowledgement thread waits one millisecond
-between polls. Emscripten's `sched_yield` only processes its event queue,
-so the previous `Sleep(0)` loop consumed a CPU core continuously. Synchronous
-pushbuffer submission remains on the existing guest KickOff path.
+The background MMIO acknowledgement thread remains a CPU hotspot:
+Emscripten's `sched_yield` only processes its event queue. A one-millisecond
+sleep was tested and removed after it caused severe startup stalls while
+guest interrupt handlers waited for register acknowledgements. Replacing
+this poller requires preserving that handshake's latency.
