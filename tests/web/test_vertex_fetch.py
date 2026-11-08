@@ -24,7 +24,8 @@ def main():
 typedef struct { uint32_t offset, type, size, stride; } VertexAttr;
 static struct { VertexAttr attr[16]; int inline_active; unsigned inline_count; void *inline_buf; } s_gpu;
 static float s_attr_inline[16][4];
-static struct { unsigned inmask; uint8_t active[16], active_count; struct { const uint8_t *base; float value[4]; int constant; } attr[16]; } s_sgvp;
+static struct { unsigned inmask; uint8_t active[16], active_count; float *in; uint32_t input_stride, linear_first, nv; int linear; struct { const uint8_t *base; float value[4]; int constant; } attr[16]; } s_sgvp;
+static float packed_input[64*16*4];
 static uint8_t memory[65536], inline_memory[8192];
 static void *xbox_GetMemoryOffset(void) { return memory; }
 static bool xbox_guest_memory_direct(uintptr_t base, uint64_t address, size_t bytes, bool writable) {
@@ -54,6 +55,14 @@ int main(void) {
         unsigned count=0;
         for (unsigned slot=0;slot<16;slot++) if (s_sgvp.inmask & (1u<<slot)) assert(s_sgvp.active[count++]==slot);
         assert(count==s_sgvp.active_count);
+        s_sgvp.in=packed_input; s_sgvp.input_stride=count*16;
+        sg_vp_pack_range(3,32);
+        assert(s_sgvp.linear && s_sgvp.linear_first==3 && s_sgvp.nv==32);
+        for (unsigned index=0;index<32;index++) for (unsigned slot=0;slot<count;slot++) {
+            float expected[4];
+            reference_fetch_attr(&s_gpu.attr[s_sgvp.active[slot]],index+3,expected);
+            assert(!memcmp(expected,packed_input+index*count*4+slot*4,16));
+        }
         for (unsigned index = 0; index < 64; index++) {
             float expected[4], actual[4], checked[4];
             reference_fetch_attr(a, index, expected);

@@ -24,6 +24,7 @@ mkdir -p "$OUT"
 
 python3 -I "$ROOT/tests/web/test_gen_web_devices.py"
 python3 -I "$ROOT/tests/web/test_frame_pacing.py"
+python3 -I "$ROOT/tests/web/test_vertex_fetch.py"
 
 emcc -O2 -I"$ROOT/src/platform/web" "$ROOT/tests/web/test_recomp_web_dev.c" -o "$OUT/test_recomp_web_dev.js"
 node "$OUT/test_recomp_web_dev.js"
@@ -43,8 +44,8 @@ emcmake cmake -S "$ROOT/external/xboxrecomp/tests/sdlgpu_web" -B "$OUT/sdlgpu_we
   -DCMAKE_BUILD_TYPE=Release -DSDL3_DIR="$SDL_DIR" -DCMAKE_C_FLAGS="-pthread" -DCMAKE_CXX_FLAGS="-pthread" >/dev/null
 cmake --build "$OUT/sdlgpu_web" -j "${JOBS:-$(nproc)}"
 if [ "$HAVE_PW" = 1 ]; then
-  node "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
-  node "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
+  node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
+  node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
   node "$ROOT/tests/web/test_browser_saves.js" "$OUT/smoke"
 else
   echo "web audio/video test skipped (needs Playwright)"

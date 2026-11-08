@@ -2767,7 +2767,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  }
 
  /* ── 3D batches with the vertex program on the GPU ──────────────────────
-@@ -339,13 +365,61 @@
+@@ -339,13 +365,79 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -2780,6 +2780,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t map[65536], map_gen[65536], gen; /* guest index -> in[] */
      uint32_t nv, inmask;
 +    uint8_t active[NV_VERTEX_ATTRS], active_count;
++    uint32_t linear_first;
++    int linear;
 +    struct {
 +        const uint8_t *base; /* complete index range validated once per batch */
 +        float value[4];
@@ -2828,10 +2830,30 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +        fetch_attr(&s_gpu.attr[a], index, out);
 +    }
 +}
++
++/* Dense index runs can retain their original indexing. Fetch each attribute
++ * as a stream once, instead of testing the per-vertex remap on every triangle
++ * corner. Sparse meshes continue to use the compact remap below. */
++static void sg_vp_pack_range(uint32_t first, uint32_t count) {
++    uint32_t stride = s_sgvp.input_stride / sizeof(float);
++    if (!s_sgvp.active_count) memset(s_sgvp.in, 0, (size_t)count * 16);
++    for (unsigned a = 0; a < s_sgvp.active_count; a++) {
++        float *out = s_sgvp.in + a * 4u;
++        for (uint32_t v = 0; v < count; v++, out += stride)
++            sg_vp_fetch_input(s_sgvp.active[a], first + v, out);
++    }
++    s_sgvp.linear_first = first;
++    s_sgvp.linear = 1;
++    s_sgvp.nv = count;
++}
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -362,14 +436,11 @@
+@@ -359,17 +451,15 @@
+ static uint32_t sg_vp_vertex(uint32_t index) {
+     uint32_t a, k;
+     index &= 0xFFFF;
++    if (s_sgvp.linear) return index - s_sgvp.linear_first;
      if (s_sgvp.map_gen[index] == s_sgvp.gen)
          return s_sgvp.map[index];
      k = s_sgvp.nv++;
@@ -2851,7 +2873,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -379,7 +450,7 @@
+@@ -379,7 +469,7 @@
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
   * CPU path instead: program still compiling or not translatable, points or
   * lines, or out of memory. */
@@ -2860,7 +2882,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
      SDL_GPUGraphicsPipeline *pipe;
-@@ -397,18 +468,42 @@
+@@ -397,18 +487,42 @@
          default:
              return 0; /* points and lines: not on the GPU yet */
      }
@@ -2909,18 +2931,24 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +516,9 @@
+@@ -421,7 +535,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
 -    s_sgvp.inmask = s_sg_vp[slot].inmask;
-+    uint32_t max_index = 0;
-+    for (i = 0; i < n; i++) if (src[i] > max_index) max_index = src[i];
++    s_sgvp.linear = 0;
++    uint32_t max_index = 0, min_index = 65535;
++    for (i = 0; i < n; i++) {
++        if (src[i] > max_index) max_index = src[i];
++        if (src[i] < min_index) min_index = src[i];
++    }
 +    sg_vp_prepare_inputs(max_index);
++    uint32_t span = max_index - min_index + 1u;
++    if (span <= n / 2u) sg_vp_pack_range(min_index, span);
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +566,10 @@
+@@ -469,10 +591,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -2933,7 +2961,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +591,8 @@
+@@ -494,7 +616,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -2943,7 +2971,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,7 +606,7 @@
+@@ -508,7 +631,7 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -2952,7 +2980,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t sampled = 0;
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
-@@ -532,31 +630,41 @@
+@@ -532,31 +655,41 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -2999,7 +3027,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,14 +677,13 @@
+@@ -569,14 +702,13 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,
