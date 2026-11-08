@@ -60,3 +60,37 @@ Player lighting now implements the retail dependent dot-product stages
 and true cube textures. Chrome captures confirm visible jersey folds and
 lighting, but full fidelity still requires matched Xbox or xemu captures.
 Presentation sequences and gameplay also need broader performance work.
+
+## Further browser CPU reductions
+
+The next pass adds verified texture-cache hints, defers CPU-fallback pipeline
+creation until needed, packs dense vertex ranges as streams, and coalesces
+adjacent draws whose pipeline, uniforms, textures, clipping, blend and stencil
+state all match. It also avoids redundant blend/stencil/scissor commands.
+`merged` in the profile reports saved draw calls per frame; `decode-ms`
+separates texture decoding from texture preparation's overlapping flush time.
+
+Full DXT uploads now decode each 4×4 block once, retaining the original
+sampler as an oracle. Randomized tests compare 900 DXT1/3/5 images, including
+partial blocks and alpha edge cases. Another 600 cases verify linear
+ARGB/XRGB uploads with padded, unaligned and zero-pitch rows. The local
+DXT5 upload microbenchmark measured about **3.4×** faster decoding; this is
+not an end-to-end FPS result.
+
+The launcher now offers a live 30 FPS cap. The host pacer releases the guest
+lock while waiting and avoids adding a second guest-vblank wait. Longer
+gameplay tests still exposed sub-30 samples, so the minimum-FPS target is
+not considered met. Short samples above 30 do not establish a sustained
+floor, and CPU profiles/builds must not run alongside acceptance measurements.
+
+Browser clock reads use Emscripten's monotonic clock directly, preserving
+millisecond tick counts and nanosecond performance counters while avoiding
+the intermediate WASI timespec conversion. The handle registry now widens
+pointer keys before its 33-bit hash shifts, which were undefined on wasm32.
+Tests cover clock units and monotonicity, plus 10,000 aligned handles through
+registry growth, invalid lookups, removal and tombstone reuse.
+
+The browser's background MMIO acknowledgement thread waits one millisecond
+between polls. Emscripten's `sched_yield` only processes its event queue,
+so the previous `Sleep(0)` loop consumed a CPU core continuously. Synchronous
+pushbuffer submission remains on the existing guest KickOff path.

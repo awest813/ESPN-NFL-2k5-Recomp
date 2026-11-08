@@ -105,7 +105,7 @@ jobs:
           submodules: recursive
 
       - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ninja-build xvfb
 
       - name: Set up Emscripten
         uses: mymindstorm/setup-emsdk@v14
@@ -121,7 +121,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Web tests (address space, APU routing, audio/video/input)
-        run: tools/test-web.sh
+        run: xvfb-run -a tools/test-web.sh
 
       - name: Full game link
         if: github.event_name == 'workflow_dispatch'

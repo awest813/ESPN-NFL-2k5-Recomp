@@ -114,7 +114,7 @@ function renderDisc() {
   const valid = !!info && !!KNOWN_XBE[info.xbeSha256] && info.hasVc53450030;
   const ready = valid && state.checked && state.supported && state.build && !state.importing && !state.launched && !state.saveBusy && !state.saveRecoveryError;
   $('play').disabled = !ready;
-  $('fps-limit').disabled = state.launched;
+  $('fps-limit').disabled = state.launched && !(state.running && window.nfl2k5Module?._xbox_WebSetFpsLimit);
   $('import-image').disabled = $('import-folder').disabled = !state.checked || !state.supported || state.importing || state.launched || state.saveBusy;
   $('remove').disabled = !info || state.importing || state.launched || state.saveBusy;
   const savesDisabled = !state.checked || !state.supported || state.importing || state.launched || state.saveBusy;
@@ -414,6 +414,12 @@ async function main() {
   state.checked = true;
   try { $('fps-limit').value = localStorage.getItem('nfl2k5-fps-limit') === '0' ? '0' : '30'; } catch {}
   $('fps-limit').onchange = () => {
+    if (state.running && window.nfl2k5Module?._xbox_WebSetFpsLimit) {
+      if (!window.nfl2k5Module._xbox_WebSetFpsLimit(Number($('fps-limit').value))) {
+        log('The runtime could not change its frame cap.', 'error'); return;
+      }
+      log($('fps-limit').value === '30' ? 'Frame rate: 30 FPS lock' : 'Frame rate: uncapped');
+    }
     try { localStorage.setItem('nfl2k5-fps-limit', $('fps-limit').value); } catch {}
   };
   renderDisc();

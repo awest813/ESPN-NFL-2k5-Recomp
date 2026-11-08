@@ -105,7 +105,8 @@ Restart reloads the page to reset the runtime; unsaved progress is lost.
 Removing game files preserves the separate save/settings storage.
 
 The launcher's **Frame rate** choice defaults to **30 FPS lock** and also
-offers **Uncapped**. It persists locally and applies on the next launch.
+offers **Uncapped**. It persists locally and can switch during a game without
+restarting the runtime. Older runtimes keep the choice fixed until reload.
 The cap paces completed GPU frames with fractional deadlines, releasing the
 guest lock during waits so audio and input can continue. The web frame loop
 uses one guest vblank alongside that host deadline to avoid double pacing.

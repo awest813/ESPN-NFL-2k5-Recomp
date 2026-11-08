@@ -265,7 +265,7 @@ async function playAndCheckXbe(page, want, label) {
       check(await page.$eval('#play', b => b.disabled) && /simulated startup failure/.test(await page.textContent('#launch-status')),
             'aborted startup offers reload and prevents a duplicate runtime');
       check(await page.evaluate(() => testLaunchEnv.includes('NFL2K5_FPS_LIMIT=30')) &&
-        await page.$eval('#fps-limit',b=>b.disabled), '30 FPS choice reaches the runtime and stays fixed for the session');
+        await page.$eval('#fps-limit',b=>b.disabled), '30 FPS choice reaches the runtime; aborted sessions disable changes');
       await page.click('#diagnostics summary');
       const [download] = await Promise.all([page.waitForEvent('download'), page.click('#download-log')]);
       check(download.suggestedFilename() === 'nfl2k5-web-log.txt', 'diagnostic log can be downloaded');
@@ -292,6 +292,22 @@ async function playAndCheckXbe(page, want, label) {
       await context.close();
     }
     // 2. Extracted folder, chosen one level above the disc.
+    {
+      const {context,page}=await newPage(browser,'http://127.0.0.1:18765/');
+      await page.evaluate(()=>{
+        state.installed={version:1,xbeSha256:Object.keys(KNOWN_XBE)[0],files:1,bytes:1,
+          source:{kind:'folder',name:'synthetic runtime'},importedAt:new Date().toISOString(),hasVc53450030:true};
+        window.capChanges=[];window.runtimeStarts=0;
+        NFL2K5Launch.start=async()=>{runtimeStarts++;window.nfl2k5Module={_xbox_WebSetFpsLimit:v=>{capChanges.push(v);return 1;}};return nfl2k5Module;};
+        renderDisc();
+      });
+      await page.click('#play');
+      await page.waitForFunction(()=>state.running && !document.querySelector('#fps-limit').disabled);
+      await page.selectOption('#fps-limit','0'); await page.selectOption('#fps-limit','30');
+      check(await page.evaluate(()=>runtimeStarts===1 && JSON.stringify(capChanges)==='[0,30]'),
+        'frame cap can switch during play without restarting the runtime');
+      await context.close();
+    }
     {
       const { context, page } = await newPage(browser, 'http://127.0.0.1:18765/');
       await page.setInputFiles('#file-folder', path.join(TMP, 'folder'));

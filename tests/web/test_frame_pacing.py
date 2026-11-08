@@ -9,6 +9,8 @@ texture = (kernel / "sdlgpu_texture.inc.c").read_text(encoding="utf-8")
 lookup = texture[texture.index("#define SG_TEXTURE_HINTS"):texture.index("/* Hashing a texture")]
 present = (kernel / "sdlgpu_present.inc.c").read_text(encoding="utf-8")
 pacer = present[present.index("static void sg_frame_pace("):present.index("static struct {")]
+video = (kernel.parent / "nv2a_gpu_sdl3.inc.c").read_text(encoding="utf-8")
+cap = video[video.index("#ifdef __EMSCRIPTEN__\nstatic SDL_AtomicInt s_web_fps_override"):video.index("static void vs_load(")]
 out = root / "build-web-tests/frame-pacing"
 out.mkdir(parents=True, exist_ok=True)
 source = r'''
@@ -16,18 +18,28 @@ source = r'''
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define EMSCRIPTEN_KEEPALIVE
+typedef struct {int value;} SDL_AtomicInt;
+static int SDL_GetAtomicInt(SDL_AtomicInt *p) {return p->value;}
+static void SDL_SetAtomicInt(SDL_AtomicInt *p,int v) {p->value=v;}
+static int SDL_CompareAndSwapAtomicInt(SDL_AtomicInt *p,int a,int b) {if(p->value!=a)return 0;p->value=b;return 1;}
+static struct {int fps_limit;} s_vs={60};
 #define SG_MAX_TEXTURES 512
 typedef struct { uint64_t key; uint32_t w,h,layers; } SgCachedTexture;
 static SgCachedTexture s_sg_textures[SG_MAX_TEXTURES];
 static uint64_t clock_ns, waited;
-static int limit=30, releases, reacquires;
+static int releases, reacquires;
 static uint64_t SDL_GetTicksNS(void) { return clock_ns; }
 static void SDL_DelayNS(uint64_t n) { clock_ns+=n; waited+=n; }
-static int xbox_VideoFpsLimit(void) { return limit; }
 static int xbox_ggl_release_all(void) { releases++; return 3; }
 static void xbox_ggl_reacquire(int depth) { assert(depth==3); reacquires++; }
 /* PRODUCTION */
 int main(void) {
+    setenv("NFL2K5_FPS_LIMIT","30",1);
+    assert(xbox_VideoFpsLimit()==30);
+    assert(!xbox_WebSetFpsLimit(29) && xbox_VideoFpsLimit()==30);
     for (int i=0;i<512;i++) s_sg_textures[i]=(SgCachedTexture){1u+(uint64_t)i*2048u,64,64,1};
     for (int pass=0;pass<4;pass++) for (int i=0;i<512;i++)
         assert(sg_texture_find(s_sg_textures[i].key,64,64,1)==&s_sg_textures[i]);
@@ -51,13 +63,13 @@ int main(void) {
     clock_ns+=10000000u; sg_frame_pace();
     assert(clock_ns-previous==33333333u);
     puts("ok: slow frame resets the deadline without a catch-up burst");
-    limit=0; previous=waited; sg_frame_pace();
+    assert(xbox_WebSetFpsLimit(0)); previous=waited; sg_frame_pace();
     assert(waited==previous);
-    limit=30; sg_frame_pace();
+    assert(xbox_WebSetFpsLimit(30)); sg_frame_pace();
     assert(waited==previous);
     puts("ok: uncapped mode and re-enabling the cap reset timing");
 }
-'''.replace("/* PRODUCTION */", lookup + pacer)
+'''.replace("/* PRODUCTION */", lookup + cap + pacer)
 (out / "test.c").write_text(source, encoding="utf-8")
 subprocess.run([shutil.which("emcc") or "emcc", str(out / "test.c"), "-O2", "-sENVIRONMENT=node", "-o", str(out / "test.js")],check=True)
 subprocess.run([shutil.which("node") or "node", str(out / "test.js")],check=True)

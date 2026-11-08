@@ -337,13 +337,14 @@ index 101118c..19c7c01 100644
 diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
 --- a/src/kernel/nv2a_gpu_sdl3.inc.c
 +++ b/src/kernel/nv2a_gpu_sdl3.inc.c
-@@ -5,8 +5,12 @@
+@@ -5,8 +5,13 @@
   */
 
  #include <SDL3/SDL.h>
 +#ifdef __EMSCRIPTEN__
 +/* The SDL GPU calls below and in sdlgpu/ run on WebGPU (sdlgpu/webgpu/). */
 +#include "sdlgpu/webgpu/sdl_gpu_webgpu.h"
++#include <emscripten/emscripten.h>
 +#endif
  #include "../input/xinput_xbox.h"
 -#if defined(__linux__)
@@ -351,7 +352,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
  #include "../platform/guest_memory.h"
  #endif
 
-@@ -49,7 +53,8 @@
+@@ -49,7 +54,8 @@
      int lighting;
  } VideoSettings;
 
@@ -361,18 +362,29 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
  static SDL_AtomicInt s_vs_dirty = { 1 };
  static const char *k_vs_file = "nfl2k5_video.ini";
 
-@@ -64,7 +69,18 @@
+@@ -64,7 +70,29 @@
  static XboxHudCallback s_hud_cb = NULL;
 
  void xbox_PresentSetHudCallback(XboxHudCallback cb) { s_hud_cb = cb; }
 -int  xbox_VideoFpsLimit(void) { return s_vs.fps_limit; }
++#ifdef __EMSCRIPTEN__
++static SDL_AtomicInt s_web_fps_override = {-2};
++EMSCRIPTEN_KEEPALIVE int xbox_WebSetFpsLimit(int limit)
++{
++    if (limit != 0 && limit != 30) return 0;
++    SDL_SetAtomicInt(&s_web_fps_override, limit);
++    return 1;
++}
++#endif
 +int xbox_VideoFpsLimit(void) {
 +#ifdef __EMSCRIPTEN__
 +    /* The launcher's explicit session choice overrides saved native settings. */
-+    static int override = -2;
++    int override = SDL_GetAtomicInt(&s_web_fps_override);
 +    if (override == -2) {
 +        const char *v = getenv("NFL2K5_FPS_LIMIT");
 +        override = v && !strcmp(v, "30") ? 30 : v && !strcmp(v, "0") ? 0 : -1;
++        SDL_CompareAndSwapAtomicInt(&s_web_fps_override, -2, override);
++        override = SDL_GetAtomicInt(&s_web_fps_override);
 +    }
 +    if (override >= 0) return override;
 +#endif
@@ -381,7 +393,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
 
  static void vs_load(void)
  {
-@@ -84,7 +100,7 @@
+@@ -84,7 +112,7 @@
          else if (!strcmp(key, "vsync")) s_vs.vsync = v;
          else if (!strcmp(key, "brightness")) s_vs.brightness = v;
          else if (!strcmp(key, "gamma")) s_vs.gamma = v;
@@ -390,7 +402,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
          else if (!strcmp(key, "show_fps")) s_vs.show_fps = v;
          else if (!strcmp(key, "aniso")) s_vs.aniso = v;
          else if (!strcmp(key, "fps_limit")) s_vs.fps_limit = v;
-@@ -175,7 +191,8 @@
+@@ -175,7 +203,8 @@
      case MI_LIGHTING: return 3;
      case MI_VSYNC: case MI_FPS: case MI_WIDE: return 2;
      case MI_BRIGHT: case MI_GAMMA: return 21;
@@ -400,7 +412,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      case MI_LIMIT: return FPS_LIMITS;
      }
      return 1;
-@@ -288,7 +305,7 @@
+@@ -288,7 +317,7 @@
      SDL_GPUTexture       *fb_tex;
      SDL_GPUTransferBuffer*fb_tbuf;
      uint32_t              fb_w, fb_h;
@@ -409,7 +421,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      uint8_t              *fb_staging;
      size_t                fb_staging_capacity;
  #endif
-@@ -350,7 +367,7 @@
+@@ -350,7 +379,7 @@
       * allocation or guest-address arithmetic can wrap. */
      if (row_bytes > pitch || height > UINT32_MAX / row_bytes) return;
      size_t frame_bytes = (size_t)(row_bytes * height);
@@ -418,7 +430,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      if (s_sdl_pr.fb_staging_capacity < frame_bytes) {
          uint8_t *replacement = (uint8_t *)realloc(s_sdl_pr.fb_staging, frame_bytes);
          if (!replacement) return;
-@@ -396,7 +413,7 @@
+@@ -396,7 +425,7 @@
 
      uint8_t *mapped = (uint8_t *)SDL_MapGPUTransferBuffer(s_sdl_pr.gpu, s_sdl_pr.fb_tbuf, true);
      if (!mapped) return;
@@ -1279,12 +1291,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +192,22 @@
+@@ -185,9 +192,23 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
 +    uint32_t frames;
 +    uint64_t texture_ticks, vertex_ticks, submit_ticks;
++    uint64_t texture_decode_ticks;
 +    uint64_t texture_hash_bytes;
 +    uint64_t vertex_upload_bytes;
 +    uint32_t merged_draws;
@@ -1302,7 +1315,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -206,11 +226,27 @@
+@@ -206,11 +227,28 @@
          s_sg_stats.since_ms = now;
      if (now - s_sg_stats.since_ms < 5000)
          return;
@@ -1324,6 +1337,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +                (double)s_sg_stats.texture_downloads / s_sg_stats.frames,
 +                (double)s_sg_stats.texture_gpu_copies / s_sg_stats.frames);
 +        fprintf(stderr, " | vertices %.2f MiB/frame", (double)s_sg_stats.vertex_upload_bytes / (1048576.0 * s_sg_stats.frames));
++        fprintf(stderr, " | decode-ms %.2f/frame", s_sg_stats.texture_decode_ticks * per_frame_ms);
 +        fprintf(stderr, " | merged %.2f/frame", (double)s_sg_stats.merged_draws / s_sg_stats.frames);
 +        fprintf(stderr, " | VP fallback affine %u program %u pipeline %u",
 +                s_sg_stats.vp_affine, s_sg_stats.vp_program_pending, s_sg_stats.vp_pipeline_failed);
@@ -1331,7 +1345,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      fprintf(stderr, "\n");
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
-@@ -246,7 +282,11 @@
+@@ -246,7 +284,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -1343,7 +1357,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,6 +308,9 @@
+@@ -268,6 +310,9 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -1353,7 +1367,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_vpcache.inc.c"
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
-@@ -310,8 +353,10 @@
+@@ -310,8 +355,10 @@
              sg_present_flip();
          else
              sg_download_all();
@@ -1994,7 +2008,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
              memcmp(m->shape, shape, sizeof shape) != 0) {
              m->pixels = snap->pixels;
              m->bytes = snap->bytes;
-@@ -148,11 +187,13 @@
+@@ -148,22 +187,95 @@
              m->frame = s_sg_frame;
              m->hash = sg_hash(snap->pixels, snap->bytes,
                                sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
@@ -2009,9 +2023,77 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      if (tx->color == 0x0B)                    /* 1 KB palette: cheap, hashed every time */
          h = sg_hash((const uint8_t *)snap->palette, sizeof snap->palette, h);
-@@ -160,10 +201,13 @@
+     return h ? h : 1;
  }
 
++/* Decode each DXT block once when uploading an entire image. The scalar
++ * sampler intentionally decodes one texel at a time; using it for a full
++ * texture recomputes the same colour/alpha palettes sixteen times. */
++static int sg_decode_dxt_image(const uint8_t *src, size_t bytes, uint32_t fmt,
++                               uint32_t w, uint32_t h, uint32_t *dst)
++{
++    uint32_t block_bytes = d3d8_format_dxt_block_bytes(fmt);
++    size_t columns = ((size_t)w + 3u) / 4u, rows = ((size_t)h + 3u) / 4u;
++    if (!block_bytes || !w || !h || w > 4096 || h > 4096 || columns > SIZE_MAX / rows / block_bytes ||
++        columns * rows * block_bytes > bytes) return 0;
++    for (uint32_t by = 0; by < h; by += 4) for (uint32_t bx = 0; bx < w; bx += 4) {
++        const uint8_t *b = src + ((size_t)(by / 4) * columns + bx / 4) * block_bytes;
++        const uint8_t *color = b + (block_bytes == 16 ? 8 : 0);
++        uint32_t c0 = color[0] | ((uint32_t)color[1] << 8);
++        uint32_t c1 = color[2] | ((uint32_t)color[3] << 8);
++        uint32_t c[4] = {0}, alpha[8] = {255,255,255,255,255,255,255,255};
++        uint32_t selectors, pixels[16];
++        uint64_t alpha_bits = 0;
++        memcpy(&selectors, color + 4, 4);
++        if (block_bytes == 16) memcpy(&alpha_bits, b, 8);
++        for (unsigned i = 0; i < 2; i++) {
++            uint32_t rgb = i ? c1 : c0;
++            c[i] = d3d8_expand_channel((rgb >> 11) & 31u, 5)
++                | (d3d8_expand_channel((rgb >> 5) & 63u, 6) << 8)
++                | (d3d8_expand_channel(rgb & 31u, 5) << 16);
++        }
++        int four = c0 > c1 || block_bytes == 16;
++        for (unsigned channel = 0; channel < 3; channel++) {
++            uint32_t shift = channel * 8u, a = (c[0] >> shift) & 255u, d = (c[1] >> shift) & 255u;
++            c[2] |= (four ? (2*a+d)/3u : (a+d)/2u) << shift;
++            if (four) c[3] |= ((a+2*d)/3u) << shift;
++        }
++        if (fmt == 0x0F) {
++            alpha[0] = b[0]; alpha[1] = b[1]; alpha_bits >>= 16;
++            if (b[0] > b[1]) for (unsigned i = 1; i < 7; i++) alpha[i+1] = ((7-i)*b[0]+i*b[1])/7u;
++            else {
++                for (unsigned i = 1; i < 5; i++) alpha[i+1] = ((5-i)*b[0]+i*b[1])/5u;
++                alpha[6] = 0; alpha[7] = 255;
++            }
++        }
++        for (unsigned i = 0; i < 16; i++) {
++            uint32_t index = (selectors >> (2*i)) & 3u, a = 255;
++            if (fmt == 0x0E) a = (uint32_t)((alpha_bits >> (4*i)) & 15u) * 17u;
++            else if (fmt == 0x0F) a = alpha[(alpha_bits >> (3*i)) & 7u];
++            else if (!four && index == 3) a = 0;
++            pixels[i] = c[index] | (a << 24);
++        }
++        uint32_t width = w-bx < 4 ? w-bx : 4, height = h-by < 4 ? h-by : 4;
++        for (unsigned y = 0; y < height; y++)
++            memcpy(dst + (size_t)(by+y)*w + bx, pixels + y*4, width*4u);
++    }
++    return 1;
++}
++
++static int sg_decode_linear32(const uint8_t *src, size_t bytes, uint32_t fmt,
++                              uint32_t w, uint32_t h, uint32_t pitch, uint32_t *dst)
++{
++    if ((fmt != 0x12 && fmt != 0x1E) || !w || !h || w > 4096 || h > 4096 ||
++        (uint64_t)(h-1)*pitch + (uint64_t)w*4 > bytes) return 0;
++    uint32_t alpha = fmt == 0x1E ? 0xFF000000u : 0;
++    for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
++        uint32_t v;
++        memcpy(&v, src + (size_t)y*pitch + x*4u, 4);
++        dst[(size_t)y*w+x] = ((v >> 16) & 255u) | (v & 0xFF00FF00u) | ((v & 255u) << 16) | alpha;
++    }
++    return 1;
++}
++
  /* Decode a stage into s_sg_decode[st]. 0 if the software path cannot read it. */
 -static int sg_texture_decode(int st, uint32_t w, uint32_t h)
 -{
@@ -2026,7 +2108,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
      if (n > s_sg_decode_texels[st]) {
          uint32_t *grown = (uint32_t *)realloc(s_sg_decode[st], n * 4);
-@@ -172,14 +216,20 @@
+@@ -172,14 +284,33 @@
          s_sg_decode[st] = grown;
          s_sg_decode_texels[st] = n;
      }
@@ -2039,6 +2121,19 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -                                               | ((argb & 0xFFu) << 16) | (argb & 0xFF000000u);
 -        }
 +    for (uint32_t face = 0; face < layers; face++) {
++        const Texture *tx = sg_stage_texture(st);
++        if (tx->color == 0x12 || tx->color == 0x1E) {
++            size_t offset = (size_t)face * face_bytes;
++            if (offset > snapshot->bytes || !sg_decode_linear32(pixels+offset, snapshot->bytes-offset,
++                    tx->color, w, h, tx->pitch, s_sg_decode[st]+(size_t)face*w*h)) return 0;
++            continue;
++        }
++        if (d3d8_format_dxt_block_bytes(sg_stage_texture(st)->color)) {
++            size_t offset = (size_t)face * face_bytes;
++            if (offset > snapshot->bytes || !sg_decode_dxt_image(pixels + offset, snapshot->bytes-offset,
++                    sg_stage_texture(st)->color, w, h, s_sg_decode[st] + (size_t)face*w*h)) return 0;
++            continue;
++        }
 +        snapshot->pixels = pixels + (size_t) face * face_bytes;
 +        for (y = 0; y < h; y++)
 +            for (x = 0; x < w; x++) {
@@ -2055,7 +2150,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      return 1;
  }
 
-@@ -188,11 +238,13 @@
+@@ -188,11 +319,13 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -2071,7 +2166,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +260,35 @@
+@@ -208,23 +341,35 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -2116,14 +2211,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,18 +309,18 @@
+@@ -245,18 +390,20 @@
                  slot = &s_sg_textures[i];
      }
 
 -    if (!sg_texture_decode(st, w, h))
++    uint64_t decode_start = sg_profile_now();
 +    if (!sg_texture_decode(st, w, h, layers))
          return 0;
 -    if (!slot->tex || slot->w != w || slot->h != h) {
++    if (decode_start) s_sg_stats.texture_decode_ticks += sg_profile_now() - decode_start;
 +    s_sg_stats.texture_decodes++;
 +    if (!slot->tex || slot->w != w || slot->h != h || slot->layers != layers) {
          /* A full mip chain, generated on the GPU after each upload */
@@ -2140,7 +2237,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +330,7 @@
+@@ -266,6 +413,7 @@
              return 0;
          slot->w = w;
          slot->h = h;
@@ -2148,7 +2245,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +338,7 @@
+@@ -273,7 +421,7 @@
      slot->key = 0;
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
@@ -2157,7 +2254,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -291,4 +356,4 @@
+@@ -291,4 +439,4 @@
      if (use->pending)
          use->pending->key = use->pending_key;
      use->pending = NULL;
@@ -6676,10 +6773,9 @@ index 0000000..4bc11e6
 +    "    return VpOutputs(position, d0, d1, O[9], O[10], O[11], O[12], ff, w);\n"
 +    "}\n";
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index c3eab62..f26c937 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
-@@ -494,6 +494,15 @@ static BOOL ac97_arm_write_trap(void)
+@@ -494,6 +494,15 @@
                          " a channel reset will spin\n");
          return FALSE;
      }
@@ -6695,10 +6791,10 @@ index c3eab62..f26c937 100644
  #else
  #if defined(__linux__) && defined(__x86_64__)
      if (!g_ac97_posix_handler_ready || mprotect(g_ac97_page, AC97_TRAP_BYTES, PROT_READ) != 0) {
-@@ -1275,6 +1284,68 @@ void xbox_Nv2aKick(void)
+@@ -1275,6 +1284,68 @@
      }
  }
- 
+
 +#if defined(__EMSCRIPTEN__)
 +static size_t g_tiled_view_size = 0;
 +
@@ -6764,17 +6860,24 @@ index c3eab62..f26c937 100644
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -1366,6 +1437,9 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1366,7 +1437,16 @@
          *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
                                 + g_memory_offset) = GetTickCount();
- 
+
 +#if defined(__EMSCRIPTEN__)
 +        wasm_unrouted_check();
-+#endif
++        /* sched_yield (Sleep(0)) only pumps Emscripten's event queue; it
++         * does not yield a worker's CPU. Bound this background MMIO poller
++         * to 1 kHz so it leaves execution time for guest and GPU workers.
++         * Pushbuffer submission remains synchronous in xbox_Nv2aKick. */
++        Sleep(1);
++#else
          Sleep(0);  /* yield; the waiter is spinning on another core */
++#endif
      }
      return 0;
-@@ -1863,8 +1937,12 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+ }
+@@ -1863,8 +1943,12 @@
          /* Reserve base + mirrors as one range, and map the base at its head.
           * VirtualFree releases just the slice about to be used, so each view
           * replaces our own reservation rather than racing for free space. */
@@ -6789,7 +6892,7 @@ index c3eab62..f26c937 100644
           * Windows MEM_RELEASE requires size zero and releases the whole
           * reservation; use the fixed-base views below on Windows. */
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
-@@ -2521,9 +2599,20 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -2521,9 +2605,20 @@
                      VirtualProtect((char *)g_mcpx_memory + 0x50000u, 0xF000u,
                                     PAGE_READWRITE, &old_protect);
                  }
@@ -6810,7 +6913,7 @@ index c3eab62..f26c937 100644
                  *(volatile uint32_t *)((char *)g_mcpx_memory
                                         + MCPX_AC97_CODEC_STATUS)
                      |= MCPX_AC97_CODEC_READY;
-@@ -2628,6 +2717,15 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -2628,6 +2723,15 @@
       * intervals. All views alias the same physical pages, so reads and
       * writes at any mirror address correctly access the base data.
       */
@@ -6826,15 +6929,15 @@ index c3eab62..f26c937 100644
      {
          int mirrors_ok = 0;
          /* The tiled aperture is a specific architectural alias -- physical RAM
-@@ -2679,6 +2777,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -2679,6 +2783,7 @@
                  mirrors_ok, XBOX_NUM_MIRRORS,
                  (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
      }
 +#endif
- 
+
      /*
       * Tiled / write-combined aperture at 0xF0000000.
-@@ -2725,11 +2824,25 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -2725,11 +2830,25 @@
                  tiled_size,
                  (LPVOID)tiled_native)
              : NULL;
@@ -7152,10 +7255,9 @@ index 0000000..051d48e
 +#endif
 +#endif
 diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
-index 6caf7ee..eccf301 100644
 --- a/src/platform/win32_compat.c
 +++ b/src/platform/win32_compat.c
-@@ -34,11 +34,16 @@ size_t view_take(const void *addr);
+@@ -34,11 +34,17 @@
  #include <fenv.h>
  #include <sys/mman.h>
  #include "guest_memory.h"
@@ -7169,11 +7271,29 @@ index 6caf7ee..eccf301 100644
  #include <mach/mach_vm.h>
 +#elif defined(__EMSCRIPTEN__)
 +#include <emscripten/heap.h>
++#include <emscripten/emscripten.h>
  #else
  #include <sys/sysinfo.h>
  #endif
-@@ -1407,6 +1412,21 @@ static LPVOID virtual_alloc_impl(LPVOID address, SIZE_T size, DWORD allocationTy
- 
+@@ -459,7 +465,15 @@
+ static uintptr_t *s_reg;            /* 0 = empty, 1 = tombstone */
+ static size_t     s_reg_cap, s_reg_used, s_reg_live;
+
+-static size_t reg_hash(uintptr_t k) { k ^= k >> 33; k *= 0xff51afd7ed558ccdULL; k ^= k >> 33; return (size_t)k; }
++static size_t reg_hash(uintptr_t k)
++{
++    /* uintptr_t is 32 bits in WebAssembly; widen before the 33-bit shifts. */
++    uint64_t v = (uint64_t)k;
++    v ^= v >> 33;
++    v *= 0xff51afd7ed558ccdULL;
++    v ^= v >> 33;
++    return (size_t)v;
++}
+
+ static void reg_insert_nolock(uintptr_t k)
+ {
+@@ -1407,6 +1421,21 @@
+
  LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
  {
 +#if defined(__EMSCRIPTEN__)
@@ -7194,8 +7314,8 @@ index 6caf7ee..eccf301 100644
      LPVOID result = virtual_alloc_impl(address, size, allocationType, protect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1432,6 +1452,12 @@ static BOOL virtual_free_impl(LPVOID address, SIZE_T size, DWORD freeType)
- 
+@@ -1432,6 +1461,12 @@
+
  BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
  {
 +#if defined(__EMSCRIPTEN__)
@@ -7207,8 +7327,8 @@ index 6caf7ee..eccf301 100644
      BOOL result = virtual_free_impl(address, size, freeType);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1445,6 +1471,14 @@ static BOOL virtual_protect_impl(LPVOID address, SIZE_T size, DWORD newProtect,
- 
+@@ -1445,6 +1480,14 @@
+
  BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
  {
 +#if defined(__EMSCRIPTEN__)
@@ -7222,7 +7342,36 @@ index 6caf7ee..eccf301 100644
      BOOL result = virtual_protect_impl(address, size, newProtect, oldProtect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1870,9 +1904,23 @@ HANDLE CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
+@@ -1498,18 +1541,28 @@
+
+ ULONGLONG GetTickCount64(void)
+ {
++#ifdef __EMSCRIPTEN__
++    return (ULONGLONG)emscripten_get_now();
++#else
+     struct timespec ts;
+     clock_gettime(CLOCK_MONOTONIC, &ts);
+     return (ULONGLONG)ts.tv_sec * 1000ULL + (ULONGLONG)ts.tv_nsec / 1000000ULL;
++#endif
+ }
+
+ DWORD GetTickCount(void) { return (DWORD)GetTickCount64(); }
+
+ BOOL QueryPerformanceCounter(PLARGE_INTEGER count)
+ {
++#ifdef __EMSCRIPTEN__
++    /* Keep the nanosecond QPC contract without clock_gettime's JS BigInt
++     * conversion and write through a timespec on every hot timer poll. */
++    count->QuadPart = (LONGLONG)(emscripten_get_now() * 1000000.0);
++#else
+     struct timespec ts;
+     clock_gettime(CLOCK_MONOTONIC, &ts);
+     count->QuadPart = (LONGLONG)ts.tv_sec * 1000000000LL + ts.tv_nsec;
++#endif
+     return TRUE;
+ }
+
+@@ -1870,9 +1923,23 @@
                            DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
  {
      (void)file; (void)sa; (void)protect;
@@ -7249,8 +7398,8 @@ index 6caf7ee..eccf301 100644
      int fd = anon_map_fd(name);
      if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
      if (ftruncate(fd, (off_t)size) != 0) {
-@@ -1902,6 +1950,20 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
- 
+@@ -1902,6 +1969,20 @@
+
      off_t  off = ((off_t)offHigh << 32) | offLow;
      SIZE_T len = count ? count : (o->map_size - (SIZE_T)off);
 +#if defined(__EMSCRIPTEN__)
@@ -7269,9 +7418,9 @@ index 6caf7ee..eccf301 100644
 +#endif
      int prot   = PROT_READ | ((access != FILE_MAP_READ) ? PROT_WRITE : 0);
      int flags  = MAP_SHARED;
- 
-@@ -1948,6 +2010,10 @@ LPVOID MapViewOfFile(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow,
- 
+
+@@ -1948,6 +2029,10 @@
+
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
 +#if defined(__EMSCRIPTEN__)
@@ -7281,7 +7430,7 @@ index 6caf7ee..eccf301 100644
      size_t len = view_take(baseAddr);
      if (len == 0) return FALSE;
      return munmap((void *)baseAddr, len) == 0;
-@@ -2038,6 +2104,13 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
+@@ -2038,6 +2123,13 @@
      b->ullAvailPhys     = avail;
      b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
      b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;
