@@ -44,7 +44,10 @@ async function run(page, action, archive) {
 async function cStorage(page, mode) {
   await page.goto(`${URL}/smoke.html?env=SMOKE_STORAGE=${mode}`);
   await page.click('#start');
-  await page.waitForFunction(mode => smokeLog.some(s => s === `[SMOKE] storage ${mode === 'write' ? 'write durable' : 'read exact'}`), mode, {timeout:30000});
+  const expected = mode === 'write' ? 'write durable' : mode === 'replace' ? 'replace exact' : 'read exact';
+  await page.waitForFunction(expected => smokeLog.some(s => s === `[SMOKE] storage ${expected}` || /storage .*FAILED|Aborted|RuntimeError/.test(s)), expected, {timeout:30000});
+  const logs = await page.evaluate(() => smokeLog);
+  assert.ok(logs.includes(`[SMOKE] storage ${expected}`), logs.join('\n'));
 }
 (async () => {
   const server = spawn('python3', [path.join(ROOT, 'tools/serve-web.py'), DIR, '--port', '18768'],
@@ -58,6 +61,8 @@ async function cStorage(page, mode) {
     check(JSON.stringify(await get(page,SAVE)) === JSON.stringify(EXPECTED), 'C runtime writes exact binary bytes into persistent OPFS');
     await cStorage(page, 'read');
     check(true,'C runtime reads the save after navigation and a fresh WasmFS mount');
+    await cStorage(page, 'replace');
+    check(true,'Xbox save replacement resolves relative children, checks delete failures, removes the directory and recreates its data');
     // Leave the runtime before managing saves, as the launcher requires.
     await page.goto(`${URL}/smoke.html`);
     await page.addScriptTag({url:URL+'/save-format.js'});

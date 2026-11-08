@@ -149,6 +149,15 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       await page.evaluate(() => { smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 0:')); for (let i=0;i<17;i++) __pressPad(i,false); __pads[0].axes=[0,0,0,0]; });
       check(!!(await hasLog(page, /^\[SMOKE\] pad A up$/, 5000)), 'controller: release reaches SDL');
       check(!!(await hasLog(page, /^\[SMOKE\] controls 0: connected=1 buttons=0 A=0 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'game controls: releasing everything returns an exact neutral state');
+      // Crib look and FPF camera need the second stick even without a pad.
+      for (const [key, sticks] of [['KeyI','0,0,0,32767'], ['KeyK','0,0,0,-32767'], ['KeyJ','0,0,-32767,0'], ['KeyL','0,0,32767,0']]) {
+        await page.evaluate(() => { smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 0:')); });
+        await page.keyboard.down(key);
+        try {
+          check(!!(await hasLog(page, new RegExp('^\\[SMOKE\\] controls 0: connected=1 buttons=0 A=0 LT=0 RT=0 sticks='+sticks+'$'), 5000)), 'keyboard right stick: '+key);
+        } finally { await page.keyboard.up(key); }
+        check(!!(await hasLog(page, /^\[SMOKE\] controls 0: connected=1 buttons=0 A=0 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'keyboard right stick release: '+key);
+      }
       await page.evaluate(() => __connectPad(1));
       await page.evaluate(() => __pressPad(0,true,1));
       check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'second controller maps to a separate Xbox port');

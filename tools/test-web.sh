@@ -30,6 +30,7 @@ python3 -I "$ROOT/tests/web/test_texture_decode.py"
 python3 -I "$ROOT/tests/web/test_handle_registry.py"
 python3 -I "$ROOT/tests/web/test_qemu_clock.py"
 python3 -I "$ROOT/tests/web/test_gpu_fence_wait.py"
+python3 -I "$ROOT/tests/web/test_gameplay_flag_joins.py"
 python3 -I "$ROOT/tests/web/test_apu_lock_handoff.py"
 
 emcc -O2 -I"$ROOT/src/platform/web" "$ROOT/tests/web/test_recomp_web_dev.c" -o "$OUT/test_recomp_web_dev.js"

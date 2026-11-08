@@ -234,6 +234,31 @@ PATCHES = [
     ("JOIN_2F7CA4_CMP", "sub_002F7C50", "loc_002F7CA4: ;", "after", """\
     if (CMP_EQ(_fa, _fb)) goto loc_002F7CE3;
 """),
+    # The comparisons above resolve both predecessors. Avoid invoking the
+    # obsolete fallback on the nonzero path (it otherwise produces false
+    # positives in the opt-in game-mode audit).
+    ("JOIN_2F7CA4_COMPLETE", "sub_002F7C50", "if (RECOMP_FLAGS_FALLBACK(0x002F7CA4u, _flags) /* je: equal / zero */) goto loc_002F7CE3;", "before", """\
+    goto loc_002F7CA6;
+"""),
+    # Reached in retail Basic Training (2026-11-08). The join at 0x1AE8D5
+    # follows either DEC EAX or TEST EAX,EAX; both set ZF iff EAX is zero.
+    # The lifter's never-taken fallback incorrectly ran the update at D7
+    # for the zero case as well. Preserve both successors explicitly.
+    ("JOIN_1AE8D5_ZERO", "sub_001AE870", "if (RECOMP_FLAGS_FALLBACK(0x001AE8D5u, _flags) /* je: equal / zero */) goto loc_001AE92C;", "before", """\
+    if (eax == 0) goto loc_001AE92C;
+    goto loc_001AE8D7;
+"""),
+    # Reached during the Ice Bowl drive (2026-11-08): TEST EAX,EAX after
+    # sub_0007A660 and CMP EAX,20 share a JNE. Resolve them separately;
+    # the fallback otherwise always calls the transition at 0xA2824.
+    ("JOIN_A2822_TEST", "sub_000A27F0", "goto loc_000A2822;", "before", """\
+    if (TEST_NZ(_fa, _fb)) goto loc_000A2834;
+    goto loc_000A2824;
+"""),
+    ("JOIN_A2822_CMP", "sub_000A27F0", "if (RECOMP_FLAGS_FALLBACK(0x000A2822u, _flags) /* jne: not equal / not zero */) goto loc_000A2834;", "before", """\
+    if (CMP_NE(_fa, _fb)) goto loc_000A2834;
+    goto loc_000A2824;
+"""),
     # Press Start/front-end path (2026-10-06): both predecessors have already
     # populated _fa/_fb (test eax,eax or cmp edi,eax), so the joined `jne`
     # can use the preserved operands directly.  The generic fallback always

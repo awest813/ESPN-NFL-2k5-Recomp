@@ -531,11 +531,42 @@ volatile long nfl2k5_748a0_markers[8];
 void nfl2k5_execwatch_print(void) {}
 void nfl2k5_hw_watch_rescan(void) {}
 void recomp_coverage_hit(uint32_t va) { (void)va; }
-void recomp_flags_fallback_hit(uint32_t address) { (void)address; }
+static int mode_trace_enabled(void)
+{
+    static RECOMP_TLS int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("NFL2K5_MODE_TRACE");
+        enabled = value && *value && strcmp(value, "0") != 0;
+    }
+    return enabled;
+}
+
+/* Bound diagnostic volume, including hot unresolved/flags sites. Per-thread
+ * storage keeps these hooks safe when guest worker threads reach them. */
+static void mode_trace_gap(uint32_t address, unsigned kind)
+{
+    static RECOMP_TLS struct { uint32_t address; unsigned kind; } seen[256];
+    static RECOMP_TLS unsigned count;
+    static const char *const labels[] = { "FLAGS", "UNRESOLVED", "TODO" };
+    if (!mode_trace_enabled()) return;
+    for (unsigned i = 0; i < count; ++i)
+        if (seen[i].address == address && seen[i].kind == kind) return;
+    if (count == 256) return;
+    seen[count].address = address; seen[count++].kind = kind;
+    fprintf(stderr, "[%s] guest site %08X\n", labels[kind], address);
+}
+
+void recomp_flags_fallback_hit(uint32_t address) { mode_trace_gap(address, 0); }
 void recomp_icall_hist(uint32_t va) { (void)va; }
-void recomp_unresolved_hit(uint32_t address) { (void)address; }
-void recomp_todo_hit(uint32_t address) { (void)address; }
-void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int push) { (void)obj; (void)desc; (void)push; }
+void recomp_unresolved_hit(uint32_t address) { mode_trace_gap(address, 1); }
+void recomp_todo_hit(uint32_t address) { mode_trace_gap(address, 2); }
+void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int push)
+{
+    static RECOMP_TLS unsigned sequence;
+    if (mode_trace_enabled())
+        fprintf(stderr, "[MODE-FSM] #%u %s object=%08X descriptor=%08X\n",
+                ++sequence, push ? "push" : "pop", obj, desc);
+}
 void nfl2k5_diag_texzero(uint32_t tex, uint32_t ret) { (void)tex; (void)ret; }
 void nfl2k5_diag_reg(uint32_t fn, uint32_t edx_, uint32_t a0, uint32_t a1, uint32_t obj) { (void)fn; (void)edx_; (void)a0; (void)a1; (void)obj; }
 void nfl2k5_diag_res43(uint32_t obj, uint32_t load, uint32_t fre, uint32_t where) { (void)obj; (void)load; (void)fre; (void)where; }

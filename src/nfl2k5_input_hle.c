@@ -220,10 +220,18 @@ static void host_keyboard_gamepad(XBOX_GAMEPAD *g)
     if (KEY(SDL_SCANCODE_V)) g->bAnalogButtons[3] = 255;
     if (KEY(SDL_SCANCODE_Q)) g->bAnalogButtons[6] = 255;
     if (KEY(SDL_SCANCODE_E)) g->bAnalogButtons[7] = 255;
+    if (KEY(SDL_SCANCODE_F)) g->bAnalogButtons[4] = 255;
+    if (KEY(SDL_SCANCODE_R)) g->bAnalogButtons[5] = 255;
+    if (KEY(SDL_SCANCODE_T)) g->wButtons |= 0x40;
+    if (KEY(SDL_SCANCODE_G)) g->wButtons |= 0x80;
     if (KEY(SDL_SCANCODE_A)) g->sThumbLX = -32767;
     if (KEY(SDL_SCANCODE_D)) g->sThumbLX = 32767;
     if (KEY(SDL_SCANCODE_W)) g->sThumbLY = 32767;
     if (KEY(SDL_SCANCODE_S)) g->sThumbLY = -32767;
+    if (KEY(SDL_SCANCODE_J)) g->sThumbRX = -32767;
+    if (KEY(SDL_SCANCODE_L)) g->sThumbRX = 32767;
+    if (KEY(SDL_SCANCODE_I)) g->sThumbRY = 32767;
+    if (KEY(SDL_SCANCODE_K)) g->sThumbRY = -32767;
 #undef KEY
 }
 
@@ -237,8 +245,8 @@ static void host_gamepad_port(int port, XBOX_GAMEPAD *g)
     if (no_host_pad < 0) no_host_pad = getenv("NFL2K5_NO_HOST_PAD") != NULL;
     nfl2k5_controls_get(port, g, !(no_host_pad && g_last_script_press && SDL_GetTicks() - g_last_script_press < 15000));
     if (port == 0) {
-        host_keyboard_gamepad(g);
-        host_mouse_gamepad(g);
+        /* controls_get already applies the configured keyboard and mouse.
+         * Reapplying legacy defaults here defeats remapping and mouse-off. */
         g->wButtons |= auto_press(g->bAnalogButtons);
         g->wButtons |= file_press(g->bAnalogButtons);
     }

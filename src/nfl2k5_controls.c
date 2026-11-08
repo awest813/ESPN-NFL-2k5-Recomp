@@ -53,18 +53,21 @@ static const char *const k_ps_names[C_COUNT] = {
     "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "Options", "Share/Create",
     "L3", "R3", "D-pad up", "D-pad down", "D-pad left", "D-pad right" };
 
-enum { K_LUP = C_COUNT, K_LDOWN, K_LLEFT, K_LRIGHT, K_COUNT };
+enum { K_LUP = C_COUNT, K_LDOWN, K_LLEFT, K_LRIGHT,
+       K_RUP, K_RDOWN, K_RLEFT, K_RRIGHT, K_COUNT };
 static const char *const k_key_names[K_COUNT] = {
     "A", "B", "X", "Y", "LB (White)", "RB (Black)", "LT", "RT", "Start", "Back",
     "Left stick click", "Right stick click", "D-pad up", "D-pad down", "D-pad left", "D-pad right",
-    "Left stick up", "Left stick down", "Left stick left", "Left stick right" };
+    "Left stick up", "Left stick down", "Left stick left", "Left stick right",
+    "Right stick up", "Right stick down", "Right stick left", "Right stick right" };
 static const char *const k_key_ini[K_COUNT] = {
     "key_a", "key_b", "key_x", "key_y", "key_lb", "key_rb", "key_lt", "key_rt", "key_start", "key_back",
     "key_ls", "key_rs", "key_dup", "key_ddown", "key_dleft", "key_dright",
-    "key_lup", "key_ldown", "key_lleft", "key_lright" };
+    "key_lup", "key_ldown", "key_lleft", "key_lright",
+    "key_rup", "key_rdown", "key_rleft", "key_rright" };
 static const int k_key_default[K_COUNT] = {
     'Z', 'X', 'C', 'V', 'R', 'F', 'Q', 'E', VK_RETURN, VK_BACK, 'T', 'G',
-    VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 'W', 'S', 'A', 'D' };
+    VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 'W', 'S', 'A', 'D', 'I', 'K', 'J', 'L' };
 
 typedef struct {
     int vibration;
@@ -426,17 +429,26 @@ static void keyboard_into(XBOX_GAMEPAD *g)
     if (KEY(K_LRIGHT)) g->sThumbLX = 32767;
     if (KEY(K_LUP)) g->sThumbLY = 32767;
     if (KEY(K_LDOWN)) g->sThumbLY = -32767;
+    if (KEY(K_RLEFT)) g->sThumbRX = -32767;
+    if (KEY(K_RRIGHT)) g->sThumbRX = 32767;
+    if (KEY(K_RUP)) g->sThumbRY = 32767;
+    if (KEY(K_RDOWN)) g->sThumbRY = -32767;
 #undef KEY
 }
 
 static void mouse_into(XBOX_GAMEPAD *g)
 {
+    static int env_enabled = -1;
     SDL_Window *win = (SDL_Window *)xbox_FramebufferWindowHwnd();
     float mx = 0.0f, my = 0.0f;
     int ww = 0, wh = 0;
     SDL_MouseButtonFlags mb;
 
-    if (!s_cfg.mouse || !win || !window_focused()) return;
+    if (env_enabled < 0) {
+        const char *value = getenv("NFL2K5_MOUSE");
+        env_enabled = !value || (*value && *value != '0');
+    }
+    if (!env_enabled || !s_cfg.mouse || !win || !window_focused()) return;
 
     mb = SDL_GetMouseState(&mx, &my);
     if (mb & SDL_BUTTON_LMASK) g->bAnalogButtons[0] = 255;

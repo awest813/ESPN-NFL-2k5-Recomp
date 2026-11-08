@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(web_smoke C CXX)   # C++: the kernel's WebGPU port links as C++
 get_filename_component(NFL2K5_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 add_subdirectory("${NFL2K5_ROOT}/external/xboxrecomp" xboxrecomp)
-add_executable(web_smoke web_smoke.c "${NFL2K5_ROOT}/src/platform/web/web_sdl.c"
+add_executable(web_smoke web_smoke.c save_replace.c "${NFL2K5_ROOT}/src/platform/web/web_sdl.c"
     "${NFL2K5_ROOT}/src/platform/web/web_fs.c" "${NFL2K5_ROOT}/src/nfl2k5_controls.c")
 target_link_libraries(web_smoke PRIVATE xboxrecomp)
 target_link_options(web_smoke PRIVATE -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=12

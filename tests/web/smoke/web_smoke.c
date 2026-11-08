@@ -157,6 +157,8 @@ static int SDLCALL audio_thread(void *arg)
 
 int main(void)
 {
+    extern int save_replace_smoke(void);
+    if (getenv("SMOKE_STORAGE") && !strcmp(getenv("SMOKE_STORAGE"), "replace")) return save_replace_smoke();
     if (getenv("SMOKE_STORAGE")) return storage_smoke(getenv("SMOKE_STORAGE"));
     static uint8_t xbe[0x2000];
     SDL_Gamepad *pad = NULL;

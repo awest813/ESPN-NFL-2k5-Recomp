@@ -75629,6 +75629,8 @@ loc_002F7CA1: ;
 loc_002F7CA4: ;
     /* NFL2K5-GENPATCH:JOIN_2F7CA4_CMP */
     if (CMP_EQ(_fa, _fb)) goto loc_002F7CE3;
+    /* NFL2K5-GENPATCH:JOIN_2F7CA4_COMPLETE */
+    goto loc_002F7CA6;
     if (RECOMP_FLAGS_FALLBACK(0x002F7CA4u, _flags) /* je: equal / zero */) goto loc_002F7CE3;
 
 loc_002F7CA6: ;

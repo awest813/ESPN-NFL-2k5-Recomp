@@ -64817,6 +64817,9 @@ loc_000A2816: ;
 loc_000A281B: ;
     _fa = (uint32_t)(eax) & 0xFFFFFFFFu; _fb = (uint32_t)(eax) & 0xFFFFFFFFu;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* test eax, eax (32-bit) */
+    /* NFL2K5-GENPATCH:JOIN_A2822_TEST */
+    if (TEST_NZ(_fa, _fb)) goto loc_000A2834;
+    goto loc_000A2824;
     goto loc_000A2822;
 
 loc_000A281F: ;
@@ -64824,6 +64827,9 @@ loc_000A281F: ;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* cmp eax, 0x14 (32-bit) */
 
 loc_000A2822: ;
+    /* NFL2K5-GENPATCH:JOIN_A2822_CMP */
+    if (CMP_NE(_fa, _fb)) goto loc_000A2834;
+    goto loc_000A2824;
     if (RECOMP_FLAGS_FALLBACK(0x000A2822u, _flags) /* jne: not equal / not zero */) goto loc_000A2834;
 
 loc_000A2824: ;

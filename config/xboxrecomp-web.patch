@@ -2734,6 +2734,95 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
      QemuCond cond;
      QemuCond idle_cond;
      bool pause_requested;
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -862,6 +862,29 @@
+     }
+ }
+
++/* XDeleteSaveGame opens children relative to the save-directory handle.
++ * Treating those names as paths from CWD breaks save replacement on POSIX
++ * and WasmFS, even though creating a new save through absolute paths works. */
++static BOOL translate_obj_path(PXBOX_OBJECT_ATTRIBUTES attributes,
++                               char *out, DWORD size)
++{
++    const char *name = get_xbox_path(attributes);
++    if (!name || !out || !size) return FALSE;
++    if (attributes->RootDirectory && name[0] != '\\' && name[0] != '/' &&
++        !(name[0] && name[1] == ':')) {
++        const char *base = w32_handle_path(attributes->RootDirectory);
++        struct stat st;
++        int fd = w32_handle_fd(attributes->RootDirectory);
++        char joined[MAX_PATH];
++        if (!base || fd < 0 || fstat(fd, &st) || !S_ISDIR(st.st_mode)) return FALSE;
++        int used = snprintf(joined, sizeof joined, "%s/%s", base, name);
++        if (used < 0 || (size_t)used >= sizeof joined || (DWORD)used >= size) return FALSE;
++        /* The absolute host path takes the normal separator/case resolver. */
++        return xbox_translate_path(joined, out, size);
++    }
++    return xbox_translate_path(name, out, size);
++}
++
+ NTSTATUS __stdcall xbox_NtCreateFile(
+     PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
+     PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
+@@ -875,7 +898,7 @@
+         return STATUS_INVALID_PARAMETER;
+
+     const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH)) {
++    if (!translate_obj_path(ObjectAttributes, host_path, MAX_PATH)) {
+         xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE, "NtCreateFile: path translation failed");
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     }
+@@ -1005,8 +1028,7 @@
+ NTSTATUS __stdcall xbox_NtDeleteFile(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes)
+ {
+     char host_path[MAX_PATH];
+-    const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH))
++    if (!translate_obj_path(ObjectAttributes, host_path, MAX_PATH))
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     XBOX_TRACE(XBOX_LOG_FILE, "NtDeleteFile: %s", host_path);
+     if (unlink(host_path) == 0) return STATUS_SUCCESS;
+@@ -1113,11 +1135,23 @@
+         }
+         case XboxFileDispositionInformation: {
+             PXBOX_FILE_DISPOSITION_INFORMATION info = (PXBOX_FILE_DISPOSITION_INFORMATION)FileInformation;
+-            /* POSIX: unlinking an open file removes it on last close -- this
+-             * matches NT "delete on close" semantics exactly. */
++            /* Remove the name while the handle retains the open object.
++             * Directories require rmdir, and a failed removal must propagate
++             * to the caller rather than pretending the save was deleted. */
+             if (info->DeleteFile) {
+                 const char* p = w32_handle_path(FileHandle);
+-                if (p) unlink(p);
++                struct stat st;
++                if (!p || fstat(fd, &st)) {
++                    IoStatusBlock->Status = STATUS_INVALID_HANDLE;
++                    return STATUS_INVALID_HANDLE;
++                }
++                int result = S_ISDIR(st.st_mode) ? rmdir(p) : unlink(p);
++                if (result) {
++                    NTSTATUS status = errno_to_status(errno);
++                    IoStatusBlock->Status = status;
++                    IoStatusBlock->Information = 0;
++                    return status;
++                }
+             }
+             IoStatusBlock->Status = STATUS_SUCCESS;
+             return STATUS_SUCCESS;
+@@ -1197,8 +1231,7 @@
+
+     if (!FileInformation)
+         return STATUS_INVALID_PARAMETER;
+-    const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH))
++    if (!translate_obj_path(ObjectAttributes, host_path, MAX_PATH))
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     if (stat(host_path, &st) != 0)
+         return STATUS_OBJECT_NAME_NOT_FOUND;
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c

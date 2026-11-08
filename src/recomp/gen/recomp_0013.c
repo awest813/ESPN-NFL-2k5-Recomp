@@ -45096,6 +45096,9 @@ loc_001AE8C7: ;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* test eax, eax (32-bit) */
 
 loc_001AE8D5: ;
+    /* NFL2K5-GENPATCH:JOIN_1AE8D5_ZERO */
+    if (eax == 0) goto loc_001AE92C;
+    goto loc_001AE8D7;
     if (RECOMP_FLAGS_FALLBACK(0x001AE8D5u, _flags) /* je: equal / zero */) goto loc_001AE92C;
 
 loc_001AE8D7: ;
