@@ -83,12 +83,13 @@ gameplay tests still exposed sub-30 samples, so the minimum-FPS target is
 not considered met. Short samples above 30 do not establish a sustained
 floor, and CPU profiles/builds must not run alongside acceptance measurements.
 
-Browser clock reads use Emscripten's monotonic clock directly, preserving
-millisecond tick counts and nanosecond performance counters while avoiding
-the intermediate WASI timespec conversion. The handle registry now widens
+The handle registry now widens
 pointer keys before its 33-bit hash shifts, which were undefined on wasm32.
-Tests cover clock units and monotonicity, plus 10,000 aligned handles through
+Tests cover 10,000 aligned handles through
 registry growth, invalid lookups, removal and tombstone reuse.
+
+A direct browser-clock path was faster in isolation but did not improve
+the menu comparison, so clock reads retain the existing timespec path.
 
 The background MMIO acknowledgement thread remains a CPU hotspot:
 Emscripten's `sched_yield` only processes its event queue. A one-millisecond

@@ -27,7 +27,6 @@ python3 -I "$ROOT/tests/web/test_frame_pacing.py"
 python3 -I "$ROOT/tests/web/test_vertex_fetch.py"
 python3 -I "$ROOT/tests/web/test_draw_merge.py"
 python3 -I "$ROOT/tests/web/test_texture_decode.py"
-python3 -I "$ROOT/tests/web/test_web_clock.py"
 python3 -I "$ROOT/tests/web/test_handle_registry.py"
 
 emcc -O2 -I"$ROOT/src/platform/web" "$ROOT/tests/web/test_recomp_web_dev.c" -o "$OUT/test_recomp_web_dev.js"

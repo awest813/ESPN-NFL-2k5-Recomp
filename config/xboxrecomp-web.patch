@@ -7335,36 +7335,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_protect_impl(address, size, newProtect, oldProtect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1498,18 +1541,28 @@
-
- ULONGLONG GetTickCount64(void)
- {
-+#ifdef __EMSCRIPTEN__
-+    return (ULONGLONG)emscripten_get_now();
-+#else
-     struct timespec ts;
-     clock_gettime(CLOCK_MONOTONIC, &ts);
-     return (ULONGLONG)ts.tv_sec * 1000ULL + (ULONGLONG)ts.tv_nsec / 1000000ULL;
-+#endif
- }
-
- DWORD GetTickCount(void) { return (DWORD)GetTickCount64(); }
-
- BOOL QueryPerformanceCounter(PLARGE_INTEGER count)
- {
-+#ifdef __EMSCRIPTEN__
-+    /* Keep the nanosecond QPC contract without clock_gettime's JS BigInt
-+     * conversion and write through a timespec on every hot timer poll. */
-+    count->QuadPart = (LONGLONG)(emscripten_get_now() * 1000000.0);
-+#else
-     struct timespec ts;
-     clock_gettime(CLOCK_MONOTONIC, &ts);
-     count->QuadPart = (LONGLONG)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-+#endif
-     return TRUE;
- }
-
-@@ -1870,9 +1923,23 @@
+@@ -1870,9 +1913,23 @@
                            DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
  {
      (void)file; (void)sa; (void)protect;
@@ -7391,7 +7362,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int fd = anon_map_fd(name);
      if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
      if (ftruncate(fd, (off_t)size) != 0) {
-@@ -1902,6 +1969,20 @@
+@@ -1902,6 +1959,20 @@
 
      off_t  off = ((off_t)offHigh << 32) | offLow;
      SIZE_T len = count ? count : (o->map_size - (SIZE_T)off);
@@ -7412,7 +7383,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int prot   = PROT_READ | ((access != FILE_MAP_READ) ? PROT_WRITE : 0);
      int flags  = MAP_SHARED;
 
-@@ -1948,6 +2029,10 @@
+@@ -1948,6 +2019,10 @@
 
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
@@ -7423,7 +7394,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      size_t len = view_take(baseAddr);
      if (len == 0) return FALSE;
      return munmap((void *)baseAddr, len) == 0;
-@@ -2038,6 +2123,13 @@
+@@ -2038,6 +2113,13 @@
      b->ullAvailPhys     = avail;
      b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
      b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;
