@@ -20,6 +20,9 @@ int main(void)
     assert(memcmp(data,copy,sizeof data)==0);
     assert(mprotect(memory+page,page,PROT_READ)==0);
     assert(mprotect(memory+page*2,page,PROT_NONE)==0);
+    /* Raw OS mapping changes must invalidate the runtime's direct-page cache,
+     * just as VirtualProtect/VirtualFree do in production. */
+    xbox_guest_memory_protection_changed();
     assert(xbox_guest_memory_read((uintptr_t)memory,page,copy,sizeof copy));
     assert(!xbox_guest_memory_write((uintptr_t)memory,page,data,sizeof data));
     assert(!xbox_guest_memory_read((uintptr_t)memory,page*2,copy,sizeof copy));
@@ -35,6 +38,7 @@ int main(void)
     assert(xbox_guest_memory_read((uintptr_t)memory,0,NULL,0));
     assert(xbox_guest_memory_write((uintptr_t)memory,0,NULL,0));
     assert(munmap(memory+page*2,page)==0);
+    xbox_guest_memory_protection_changed();
     assert(!xbox_guest_memory_read((uintptr_t)memory,page*2,copy,sizeof copy));
     assert(!xbox_guest_memory_write((uintptr_t)memory,page*2,data,sizeof data));
     assert(sigaction(SIGSEGV,NULL,&after)==0);

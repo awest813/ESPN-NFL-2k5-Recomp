@@ -140,6 +140,7 @@ async function playAndCheckXbe(page, want, label) {
       check(gpuLayout.inputActive, 'SDL canvas still receives pointer input over the GPU frame');
       check(gpuLayout.gpuOnTop, 'GPU canvas paints above the SDL input canvas');
       check(await page.$eval('#play', (b) => b.disabled), 'Play disabled before a disc is imported');
+      check(await page.inputValue('#fps-limit') === '30', 'launcher defaults to the 30 FPS lock');
       await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
       check(!!(await waitLog(page, /^Imported 7 files/, 60000)), 'image import finished');
       check(sameDisc(await opfsDisc(page), want, true), 'image: every file in OPFS matches the disc, empty dirs kept');
@@ -257,12 +258,14 @@ async function playAndCheckXbe(page, want, label) {
       await page.waitForFunction(() => !document.querySelector('#disc-installed').hidden);
       await page.evaluate(hash => {
         KNOWN_XBE[hash] = 'synthetic test fixture'; renderDisc();
-        NFL2K5Launch.start = async options => { options.onAbort('simulated startup failure'); return {}; };
+        NFL2K5Launch.start = async options => { window.testLaunchEnv=options.env; options.onAbort('simulated startup failure'); return {}; };
       }, want.xbe_sha256);
       await page.click('#play');
       await page.waitForFunction(() => !document.querySelector('#reload').hidden);
       check(await page.$eval('#play', b => b.disabled) && /simulated startup failure/.test(await page.textContent('#launch-status')),
             'aborted startup offers reload and prevents a duplicate runtime');
+      check(await page.evaluate(() => testLaunchEnv.includes('NFL2K5_FPS_LIMIT=30')) &&
+        await page.$eval('#fps-limit',b=>b.disabled), '30 FPS choice reaches the runtime and stays fixed for the session');
       await page.click('#diagnostics summary');
       const [download] = await Promise.all([page.waitForEvent('download'), page.click('#download-log')]);
       check(download.suggestedFilename() === 'nfl2k5-web-log.txt', 'diagnostic log can be downloaded');
@@ -277,6 +280,9 @@ async function playAndCheckXbe(page, want, label) {
       });
       const page = await context.newPage(); await page.goto('http://127.0.0.1:18765/');
       await page.waitForSelector('body[data-ready="1"]');
+      await page.selectOption('#fps-limit','0');
+      await page.reload(); await page.waitForSelector('body[data-ready="1"]');
+      check(await page.inputValue('#fps-limit') === '0', 'uncapped frame-rate choice persists across reload');
       await page.click('#controller-test summary');
       await page.waitForFunction(() => document.querySelector('#controller-readout').textContent.includes('LT: 0.50'));
       check(/A \/ Cross: 1.00/.test(await page.textContent('#controller-readout')) &&

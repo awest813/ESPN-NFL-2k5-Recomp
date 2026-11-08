@@ -316,6 +316,11 @@ static uint32_t nfl2k5_frame_interval_for(uint32_t requested)
     if (requested == 0 || requested > 2)
         return requested;
     int limit = xbox_VideoFpsLimit();
+#ifdef __EMSCRIPTEN__
+    /* WebGPU paces completed frames itself. Waiting for a second guest
+     * vblank as well adds another scheduling delay to the 30 Hz deadline. */
+    if (limit == 30) return 1u;
+#endif
     if (limit < 0)
         return requested;
     return limit == 30 ? 2u : 1u;

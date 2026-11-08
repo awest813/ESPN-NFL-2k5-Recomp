@@ -19,11 +19,12 @@ def main():
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #define NV_VERTEX_ATTRS 16
 typedef struct { uint32_t offset, type, size, stride; } VertexAttr;
 static struct { VertexAttr attr[16]; int inline_active; unsigned inline_count; void *inline_buf; } s_gpu;
 static float s_attr_inline[16][4];
-static struct { unsigned inmask; struct { const uint8_t *base; float value[4]; int constant; } attr[16]; } s_sgvp;
+static struct { unsigned inmask; uint8_t active[16], active_count; struct { const uint8_t *base; float value[4]; int constant; } attr[16]; } s_sgvp;
 static uint8_t memory[65536], inline_memory[8192];
 static void *xbox_GetMemoryOffset(void) { return memory; }
 static bool xbox_guest_memory_direct(uintptr_t base, uint64_t address, size_t bytes, bool writable) {
@@ -44,11 +45,15 @@ int main(void) {
     for (unsigned i = 0; i < 16; i++) for (unsigned k = 0; k < 4; k++) s_attr_inline[i][k] = (float)(i + k);
     s_sgvp.inmask = 1u << 3;
     for (unsigned trial = 0; trial < 10000; trial++) {
+        s_sgvp.inmask = (rng() & 0xffffu) | (1u << 3);
         VertexAttr *a = &s_gpu.attr[3];
         a->type = rng() % 8; a->size = rng() % 7; a->stride = (unsigned[]){0,7,16,32}[rng() % 4];
         a->offset = (unsigned[]){0,16,53,2048,65000,0xfffffff0u}[rng() % 6];
         s_gpu.inline_active = rng() & 1; s_gpu.inline_count = rng() % 2049; s_gpu.inline_buf = inline_memory;
         sg_vp_prepare_inputs(63);
+        unsigned count=0;
+        for (unsigned slot=0;slot<16;slot++) if (s_sgvp.inmask & (1u<<slot)) assert(s_sgvp.active[count++]==slot);
+        assert(count==s_sgvp.active_count);
         for (unsigned index = 0; index < 64; index++) {
             float expected[4], actual[4], checked[4];
             reference_fetch_attr(a, index, expected);

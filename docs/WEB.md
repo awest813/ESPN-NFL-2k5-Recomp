@@ -104,6 +104,14 @@ keyboard bindings. The game toolbar provides fullscreen and restart.
 Restart reloads the page to reset the runtime; unsaved progress is lost.
 Removing game files preserves the separate save/settings storage.
 
+The launcher's **Frame rate** choice defaults to **30 FPS lock** and also
+offers **Uncapped**. It persists locally and applies on the next launch.
+The cap paces completed GPU frames with fractional deadlines, releasing the
+guest lock during waits so audio and input can continue. The web frame loop
+uses one guest vblank alongside that host deadline to avoid double pacing.
+It limits output rather than guaranteeing a minimum on every scene/device.
+Development `?env=NFL2K5_FPS_LIMIT=0` or `=30` overrides the launcher choice.
+
 **Save data** shows the local save/settings count and offers portable JSON
 backup and restore. Use the game's normal Save/Load menus; finish saving and
 reload the launcher before managing backups. Restore merges files, replacing

@@ -100,6 +100,10 @@ footer { color:#91a0ab; font-size:11px; text-align:center; padding:12px; line-he
 #screen:fullscreen #canvas { max-height:100%; object-fit:contain; }
 #sound { display:block; margin:12px auto; background:var(--accent); border-color:var(--accent); }
 #reload { margin-top:10px; width:100%; }
+.frame-option { display:flex; align-items:center; gap:12px; margin:20px 0 12px; }
+.frame-option label { font-weight:600; }
+.frame-option select { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px; }
+.frame-option select:focus-visible { outline:3px solid #f2c65b; outline-offset:3px; }
 #save-data { margin-top:24px; }
 #save-data .row { flex-wrap:wrap; }
 #controller-test { margin-top:14px; }

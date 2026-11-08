@@ -61,3 +61,12 @@ jobs:
       - name: Publish
         id: deployment
         uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v4
+      - name: Install production smoke-test browser
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - name: Verify published project URL
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: node tests/web/test_pages_deployment.js "$PAGE_URL"

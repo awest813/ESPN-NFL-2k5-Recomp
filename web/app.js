@@ -114,6 +114,7 @@ function renderDisc() {
   const valid = !!info && !!KNOWN_XBE[info.xbeSha256] && info.hasVc53450030;
   const ready = valid && state.checked && state.supported && state.build && !state.importing && !state.launched && !state.saveBusy && !state.saveRecoveryError;
   $('play').disabled = !ready;
+  $('fps-limit').disabled = state.launched;
   $('import-image').disabled = $('import-folder').disabled = !state.checked || !state.supported || state.importing || state.launched || state.saveBusy;
   $('remove').disabled = !info || state.importing || state.launched || state.saveBusy;
   const savesDisabled = !state.checked || !state.supported || state.importing || state.launched || state.saveBusy;
@@ -281,7 +282,7 @@ async function play() {
   NFL2K5Launch.start({
     script: 'NFL2K5.js', factory: 'createNFL2K5', canvas, audioContext: audio,
     // Use the game's skip path for the unsupported startup movie.
-    env: ['NFL2K5_SKIP_INTRO=1', ...params.getAll('env')],
+    env: ['NFL2K5_SKIP_INTRO=1', `NFL2K5_FPS_LIMIT=${$('fps-limit').value}`, ...params.getAll('env')],
     print: (t) => log(t),
     printErr: (t) => log(t, 'stderr'),
     onProgress: (text) => { if (text) $('game-status').textContent = text; },
@@ -411,6 +412,10 @@ async function main() {
   await refreshStorage();
   state.installed = opfs ? await readMarker() : null;
   state.checked = true;
+  try { $('fps-limit').value = localStorage.getItem('nfl2k5-fps-limit') === '0' ? '0' : '30'; } catch {}
+  $('fps-limit').onchange = () => {
+    try { localStorage.setItem('nfl2k5-fps-limit', $('fps-limit').value); } catch {}
+  };
   renderDisc();
   await refreshSaves();
   if (!opfs) $('save-summary').textContent = 'Save storage is unavailable in this browser.';

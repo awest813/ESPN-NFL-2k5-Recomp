@@ -361,7 +361,27 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
  static SDL_AtomicInt s_vs_dirty = { 1 };
  static const char *k_vs_file = "nfl2k5_video.ini";
 
-@@ -84,7 +89,7 @@
+@@ -64,7 +69,18 @@
+ static XboxHudCallback s_hud_cb = NULL;
+
+ void xbox_PresentSetHudCallback(XboxHudCallback cb) { s_hud_cb = cb; }
+-int  xbox_VideoFpsLimit(void) { return s_vs.fps_limit; }
++int xbox_VideoFpsLimit(void) {
++#ifdef __EMSCRIPTEN__
++    /* The launcher's explicit session choice overrides saved native settings. */
++    static int override = -2;
++    if (override == -2) {
++        const char *v = getenv("NFL2K5_FPS_LIMIT");
++        override = v && !strcmp(v, "30") ? 30 : v && !strcmp(v, "0") ? 0 : -1;
++    }
++    if (override >= 0) return override;
++#endif
++    return s_vs.fps_limit;
++}
+
+ static void vs_load(void)
+ {
+@@ -84,7 +100,7 @@
          else if (!strcmp(key, "vsync")) s_vs.vsync = v;
          else if (!strcmp(key, "brightness")) s_vs.brightness = v;
          else if (!strcmp(key, "gamma")) s_vs.gamma = v;
@@ -370,7 +390,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
          else if (!strcmp(key, "show_fps")) s_vs.show_fps = v;
          else if (!strcmp(key, "aniso")) s_vs.aniso = v;
          else if (!strcmp(key, "fps_limit")) s_vs.fps_limit = v;
-@@ -175,7 +180,8 @@
+@@ -175,7 +191,8 @@
      case MI_LIGHTING: return 3;
      case MI_VSYNC: case MI_FPS: case MI_WIDE: return 2;
      case MI_BRIGHT: case MI_GAMMA: return 21;
@@ -380,7 +400,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      case MI_LIMIT: return FPS_LIMITS;
      }
      return 1;
-@@ -288,7 +294,7 @@
+@@ -288,7 +305,7 @@
      SDL_GPUTexture       *fb_tex;
      SDL_GPUTransferBuffer*fb_tbuf;
      uint32_t              fb_w, fb_h;
@@ -389,7 +409,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      uint8_t              *fb_staging;
      size_t                fb_staging_capacity;
  #endif
-@@ -350,7 +356,7 @@
+@@ -350,7 +367,7 @@
       * allocation or guest-address arithmetic can wrap. */
      if (row_bytes > pitch || height > UINT32_MAX / row_bytes) return;
      size_t frame_bytes = (size_t)(row_bytes * height);
@@ -398,7 +418,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      if (s_sdl_pr.fb_staging_capacity < frame_bytes) {
          uint8_t *replacement = (uint8_t *)realloc(s_sdl_pr.fb_staging, frame_bytes);
          if (!replacement) return;
-@@ -396,7 +402,7 @@
+@@ -396,7 +413,7 @@
 
      uint8_t *mapped = (uint8_t *)SDL_MapGPUTransferBuffer(s_sdl_pr.gpu, s_sdl_pr.fb_tbuf, true);
      if (!mapped) return;
@@ -1330,7 +1350,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_vpcache.inc.c"
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
-@@ -310,6 +350,7 @@
+@@ -310,8 +350,10 @@
              sg_present_flip();
          else
              sg_download_all();
@@ -1338,6 +1358,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
          sg_stats_tick();
          s_sg_frame++;
          sg_probe_flip();
+-    }
+-}
++        sg_frame_pace();
++    }
++}
 diff --git a/src/kernel/sdlgpu/sdlgpu_clip.h b/src/kernel/sdlgpu/sdlgpu_clip.h
 new file mode 100644
 index 0000000..c06e770
@@ -1586,11 +1611,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
              }
              SDL_EndGPUCopyPass(copy);
              for (i = 0; i < q->upload_count; i++)
-@@ -329,14 +360,18 @@
+@@ -329,14 +360,22 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
 +            SDL_Rect scissors[SG_CLIP_SCISSORS];
++            SDL_FColor bound_blend = {0};
++            SDL_Rect bound_scissor = {0};
++            Uint8 bound_stencil = 0;
++            int have_blend = 0, have_stencil = 0, have_scissor = 0;
 
              SDL_SetGPUViewport(pass, &view);
              for (i = 0; i < q->count; i++) {
@@ -1606,15 +1635,25 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,7 +385,6 @@
+@@ -350,9 +389,14 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
 -                SDL_SetGPUScissor(pass, &qd->scissor);
-                 SDL_SetGPUBlendConstants(pass, qd->blend_constant);
-                 SDL_SetGPUStencilReference(pass, qd->stencil_ref);
+-                SDL_SetGPUBlendConstants(pass, qd->blend_constant);
+-                SDL_SetGPUStencilReference(pass, qd->stencil_ref);
++                if (!have_blend || memcmp(&bound_blend, &qd->blend_constant, sizeof bound_blend)) {
++                    SDL_SetGPUBlendConstants(pass, qd->blend_constant);
++                    bound_blend = qd->blend_constant; have_blend = 1;
++                }
++                if (!have_stencil || bound_stencil != qd->stencil_ref) {
++                    SDL_SetGPUStencilReference(pass, qd->stencil_ref);
++                    bound_stencil = qd->stencil_ref; have_stencil = 1;
++                }
                  SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-@@ -360,9 +394,13 @@
+                 SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
+                 SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
+@@ -360,9 +404,16 @@
                  if (qd->index_count) {
                      SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
                      SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -1623,7 +1662,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 -                    SDL_DrawGPUPrimitives(pass, qd->vertex_count, 1, 0, 0);
 +                }
 +                for (k = 0; k < scissor_count; k++) {
-+                    SDL_SetGPUScissor(pass, &scissors[k]);
++                    if (!have_scissor || memcmp(&bound_scissor, &scissors[k], sizeof bound_scissor)) {
++                        SDL_SetGPUScissor(pass, &scissors[k]);
++                        bound_scissor = scissors[k]; have_scissor = 1;
++                    }
 +                    if (qd->index_count)
 +                        SDL_DrawGPUIndexedPrimitives(pass, qd->index_count, 1, 0, 0, 0);
 +                    else
@@ -1631,7 +1673,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  }
              }
              SDL_EndGPURenderPass(pass);
-@@ -385,6 +423,7 @@
+@@ -385,6 +436,7 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -1639,7 +1681,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +495,7 @@
+@@ -456,7 +508,7 @@
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},
@@ -1816,7 +1858,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      SDL_GPUTexture *tex;
      uint32_t        last_use;
      uint32_t        epoch_used; /* s_sg_queue.epoch when last used: in flight
-@@ -29,6 +29,7 @@
+@@ -29,10 +29,33 @@
      SgCachedTexture *pending;   /* cache slot to mark valid once the upload is issued */
      uint64_t         pending_key;
      SDL_GPUSampler *sampler;
@@ -1824,7 +1866,33 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  } SgTextureUse;
 
  static SgCachedTexture s_sg_textures[SG_MAX_TEXTURES];
-@@ -41,7 +42,7 @@
+ static uint32_t        s_sg_texture_tick;
++
++/* A verified direct hint avoids scanning 512 entries on every texture bind.
++ * Hints may outlive eviction: always compare the full key and dimensions. */
++#define SG_TEXTURE_HINTS 2048u
++static uint16_t s_sg_texture_hint[SG_TEXTURE_HINTS];
++static SgCachedTexture *sg_texture_find(uint64_t key, uint32_t w, uint32_t h, uint32_t layers)
++{
++    uint32_t bucket = (uint32_t)(key ^ (key >> 32)) & (SG_TEXTURE_HINTS - 1u);
++    uint32_t hint = s_sg_texture_hint[bucket];
++    if (hint) {
++        SgCachedTexture *c = &s_sg_textures[hint - 1u];
++        if (c->key == key && c->w == w && c->h == h && c->layers == layers) return c;
++    }
++    for (uint32_t i = 0; i < SG_MAX_TEXTURES; i++) {
++        SgCachedTexture *c = &s_sg_textures[i];
++        if (c->key == key && c->w == w && c->h == h && c->layers == layers) {
++            s_sg_texture_hint[bucket] = (uint16_t)(i + 1u);
++            return c;
++        }
++    }
++    return NULL;
++}
+
+
+
+@@ -41,7 +64,7 @@
   * from guest RAM are remembered (a malloc'd snapshot copy can reuse an
   * address). Limitation: a texture the title rewrites in place after using
   * it in the same frame reaches the GPU one frame late. */
@@ -1833,7 +1901,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  typedef struct {
      const uint8_t *pixels;
-@@ -130,7 +131,7 @@
+@@ -130,7 +153,7 @@
 
  /* Everything that decides the decoded texels: raw bytes, palette, format,
   * size, row pitch. Wrap and clamp are shader state, not part of the key. */
@@ -1842,7 +1910,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  {
      const TextureSnapshot *snap = &s_texture_snapshot[st];
      const Texture *tx = sg_stage_texture(st);
-@@ -138,9 +139,25 @@
+@@ -138,9 +161,25 @@
      uint64_t h;
 
      if (!snap->owned) {
@@ -1871,7 +1939,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
              memcmp(m->shape, shape, sizeof shape) != 0) {
              m->pixels = snap->pixels;
              m->bytes = snap->bytes;
-@@ -148,11 +165,13 @@
+@@ -148,11 +187,13 @@
              m->frame = s_sg_frame;
              m->hash = sg_hash(snap->pixels, snap->bytes,
                                sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
@@ -1886,7 +1954,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      if (tx->color == 0x0B)                    /* 1 KB palette: cheap, hashed every time */
          h = sg_hash((const uint8_t *)snap->palette, sizeof snap->palette, h);
-@@ -160,10 +179,13 @@
+@@ -160,10 +201,13 @@
  }
 
  /* Decode a stage into s_sg_decode[st]. 0 if the software path cannot read it. */
@@ -1903,7 +1971,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
      if (n > s_sg_decode_texels[st]) {
          uint32_t *grown = (uint32_t *)realloc(s_sg_decode[st], n * 4);
-@@ -172,14 +194,20 @@
+@@ -172,14 +216,20 @@
          s_sg_decode[st] = grown;
          s_sg_decode_texels[st] = n;
      }
@@ -1932,7 +2000,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      return 1;
  }
 
-@@ -188,11 +216,13 @@
+@@ -188,11 +238,13 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -1948,7 +2016,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,21 +238,35 @@
+@@ -208,23 +260,35 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -1976,18 +2044,24 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -    key = sg_texture_key(st);
 +    key = sg_texture_key(st, refreshed);
      s_sg_texture_tick++;
-     for (i = 0; i < SG_MAX_TEXTURES; i++) {
-         SgCachedTexture *c = &s_sg_textures[i];
+-    for (i = 0; i < SG_MAX_TEXTURES; i++) {
+-        SgCachedTexture *c = &s_sg_textures[i];
 -        if (c->key == key && c->w == w && c->h == h) {
-+        if (c->key == key && c->w == w && c->h == h && c->layers == layers) {
-             c->last_use = s_sg_texture_tick;
-             c->epoch_used = s_sg_queue.epoch;
+-            c->last_use = s_sg_texture_tick;
+-            c->epoch_used = s_sg_queue.epoch;
 -            *use = (SgTextureUse){ c->tex, NULL, w, h, NULL, 0, sg_sampler_for_stage(st) };
-+            *use = (SgTextureUse){ c->tex, NULL, w, h, NULL, 0, sg_sampler_for_stage(st), layers };
-             return 1;
-         }
+-            return 1;
+-        }
++    SgCachedTexture *cached = sg_texture_find(key, w, h, layers);
++    if (cached) {
++        cached->last_use = s_sg_texture_tick;
++        cached->epoch_used = s_sg_queue.epoch;
++        *use = (SgTextureUse){ cached->tex, NULL, w, h, NULL, 0, sg_sampler_for_stage(st), layers };
++        return 1;
      }
-@@ -245,18 +289,18 @@
+
+     /* Evict the least recently used slot that no queued draw still needs;
+@@ -245,18 +309,18 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -2011,7 +2085,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +310,7 @@
+@@ -266,6 +330,7 @@
              return 0;
          slot->w = w;
          slot->h = h;
@@ -2019,7 +2093,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +318,7 @@
+@@ -273,7 +338,7 @@
      slot->key = 0;
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
@@ -2028,7 +2102,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -291,4 +336,4 @@
+@@ -291,4 +356,4 @@
      if (use->pending)
          use->pending->key = use->pending_key;
      use->pending = NULL;
@@ -2363,14 +2437,39 @@ diff --git a/src/kernel/sdlgpu/shaders/flat2d.frag b/src/kernel/sdlgpu/shaders/f
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
-@@ -1,6 +1,5 @@
+@@ -1,6 +1,30 @@
 
  void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
 -uint32_t xbox_FramebufferWindowVa(void);
++
++/* Pace completed game frames, not just repeated scanout of the last texture.
++ * Keep an absolute fractional deadline and never catch up in a burst after
++ * a slow frame. Release the guest lock while waiting so audio/input run. */
++static void sg_frame_pace(void)
++{
++#ifdef __EMSCRIPTEN__
++    static uint64_t deadline;
++    static int previous_limit;
++    int limit = xbox_VideoFpsLimit();
++    uint64_t now = SDL_GetTicksNS();
++    if (limit != 30) { deadline = 0; previous_limit = limit; return; }
++    const uint64_t period = 1000000000ull / 30u;
++    if (previous_limit != limit || !deadline) deadline = now;
++    previous_limit = limit;
++    if (now < deadline) {
++        int depth = xbox_ggl_release_all();
++        SDL_DelayNS(deadline - now);
++        xbox_ggl_reacquire(depth);
++        now = SDL_GetTicksNS();
++    }
++    if (now > deadline + period) deadline = now;
++    deadline += period;
++#endif
++}
 
  static struct {
      SDL_Mutex      *lock;             /* tex, w, h: replaced on the flip thread */
-@@ -66,16 +65,22 @@
+@@ -66,16 +90,22 @@
          if (s_sgp.tex) {
              SDL_GPUBlitInfo blit;
              float dw = (float)sw, dh = (float)sh;
@@ -2398,7 +2497,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
              blit.destination.texture = swap;
              blit.destination.x = (Uint32)(((float)sw - dw) * 0.5f);
              blit.destination.y = (Uint32)(((float)sh - dh) * 0.5f);
-@@ -103,15 +108,22 @@
+@@ -103,15 +133,22 @@
   * renderer holds (the previous frame stays). */
  static void sg_present_flip(void)
  {
@@ -2424,7 +2523,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -178,4 +190,4 @@
+@@ -178,4 +215,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);
@@ -2668,7 +2767,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  }
 
  /* ── 3D batches with the vertex program on the GPU ──────────────────────
-@@ -339,13 +365,52 @@
+@@ -339,13 +365,61 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -2680,6 +2779,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t ix_cap;
      uint32_t map[65536], map_gen[65536], gen; /* guest index -> in[] */
      uint32_t nv, inmask;
++    uint8_t active[NV_VERTEX_ATTRS], active_count;
 +    struct {
 +        const uint8_t *base; /* complete index range validated once per batch */
 +        float value[4];
@@ -2688,8 +2788,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  } s_sgvp;
 +
 +static void sg_vp_prepare_inputs(uint32_t max_index) {
++    s_sgvp.active_count = 0;
 +    for (unsigned a = 0; a < NV_VERTEX_ATTRS; a++) {
 +        if (!(s_sgvp.inmask & (1u << a))) continue;
++        s_sgvp.active[s_sgvp.active_count++] = (uint8_t)a;
 +        const VertexAttr *v = &s_gpu.attr[a];
 +        size_t bytes = vertex_attr_bytes(v);
 +        s_sgvp.attr[a].base = NULL;
@@ -2715,7 +2817,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +        memcpy(out, s_sgvp.attr[a].value, 16);
 +    } else if (s_sgvp.attr[a].base) {
 +        out[0] = out[1] = out[2] = 0.0f; out[3] = 1.0f;
-+        vertex_attr_decode(&s_gpu.attr[a], s_sgvp.attr[a].base + (size_t)index * s_gpu.attr[a].stride, out);
++        const VertexAttr *v = &s_gpu.attr[a];
++        const uint8_t *p = s_sgvp.attr[a].base + (size_t)index * v->stride;
++        if (v->type == 2) {
++            /* Validated float arrays need only a short copy; retain the
++             * default zero/one components for vec1/2/3 attributes. */
++            memcpy(out, p, (v->size < 4 ? v->size : 4) * sizeof(float));
++        } else vertex_attr_decode(v, p, out);
 +    } else {
 +        fetch_attr(&s_gpu.attr[a], index, out);
 +    }
@@ -2723,25 +2831,27 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -362,13 +427,12 @@
+@@ -362,14 +436,11 @@
      if (s_sgvp.map_gen[index] == s_sgvp.gen)
          return s_sgvp.map[index];
      k = s_sgvp.nv++;
-+    float *packed = s_sgvp.in + (size_t)k * s_sgvp.input_stride / sizeof(float);
-+    if (!s_sgvp.inmask) memset(packed, 0, 16);
-     for (a = 0; a < NV_VERTEX_ATTRS; a++) {
+-    for (a = 0; a < NV_VERTEX_ATTRS; a++) {
 -        float *o = s_sgvp.in[k][a];
-         if (s_sgvp.inmask >> a & 1) {
+-        if (s_sgvp.inmask >> a & 1) {
 -            fetch_attr(&s_gpu.attr[a], index, o);
 -        } else {
 -            o[0] = o[1] = o[2] = 0.0f;
 -            o[3] = 1.0f;
-+            sg_vp_fetch_input(a, index, packed);
-+            packed += 4;
-         }
+-        }
++    float *packed = s_sgvp.in + (size_t)k * s_sgvp.input_stride / sizeof(float);
++    if (!s_sgvp.inmask) memset(packed, 0, 16);
++    for (a = 0; a < s_sgvp.active_count; a++) {
++        sg_vp_fetch_input(s_sgvp.active[a], index, packed);
++        packed += 4;
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
-@@ -379,7 +443,7 @@
+     s_sgvp.map[index] = k;
+@@ -379,7 +450,7 @@
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
   * CPU path instead: program still compiling or not translatable, points or
   * lines, or out of memory. */
@@ -2750,7 +2860,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
      SDL_GPUGraphicsPipeline *pipe;
-@@ -397,18 +461,42 @@
+@@ -397,18 +468,42 @@
          default:
              return 0; /* points and lines: not on the GPU yet */
      }
@@ -2799,7 +2909,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +509,9 @@
+@@ -421,7 +516,9 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -2810,7 +2920,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +559,10 @@
+@@ -469,10 +566,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -2823,7 +2933,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +584,8 @@
+@@ -494,7 +591,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -2833,7 +2943,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,7 +599,7 @@
+@@ -508,7 +606,7 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -2842,7 +2952,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t sampled = 0;
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
-@@ -540,15 +631,21 @@
+@@ -532,31 +630,41 @@
+     s = sg_surface_current();
+     if (!s)
+         return sg_fallback(SG_FB_TARGET, 1);
+-    pipe = sg_pipeline_current(1, 0);
+-    if (!pipe)
+-        return sg_fallback(SG_FB_BLEND, 1); /* blend state SDL cannot express */
+
+     /* Stage 0 is sampled whenever enabled; stages 1..3 only feed the
       * combiners, and only when their stage program is set (as in
       * raster_triangle_xf). */
      /* Bind each stage's texture when its mode samples one (D3D11 rule). */
@@ -2866,7 +2984,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          s_sg_stats.gpu3d++;
          sg_probe_watch(s, 1);
          return 1;
-@@ -556,7 +653,9 @@
+     }
++    /* The GPU VP path has its own pipeline. Build a CPU-vertex pipeline only
++     * when the draw actually needs the CPU fallback. */
++    pipe = sg_pipeline_current(1, 0);
++    if (!pipe)
++        return sg_fallback(SG_FB_BLEND, 1);
      sg_probe_init();
      s_probe.hit = 0;
      list.count = 0;
@@ -2876,7 +2999,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,14 +668,13 @@
+@@ -569,14 +677,13 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,
