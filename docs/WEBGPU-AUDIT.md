@@ -41,6 +41,15 @@ on Windows and CI's Playwright 1.63.0 / Chromium 153 / SwiftShader on Linux.
   hash lifetime, and depth/stencil clears use the implemented behavior.
 - The launcher preserves its original terminal error when late worker
   progress, video or secondary-abort messages arrive.
+- Guest face culling is now enabled by default across software, CPU-transformed
+  SDL draws and GPU vertex programs. `RECOMP_CULL=0` explicitly disables it for
+  comparisons. This prevents the backs of stadium stands from covering views.
+- Texture minification, magnification and mip filters are independent. LOD0
+  filters and linear render-target images stay at mip zero, including intro
+  text and compositing surfaces.
+- The 3D shader implements the guest's per-stage clamp-to-border colour,
+  including point/bilinear edge coverage and mip transitions. XRGB alpha is
+  forced opaque before border filtering, preserving transparent borders.
 
 ## Regression coverage
 
@@ -51,6 +60,12 @@ depth bias; culling; alpha tests/blending; texture caches and render-target
 copies; window clipping; all six cube layers and generated mips; cropped
 presentation; transfer bounds; failed-recording atomicity; and fence lifetimes.
 GPU validation errors fail the test.
+
+Additional stadium/intro regressions check default CW/CCW and front/back
+culling, two-sided affine presentation geometry, fragment-uniform packing,
+all seven minification modes and mixed min/mag filters. Browser pixels check
+custom RGBA borders, half-covered edges, quarter-covered corners and independent
+axis addressing. `tests/web/test_texture_samplers.py` fails on the former mapping.
 
 The expanded full browser suite completed in isolated local runs in 9.4 seconds
 on Linux SwiftShader/SwANGLE and 2.9 seconds on Windows hardware WebGPU. The original first

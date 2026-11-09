@@ -1,5 +1,27 @@
 # Rendering and performance comparisons
 
+## Stadium and intro rendering — November 8, 2026
+
+The SDL GPU renderer now honors guest face culling by default; the previous
+opt-in left the backs of near-side stands visible over stadium views.
+`RECOMP_CULL=0` remains available for comparisons. CPU-transformed and GPU
+vertex draws use the same policy; two-sided affine intro geometry is preserved
+when the game disables culling.
+
+Texture minification no longer inherits the magnification filter. The seven
+NV2A minification modes select texel and mip filtering separately; linear RTTs
+and LOD0 filters do not sample generated mip levels. The fragment shader also
+emulates per-stage clamp-to-border colours, which SDL/WebGPU samplers cannot
+express, rather than repeating the last texel of intro text/glow textures.
+These mappings were checked against [xemu's sampler implementation](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/vk/texture.c).
+
+Exact browser pixels cover transparent edges/corners, custom border colours
+and XRGB alpha. Native tests cover culling and uniform packing. This is not
+verification of every stadium or every staff model, and authored mip images,
+LOD bias/clamp fidelity and matched Xbox reference captures still need work.
+
+## Earlier comparisons — November 7, 2026
+
 Reviewed November 7, 2026, while fixing player lighting and measuring the
 WebGPU port. These are architectural comparisons, not FPS comparisons
 between different games or machines.
