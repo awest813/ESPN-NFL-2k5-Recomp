@@ -125,4 +125,8 @@ async function act(c){
       try{if(!await act(JSON.parse(line)))return;}catch(e){console.log('ERROR',e.message);}
     }}
   }finally{clearInterval(timer);await flush();if(context)await context.close();}
-})().catch(e=>{console.error(e);process.exitCode=1;});
+})().catch(async e=>{
+  console.error(e);process.exitCode=1;
+  // Startup can fail before the command loop's finally block is reached.
+  if(context){const closing=context;context=null;await closing.close();}
+});

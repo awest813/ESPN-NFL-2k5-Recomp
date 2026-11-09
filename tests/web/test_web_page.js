@@ -258,12 +258,23 @@ async function playAndCheckXbe(page, want, label) {
       await page.waitForFunction(() => !document.querySelector('#disc-installed').hidden);
       await page.evaluate(hash => {
         KNOWN_XBE[hash] = 'synthetic test fixture'; renderDisc();
-        NFL2K5Launch.start = async options => { window.testLaunchEnv=options.env; options.onAbort('simulated startup failure'); return {}; };
+        NFL2K5Launch.start = async options => { window.testLaunchOptions=options; window.testLaunchEnv=options.env; options.onAbort('simulated startup failure'); return {}; };
       }, want.xbe_sha256);
       await page.click('#play');
       await page.waitForFunction(() => !document.querySelector('#reload').hidden);
       check(await page.$eval('#play', b => b.disabled) && /simulated startup failure/.test(await page.textContent('#launch-status')),
             'aborted startup offers reload and prevents a duplicate runtime');
+      await page.evaluate(() => {
+        // Worker startup messages can arrive after the terminal abort.
+        // They must not make a failed session look playable again.
+        testLaunchOptions.onProgress('Preparing video');
+        testLaunchOptions.onGpuPresent(true);
+        testLaunchOptions.onAbort('secondary worker failure');
+      });
+      check(await page.textContent('#game-status') === 'Game stopped · reload to try again' &&
+        /simulated startup failure/.test(await page.textContent('#launch-status')) &&
+        !(await page.textContent('#launch-status')).includes('secondary worker failure'),
+        'late worker messages preserve the stopped state and original failure');
       check(await page.evaluate(() => testLaunchEnv.includes('NFL2K5_FPS_LIMIT=30')) &&
         await page.$eval('#fps-limit',b=>b.disabled), '30 FPS choice reaches the runtime; aborted sessions disable changes');
       await page.click('#diagnostics summary');

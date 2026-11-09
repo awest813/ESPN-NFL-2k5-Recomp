@@ -285,9 +285,13 @@ async function play() {
     env: ['NFL2K5_SKIP_INTRO=1', `NFL2K5_FPS_LIMIT=${$('fps-limit').value}`, ...params.getAll('env')],
     print: (t) => log(t),
     printErr: (t) => log(t, 'stderr'),
-    onProgress: (text) => { if (text) $('game-status').textContent = text; },
+    onProgress: (text) => { if (text && !state.launchError) $('game-status').textContent = text; },
     onAbort: (what) => launchFailed('Aborted: ' + what),
-    onGpuPresent: (on) => { log(on ? 'Video: WebGPU' : 'Video: software'); $('game-status').textContent = on ? 'Playing · WebGPU' : 'Playing · software graphics'; },
+    onGpuPresent: (on) => {
+      if (state.launchError) return;
+      log(on ? 'Video: WebGPU' : 'Video: software');
+      $('game-status').textContent = on ? 'Playing · WebGPU' : 'Playing · software graphics';
+    },
   }).then(() => {
     if (!state.launchError) {
       state.running = true;
@@ -301,6 +305,7 @@ async function play() {
 }
 
 function launchFailed(message) {
+  if (state.launchError) return;
   state.running = false;
   state.launchError = message;
   $('game-status').textContent = 'Game stopped · reload to try again';
