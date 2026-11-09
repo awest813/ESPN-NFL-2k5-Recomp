@@ -1722,7 +1722,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
-@@ -360,9 +438,16 @@
+@@ -360,19 +438,27 @@
                  if (qd->index_count) {
                      SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
                      SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -1742,7 +1742,20 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  }
              }
              SDL_EndGPURenderPass(pass);
-@@ -385,6 +470,7 @@
+         }
+-        SDL_SubmitGPUCommandBuffer(cmd);
+-        ok = 1;
++        ok = SDL_SubmitGPUCommandBuffer(cmd);
+     }
+
+ failed:
+     if (!ok) {
++        if (q->upload_surface && q->surface)
++            q->surface->owner = SG_OWNER_GUEST;
+         static int told;
+         if (!told++)
+             fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
+@@ -385,6 +471,7 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -1750,7 +1763,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +542,7 @@
+@@ -456,7 +543,7 @@
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},
@@ -2566,6 +2579,31 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
  }
 
  /* Colour and depth-stencil textures for a new w x h surface. */
+@@ -137,7 +170,11 @@
+         sg_gpu_error("download: submit");
+         return;
+     }
+-    SDL_WaitForGPUFences(s_sg.dev, true, &done, 1);
++    if (!SDL_WaitForGPUFences(s_sg.dev, true, &done, 1)) {
++        SDL_ReleaseGPUFence(s_sg.dev, done);
++        sg_gpu_error("download: wait");
++        return; /* unconfirmed bytes must not overwrite guest RAM */
++    }
+     SDL_ReleaseGPUFence(s_sg.dev, done);
+
+     src = (const uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.download, false);
+@@ -235,7 +272,10 @@
+         return 0; /* software clears instead */
+     }
+     SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &color, 1, &depth));
+-    SDL_SubmitGPUCommandBuffer(cmd);
++    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
++        sg_gpu_error("clear: submit");
++        return 0;
++    }
+     if (channels)
+         s->owner = SG_OWNER_GPU; /* the GPU copy is now the newer one */
+     /* Clear the software depth/stencil buffers as well. A 3D batch that
 diff --git a/src/kernel/sdlgpu/shaders/flat2d.frag b/src/kernel/sdlgpu/shaders/flat2d.frag
 --- a/src/kernel/sdlgpu/shaders/flat2d.frag
 +++ b/src/kernel/sdlgpu/shaders/flat2d.frag
@@ -2871,7 +2909,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  #include <SDL3/SDL.h>
  #include <math.h>
  #include <stdint.h>
-@@ -18,79 +18,48 @@
+@@ -18,79 +18,68 @@
  #include <stdlib.h>
  #include <string.h>
 
@@ -2893,7 +2931,27 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 -static uint32_t g_color_mask = 0x01010101u;
 +/* Exercise the actual executor state and decoding, so renderer changes
 + * cannot silently outgrow a duplicate test-only layout. */
++static int fail_next_submit, fail_next_wait;
++static bool checked_submit(SDL_GPUCommandBuffer *command);
++static bool checked_wait(SDL_GPUDevice *device, bool all, SDL_GPUFence *const *fences, Uint32 count);
++#define SDL_SubmitGPUCommandBuffer checked_submit
++#define SDL_WaitForGPUFences checked_wait
 +#include "kernel/nv2a_pb_exec.c"
++#undef SDL_SubmitGPUCommandBuffer
++#undef SDL_WaitForGPUFences
++static bool checked_submit(SDL_GPUCommandBuffer *command)
++{
++    if (fail_next_submit) {
++        fail_next_submit = 0; SDL_CancelGPUCommandBuffer(command);
++        SDL_SetError("injected submit failure"); return false;
++    }
++    return SDL_SubmitGPUCommandBuffer(command);
++}
++static bool checked_wait(SDL_GPUDevice *device, bool all, SDL_GPUFence *const *fences, Uint32 count)
++{
++    if (fail_next_wait) { fail_next_wait = 0; SDL_SetError("injected wait failure"); return false; }
++    return SDL_WaitForGPUFences(device, all, fences, count);
++}
  static uint8_t *g_ram;
 -static void *xbox_GetMemoryOffset(void) { return g_ram; }
 -static void *xbox_FramebufferWindowHwnd(void) { return (void *)1; }
@@ -2984,7 +3042,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  {
      uint32_t out = 0;
      for (int sh = 0; sh < 32; sh += 8)
-@@ -165,7 +134,7 @@
+@@ -165,7 +154,7 @@
                      if (su < 0) su = 0;
                      if (sv < 0) sv = 0;
                      if (sample_texture((uint32_t)su, (uint32_t)sv, &texel)) {
@@ -2993,7 +3051,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
                          continue;
                      }
                  }
-@@ -208,9 +177,9 @@
+@@ -208,9 +197,9 @@
      for (int i = 0; i < SG_MAX_SURFACES; i++)        /* the title wrote the surface */
          if (s_sg.surf[i].color) s_sg.surf[i].owner = SG_OWNER_GUEST;
 
@@ -3005,7 +3063,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -243,22 +212,21 @@
+@@ -243,22 +232,21 @@
      memset(g_ram + 0x100000, 0x5A, 640 * 480 * 4);
      s_gpu.clear_color = 0xFF2040C0u;
      CHECK(sg_clear(0xF0) == 1, "full colour clear not taken by the GPU");
@@ -3031,7 +3089,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +235,8 @@
+@@ -267,8 +255,8 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -3042,7 +3100,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
      run_scene("textured, wrapped, modulated, negative u clamps", 0);
 
-@@ -308,7 +276,10 @@
+@@ -308,7 +296,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -3054,6 +3112,39 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
+@@ -322,6 +313,32 @@
+     CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
+     s_gpu.blend = 0;
+
++    /* Inject failures at the real renderer boundary. Rejected submissions
++     * cannot publish uploads or overwrite a newer guest surface; failed
++     * waits cannot copy unconfirmed readback bytes into guest RAM. */
++    s_gpu.tex.valid = 1; s_gpu.blend = 0;
++    for (int i = 0; i < 64; i++) tex[i] = 0xFF0000FFu;
++    s_sg_frame++;
++    g_ntris = 2; quad(0, 0, 0, 32, 32, 0, 0, 8, 8, 0xFFFFFFFFu, 1);
++    uint32_t *first = (uint32_t *)(g_ram + s_gpu.color_offset);
++    *first = 0xFF123456u;
++    sg_surface_current()->owner = SG_OWNER_GUEST;
++    upload_scene(); fail_next_submit = 1;
++    CHECK(sg_draw_batch(1) == 1, "fault test batch did not queue");
++    download_frame();
++    CHECK(!fail_next_submit && *first == 0xFF123456u, "rejected queued submit overwrote newer guest pixels");
++    run_scene("texture upload retries after rejected submission", 0);
++    uint32_t before = *first;
++    s_gpu.clear_color = 0xFFFF0000u;
++    fail_next_submit = 1;
++    CHECK(sg_clear(0xF0) == 0, "rejected clear was reported as successful");
++    CHECK(sg_clear(0xF0) == 1, "clear retry did not reach the GPU");
++    fail_next_wait = 1;
++    sg_download_all();
++    CHECK(!fail_next_wait && *first == before, "failed fence wait copied unconfirmed GPU bytes");
++    sg_download_all();
++    CHECK(*first == 0xFFFF0000u, "readback retry did not restore GPU pixels");
++
+     printf("%s (driver %s)\n", fails ? "FAILED" : "ALL PASS", s_sg.dev ? SDL_GetGPUDeviceDriver(s_sg.dev) : "none");
+     SDL_Quit();
+     return fails != 0;
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -8365,11 +8456,12 @@ index 0000000..a5fab6d
 +add_dependencies(sdlgpu_web sdlgpu_web_page)
 diff --git a/tests/sdlgpu_web/index.html b/tests/sdlgpu_web/index.html
 new file mode 100644
-index 0000000..b38cc60
+index 0000000..277a811
 --- /dev/null
 +++ b/tests/sdlgpu_web/index.html
-@@ -0,0 +1,22 @@
-+<!doctype html><html><head><meta charset="utf-8"><title>sdlgpu web</title></head>
+@@ -0,0 +1,23 @@
++<!doctype html><html><head><meta charset="utf-8"><title>sdlgpu web</title>
++<style>canvas{position:absolute;left:0;top:0}</style></head>
 +<body style="margin:0;background:#222">
 +<!-- #canvas: SDL's window. #gpucanvas: the WebGPU device's presentation
 +     canvas, handed to the module's main thread at startup. -->
@@ -8393,10 +8485,10 @@ index 0000000..b38cc60
 +</body></html>
 diff --git a/tests/sdlgpu_web/test_page.js b/tests/sdlgpu_web/test_page.js
 new file mode 100644
-index 0000000..15291b0
+index 0000000..4691e41
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_page.js
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,80 @@
 +// Runs test_web.c's build in headless Chromium with WebGPU (SwiftShader):
 +//   node test_page.js <build dir>
 +// Fails on any "FAIL:" line, on WebGPU validation errors the shim reports,
@@ -8431,21 +8523,25 @@ index 0000000..15291b0
 +  let failures = 0;
 +  let page;
 +  try {
-+    page = await browser.newPage();
++    page = await browser.newPage({viewport:{width:800,height:600}});
 +    page.on('console', (m) => console.log(`browser ${m.type()}: ${m.text()}`));
 +    page.on('requestfailed', (r) => console.log('request failed:', r.url(), r.failure()?.errorText));
 +    page.on('pageerror', (e) => { failures++; console.log('pageerror:', e.message); });
 +    await page.goto(url);
 +    await page.waitForFunction(() => window.L && L.some((l) => /^PRESENTED|SDLGPU-WEB DONE|^FAILED/.test(l)),
 +                               null, { timeout: 120000 });
-+    await page.waitForTimeout(300);
-+    const canvas = await page.evaluate(() => {
++    // Queue completion and OffscreenCanvas presentation are asynchronous.
++    // Wait for the observable frame instead of guessing a compositor delay.
++    await page.waitForFunction(() => {
 +      const c = document.getElementById('gpucanvas');
 +      const k = document.createElement('canvas'); k.width = c.width; k.height = c.height;
 +      const g = k.getContext('2d'); g.drawImage(c, 0, 0);
-+      return { hidden: c.hidden, w: c.width, h: c.height,
++      window.canvasReadback = { hidden: c.hidden, w: c.width, h: c.height,
 +               px: Array.from(g.getImageData(c.width >> 1, c.height >> 1, 1, 1).data) };
-+    });
++      return L.some(l => /^FAILED/.test(l)) ||
++        (!c.hidden && canvasReadback.px.every((value, i) => value === [0,192,48,255][i]));
++    }, null, {timeout:15000, polling:'raf'}).catch(() => {});
++    const canvas = await page.evaluate(() => window.canvasReadback);
 +    await page.waitForFunction(() => L.some((l) => /SDLGPU-WEB DONE/.test(l)), null, { timeout: 60000 }).catch(() => {});
 +    const log = await page.evaluate(() => L.slice());
 +    for (const l of log) console.log(l);
@@ -8453,9 +8549,9 @@ index 0000000..15291b0
 +    const errors = log.filter((l) => /\[WebGPU\] (device error|device lost|no device|no adapter|download|fence)/.test(l));
 +    if (errors.length) { failures += errors.length; console.log('FAIL: WebGPU reported errors'); }
 +    else console.log('ok: no WebGPU validation errors');
-+    const ok = !canvas.hidden && canvas.px[0] === 0 && canvas.px[1] === 0xC0 && canvas.px[2] === 0x30;
++    const ok = !canvas.hidden && canvas.px.every((value, i) => value === [0,192,48,255][i]);
 +    if (!ok) failures++;
-+    console.log(`${ok ? 'ok' : 'FAIL'}: presented canvas ${canvas.w}x${canvas.h} visible=${!canvas.hidden} centre ${JSON.stringify(canvas.px)} (0,192,48 expected)`);
++    console.log(`${ok ? 'ok' : 'FAIL'}: presented canvas ${canvas.w}x${canvas.h} visible=${!canvas.hidden} centre ${JSON.stringify(canvas.px)} (0,192,48,255 expected)`);
 +    if (!log.some((l) => /SDLGPU-WEB DONE rc=0/.test(l))) failures++;
 +  } catch (error) {
 +    if (page && !page.isClosed()) {
@@ -8475,10 +8571,10 @@ index 0000000..15291b0
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..418ad56
+index 0000000..4e4fe2e
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,832 @@
+@@ -0,0 +1,834 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -9302,7 +9398,9 @@ index 0000000..418ad56
 +                                  .destination = { .texture = swap, .x = 0, .y = 0, .w = sw, .h = sh },
 +                                  .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 }, .filter = SDL_GPU_FILTER_NEAREST };
 +            SDL_BlitGPUTexture(c, &b);
-+            SDL_SubmitGPUCommandBuffer(c);
++            SDL_GPUFence *presented = SDL_SubmitGPUCommandBufferAndAcquireFence(c);
++            CHECK(presented && SDL_WaitForGPUFences(dev, true, &presented, 1), "presented frame %d completes on the queue", frame);
++            SDL_ReleaseGPUFence(dev, presented);
 +        }
 +        printf("PRESENTED 00C030\n");   /* test_page.js reads the canvas now */
 +    }

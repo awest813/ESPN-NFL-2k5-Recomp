@@ -21,6 +21,12 @@ on Windows and CI's Playwright 1.63.0 / Chromium 153 / SwiftShader on Linux.
   Readbacks and texture copies preserve the selected cube layer.
 - Readback allocation/map failures propagate to submission results. Object
   allocation failures are checked and surface-capability arrays are released.
+- Renderer callers honor failed submissions/waits, preserve newer guest
+  pixels, invalidate unpublished texture uploads and retry readbacks. Native
+  fault injection verifies those behaviors against real GPU resources.
+- Presentation checks wait for actual opaque canvas pixels and completed
+  queue work. The test overlays its two canvases, matching the launcher, so
+  the GPU canvas stays fully in view on hosted runners.
 - Browser test failures retain module logs and print browser errors, adapter
   information and elapsed time. Startup aborts are reported directly.
 - Linux CI applies the published runtime patch. Its native GPU fixture now
