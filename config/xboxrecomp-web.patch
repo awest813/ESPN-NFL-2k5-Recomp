@@ -4063,10 +4063,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..85f3e31
+index 0000000..313d97f
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1508 @@
+@@ -0,0 +1,1521 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -5084,6 +5084,7 @@ index 0000000..85f3e31
 +    em_proxying_ctx *ctx;
 +    atomic_int pending;
 +    atomic_int failed;
++    SDL_GPUFence *fence;
 +} Replay;
 +
 +static WGPUTextureView view_of(Replay *r, SDL_GPUTexture *t, uint32_t level, int sampling)
@@ -5415,13 +5416,22 @@ index 0000000..85f3e31
 +    if (r->swap_tex) wgpuTextureRelease(r->swap_tex);
 +}
 +
-+static void do_submit(void *p) { replay((Replay *)p); }
++static void track_fence(void *p);
++static void do_submit(void *p)
++{
++    Replay *r = (Replay *)p;
++    replay(r);
++    if (r->fence) track_fence(r->fence);
++}
 +
 +static void do_submit_download(em_proxying_ctx *ctx, void *p)
 +{
 +    Replay *r = (Replay *)p;
 +    r->ctx = ctx;
 +    replay(r);
++    /* Register completion before starting asynchronous readbacks, so their
++     * waiter does not need a second proxy/promise round trip afterwards. */
++    if (r->fence) track_fence(r->fence);
 +    atomic_store(&r->pending, (int)r->nrb);
 +    if (!r->nrb) { emscripten_proxy_finish(ctx); return; }
 +    for (uint32_t i = 0; i < r->nrb; i++) {
@@ -5431,11 +5441,11 @@ index 0000000..85f3e31
 +    }
 +}
 +
-+bool WG_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer *c)
++static bool submit(SDL_GPUCommandBuffer *c, SDL_GPUFence *fence)
 +{
 +    if (!c) { SDL_SetError("WebGPU submit: null command buffer"); return false; }
 +    if (c->failed) { cmd_free(c); return false; }
-+    Replay r = { .c = c };
++    Replay r = { .c = c, .fence = fence };
 +    if (c->has_download) run_sync_ctx(do_submit_download, &r);   /* returns with the data in place */
 +    else run_sync(do_submit, &r);
 +    free(r.rb);
@@ -5443,6 +5453,8 @@ index 0000000..85f3e31
 +    if (atomic_load(&r.failed)) { SDL_SetError("WebGPU texture readback failed"); return false; }
 +    return true;
 +}
++
++bool WG_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer *c) { return submit(c, NULL); }
 +
 +static void fence_drop(SDL_GPUFence *f)
 +{
@@ -5462,6 +5474,8 @@ index 0000000..85f3e31
 +
 +static void track_fence(void *p)
 +{
++    SDL_GPUFence *f = (SDL_GPUFence *)p;
++    atomic_fetch_add(&f->refs, 1); /* acquired only when the callback is registered */
 +    WGPUQueueWorkDoneCallbackInfo info = { .mode = WGPUCallbackMode_AllowSpontaneous,
 +        .callback = on_fence, .userdata1 = p };
 +    wgpuQueueOnSubmittedWorkDone(s_queue, info);
@@ -5470,12 +5484,11 @@ index 0000000..85f3e31
 +/* Queue submission is asynchronous even when replay has returned. */
 +SDL_GPUFence *WG_SubmitGPUCommandBufferAndAcquireFence(SDL_GPUCommandBuffer *c)
 +{
-+    if (!WG_SubmitGPUCommandBuffer(c)) return NULL;
 +    SDL_GPUFence *f = (SDL_GPUFence *)calloc(1, sizeof *f);
-+    if (!f) { SDL_SetError("WebGPU fence allocation failed"); return NULL; }
++    if (!f) { if (c) cmd_free(c); SDL_SetError("WebGPU fence allocation failed"); return NULL; }
 +    atomic_init(&f->state, 0);
-+    atomic_init(&f->refs, 2);       /* caller and asynchronous callback */
-+    run_sync(track_fence, f);
++    atomic_init(&f->refs, 1);       /* caller; registration adds the callback */
++    if (!submit(c, f)) { fence_drop(f); return NULL; }
 +    return f;
 +}
 +bool WG_WaitForGPUFences(SDL_GPUDevice *d, bool all, SDL_GPUFence *const *f, Uint32 n)

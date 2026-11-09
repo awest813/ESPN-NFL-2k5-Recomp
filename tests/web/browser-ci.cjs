@@ -1,4 +1,6 @@
-// GPU-less Linux runners need an explicit SwiftShader WebGPU adapter. Keep
+// GPU-less Linux runners need an explicit SwiftShader WebGPU adapter. Use
+// SwANGLE for the compositor too: ANGLE's Vulkan compositor path
+// produced transparent OffscreenCanvas frames/device loss under Xvfb. Keep
 // these test-only flags away from normal launches and hardware benchmarks.
 if (process.platform === 'linux') {
   const {chromium}=require('playwright');
@@ -7,7 +9,7 @@ if (process.platform === 'linux') {
     const args=(options.args||[]).filter(a=>!/^--(?:use-gl|use-angle|use-vulkan|use-webgpu-adapter|enable-features)=/.test(a));
     return launch({...options,channel:'chromium',headless:!process.env.DISPLAY,args:[...args,
       '--enable-unsafe-webgpu','--enable-unsafe-swiftshader','--use-gl=angle',
-      '--use-angle=vulkan','--enable-features=Vulkan','--use-vulkan=swiftshader',
+      '--use-angle=swiftshader','--enable-features=Vulkan','--use-vulkan=swiftshader',
       '--use-webgpu-adapter=swiftshader','--disable-vulkan-surface']});
   };
 }

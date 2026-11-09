@@ -13,6 +13,8 @@ on Windows and CI's Playwright 1.63.0 / Chromium 153 / SwiftShader on Linux.
 - Fences now observe actual asynchronous queue completion. Each submission
   has its own fence, wait-any and wait-all use completion notifications,
   and a callback reference keeps early-released fences alive safely.
+  Completion registration shares the submission handoff, avoiding a second
+  worker round trip after synchronous readbacks.
 - Incomplete recordings fail submission instead of replaying a partial command
   stream or returning a successful fence. Uniform limits, transfer bounds and
   buffer-write alignment are checked before host memory is read or written.
@@ -27,6 +29,10 @@ on Windows and CI's Playwright 1.63.0 / Chromium 153 / SwiftShader on Linux.
 - Presentation checks wait for actual opaque canvas pixels and completed
   queue work. The test overlays its two canvases, matching the launcher, so
   the GPU canvas stays fully in view on hosted runners.
+- Linux browser CI uses SwANGLE for compositing alongside the explicit
+  SwiftShader WebGPU adapter. ANGLE's Vulkan compositing produced transparent
+  frames/device loss on the hosted runner after all offscreen pixel tests
+  had passed. Rendering, validation and opaque-frame assertions remain enabled.
 - Browser test failures retain module logs and print browser errors, adapter
   information and elapsed time. Startup aborts are reported directly.
 - Linux CI applies the published runtime patch. Its native GPU fixture now
@@ -46,8 +52,8 @@ copies; window clipping; all six cube layers and generated mips; cropped
 presentation; transfer bounds; failed-recording atomicity; and fence lifetimes.
 GPU validation errors fail the test.
 
-The expanded full browser suite completed locally in 6.4 seconds on Linux
-SwiftShader and 3.7 seconds on Windows hardware WebGPU. The original first
+The expanded full browser suite completed in isolated local runs in 9.4 seconds
+on Linux SwiftShader/SwANGLE and 2.9 seconds on Windows hardware WebGPU. The original first
 3D draw timed out after 120 seconds. These are test-suite times, not gameplay
 frame-rate measurements.
 
