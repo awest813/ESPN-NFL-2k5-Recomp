@@ -33,6 +33,7 @@ python3 -I "$ROOT/tests/web/test_qemu_clock.py"
 python3 -I "$ROOT/tests/web/test_gpu_fence_wait.py"
 python3 -I "$ROOT/tests/web/test_gameplay_flag_joins.py"
 python3 -I "$ROOT/tests/web/test_apu_lock_handoff.py"
+node "$ROOT/tests/web/test_audit_diagnostics.cjs"
 
 emcc -O2 -I"$ROOT/src/platform/web" "$ROOT/tests/web/test_recomp_web_dev.c" -o "$OUT/test_recomp_web_dev.js"
 node "$OUT/test_recomp_web_dev.js"
@@ -52,6 +53,7 @@ emcmake cmake -S "$ROOT/external/xboxrecomp/tests/sdlgpu_web" -B "$OUT/sdlgpu_we
   -DCMAKE_BUILD_TYPE=Release -DSDL3_DIR="$SDL_DIR" -DCMAKE_C_FLAGS="-pthread" -DCMAKE_CXX_FLAGS="-pthread" >/dev/null
 cmake --build "$OUT/sdlgpu_web" -j "${JOBS:-$(nproc)}"
 if [ "$HAVE_PW" = 1 ]; then
+  node "$ROOT/tests/web/test_audit_browser.cjs"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
   node "$ROOT/tests/web/test_browser_saves.js" "$OUT/smoke"

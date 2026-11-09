@@ -20,6 +20,10 @@ and XRGB alpha. Native tests cover culling and uniform packing. This is not
 verification of every stadium or every staff model, and authored mip images,
 LOD bias/clamp fidelity and matched Xbox reference captures still need work.
 
+The [expanded stadium/staff check](WEB-STADIUM-FIDELITY.md) adds Minnesota's
+enclosed roof and close replay views of photographers, a kneeling cameraman
+and event staff. It records the exercised views and remaining fidelity limits.
+
 ## Earlier comparisons — November 7, 2026
 
 Reviewed November 7, 2026, while fixing player lighting and measuring the

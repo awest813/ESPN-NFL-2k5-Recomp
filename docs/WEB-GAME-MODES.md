@@ -73,6 +73,10 @@ press uses the game's opt-in file queue and holds each button for 200 ms; it
 can cross a dialog or repeat a selection. Verify screenshots after transitions.
 Allow title/VIP-load transitions to finish; idle title starts the attract demo.
 Optional --capture-memory enables read-only guest-memory peek for diagnosis.
+Reports include browser/adapter metadata and separate fatal failures from known
+guest-site diagnostics. Browser exceptions, GPU failures and rejected draws
+override requested pass/partial results and make the CLI exit unsuccessfully.
+The [stadium/staff audit](WEB-STADIUM-FIDELITY.md) documents close replay views.
 
 ## Regression checks
 

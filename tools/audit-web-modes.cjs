@@ -4,6 +4,7 @@
 'use strict';
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
+const {isAuditFailure,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
 const args=process.argv.slice(2);
 const option=(name,fallback)=>{const i=args.indexOf('--'+name);return i<0?fallback:args[i+1];};
 const origin=option('url','http://127.0.0.1:8080/');
@@ -15,21 +16,33 @@ const captureMemory=args.includes('--capture-memory');
 fs.mkdirSync(out,{recursive:true});
 const report={started:new Date().toISOString(),url:origin,cases:[]};
 const events=[];
-let context,page,polling=false,currentCase=null;
+let context,page,flushing=null,currentCase=null;
 const reportPath=path.join(out,'report.json');
-const writeReport=()=>fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');
-async function flush(){
-  if(polling||!page||page.isClosed())return;
-  polling=true;
-  try{
-    const rows=await page.evaluate(()=>window.auditPending?.splice(0)||[]);
-    for(const row of rows){
-      row.hostTime=new Date().toISOString();events.push(row);
-      const offset=/offset ([+-]\d+) from Xbox base/.exec(row.line);
-      if(offset)report.guestMemoryOffset=Number(offset[1]);
-    }
-    if(rows.length)fs.appendFileSync(path.join(out,'runtime.ndjson'),rows.map(r=>JSON.stringify(r)+'\n').join(''));
-  }catch{}finally{polling=false;}
+const writeReport=()=>{
+  report.failures=events.filter(isAuditFailure);
+  fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');
+};
+function browserEvent(line,kind,location){
+  const row={hostTime:new Date().toISOString(),line,kind,...(location?.url?{url:location.url}:{})};
+  events.push(row);fs.appendFileSync(path.join(out,'runtime.ndjson'),JSON.stringify(row)+'\n');
+}
+function flush(){
+  // Case boundaries must wait for an existing timer-driven drain. Returning
+  // early here could mark a case passed before its queued GPU error arrived.
+  if(flushing)return flushing;
+  if(!page||page.isClosed())return Promise.resolve();
+  flushing=(async()=>{
+    try{
+      const rows=await page.evaluate(()=>window.auditPending?.splice(0)||[]);
+      for(const row of rows){
+        row.hostTime=new Date().toISOString();events.push(row);
+        const offset=/offset ([+-]\d+) from Xbox base/.exec(row.line);
+        if(offset)report.guestMemoryOffset=Number(offset[1]);
+      }
+      if(rows.length)fs.appendFileSync(path.join(out,'runtime.ndjson'),rows.map(r=>JSON.stringify(r)+'\n').join(''));
+    }catch{}
+  })().finally(()=>{flushing=null;});
+  return flushing;
 }
 async function prepare(url=origin){
   await flush();
@@ -39,6 +52,15 @@ async function prepare(url=origin){
   target.searchParams.append('env','NFL2K5_PRESS_FILE=/nfl2k5/mode-audit-press.txt');
   await page.goto(target.href);
   await page.waitForSelector('body[data-ready="1"]',{timeout:60000});
+  report.gpu=await page.evaluate(async()=>{
+    try{
+      const adapter=await navigator.gpu?.requestAdapter();
+      if(!adapter)return null;
+      const info=adapter.info;
+      return {vendor:info?.vendor,architecture:info?.architecture,device:info?.device,
+        description:info?.description,isFallbackAdapter:info?.isFallbackAdapter};
+    }catch{return null;}
+  });
   await page.evaluate(()=>{
     window.auditPending=[];
     const previous=log;
@@ -89,8 +111,8 @@ async function act(c){
     case 'end':
       if(!currentCase)throw Error('No active case');
       if(!['pass','fail','partial','blocked'].includes(c.result))throw Error('Result must be pass, fail, partial, or blocked');
-      await flush();Object.assign(currentCase,{result:c.result,detail:c.detail||'',ended:new Date().toISOString(),
-        diagnostics:events.slice(currentCase.eventStart).filter(r=>/\[UNRESOLVED\]|\[FLAGS\]|\[TODO\]|unresolved guest|\[CRASH\]|abort|RuntimeError/i.test(r.line))});
+      await flush();Object.assign(currentCase,{requestedResult:c.result,detail:c.detail||'',ended:new Date().toISOString(),
+        ...caseDiagnostics(c.result,events.slice(currentCase.eventStart))});
       writeReport();result=currentCase;currentCase=null;break;
     case 'reload':result=await prepare(c.url||origin);break;
     case 'peek':
@@ -107,6 +129,7 @@ async function act(c){
         recent:nfl2k5Log.slice(-12)}));break;
     case 'close':{
       await flush();report.ended=new Date().toISOString();writeReport();
+      if(report.failures.length||report.cases.some(c=>c.result==='fail'))process.exitCode=1;
       const closing=context;context=null;await closing.close();return false;
     }
     default:throw Error('Unknown action: '+c.action);
@@ -116,7 +139,18 @@ async function act(c){
 (async()=>{
   context=await chromium.launchPersistentContext(profile,{executablePath,headless:!args.includes('--headed'),viewport:{width:1280,height:900}});
   page=await context.newPage();for(const old of context.pages())if(old!==page)await old.close();
-  page.on('pageerror',e=>{const row={hostTime:new Date().toISOString(),line:'PAGEERROR '+e.message};events.push(row);fs.appendFileSync(path.join(out,'runtime.ndjson'),JSON.stringify(row)+'\n');});
+  page.on('pageerror',e=>browserEvent('PAGEERROR '+e.message,'pageerror'));
+  page.on('crash',()=>browserEvent('PAGEERROR browser page crashed','pageerror'));
+  page.on('console',message=>{
+    if(!['warning','error'].includes(message.type()))return;
+    const location=message.location();
+    // Chrome may request an optional favicon even though the launcher declares none.
+    const favicon=/\/favicon\.ico(?:[?#]|$)/.test(location.url||'');
+    const kind=message.type()==='error'&&!favicon?'browser-error':'browser-warning';
+    browserEvent(`BROWSER ${message.type().toUpperCase()} ${message.text()}`,kind,location);
+  });
+  report.browserVersion=context.browser()?.version();
+  report.viewport={width:1280,height:900};
   console.log('READY',JSON.stringify(await prepare()));writeReport();
   const timer=setInterval(flush,1000);
   try{
