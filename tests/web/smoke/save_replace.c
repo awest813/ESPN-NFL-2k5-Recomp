@@ -51,7 +51,24 @@ int save_replace_smoke(void)
     REQUIRE(xbox_NtQueryFullAttributesFile(&attrs, &info) == STATUS_SUCCESS && info.EndOfFile.QuadPart == 3);
     REQUIRE(xbox_NtSetInformationFile(file, &ios, &remove, sizeof remove,
         XboxFileDispositionInformation) == STATUS_SUCCESS);
+    XBOX_FILE_STANDARD_INFORMATION standard;
+    REQUIRE(xbox_NtQueryInformationFile(file, &ios, &standard, sizeof standard,
+        XboxFileStandardInformation) == STATUS_SUCCESS && standard.DeletePending);
+    REQUIRE(stat(data, &st) == 0);
+    remove.DeleteFile = 0;
+    REQUIRE(xbox_NtSetInformationFile(file, &ios, &remove, sizeof remove,
+        XboxFileDispositionInformation) == STATUS_SUCCESS);
+    REQUIRE(xbox_NtQueryInformationFile(file, &ios, &standard, sizeof standard,
+        XboxFileStandardInformation) == STATUS_SUCCESS && !standard.DeletePending);
+    remove.DeleteFile = 1;
+    REQUIRE(xbox_NtSetInformationFile(file, &ios, &remove, sizeof remove,
+        XboxFileDispositionInformation) == STATUS_SUCCESS);
+    HANDLE duplicate = NULL;
+    REQUIRE(DuplicateHandle(GetCurrentProcess(), file, GetCurrentProcess(),
+        &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS));
     REQUIRE(xbox_NtClose(file) == STATUS_SUCCESS);
+    REQUIRE(stat(data, &st) == 0);
+    REQUIRE(xbox_NtClose(duplicate) == STATUS_SUCCESS);
     REQUIRE(stat(data, &st) != 0);
     name.Length = 12; name.MaximumLength = 13; name.Buffer = "savemeta.xbx";
     REQUIRE(xbox_NtDeleteFile(&attrs) == STATUS_SUCCESS);

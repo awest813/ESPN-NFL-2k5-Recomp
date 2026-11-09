@@ -2814,6 +2814,15 @@ diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
          xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE, "NtCreateFile: path translation failed");
          return STATUS_OBJECT_PATH_NOT_FOUND;
      }
+@@ -996,7 +1019,7 @@
+ {
+     XBOX_TRACE(XBOX_LOG_FILE, "NtClose(handle=%p)", Handle);
+     if (Handle && Handle != INVALID_HANDLE_VALUE) {
+-        CloseHandle(Handle);
++        if (!CloseHandle(Handle)) return errno_to_status(errno);
+         return STATUS_SUCCESS;
+     }
+     return STATUS_INVALID_HANDLE;
 @@ -1005,8 +1028,7 @@
  NTSTATUS __stdcall xbox_NtDeleteFile(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes)
  {
@@ -2824,15 +2833,23 @@ diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
          return STATUS_OBJECT_PATH_NOT_FOUND;
      XBOX_TRACE(XBOX_LOG_FILE, "NtDeleteFile: %s", host_path);
      if (unlink(host_path) == 0) return STATUS_SUCCESS;
-@@ -1113,11 +1135,23 @@
+@@ -1049,7 +1071,7 @@
+             info->EndOfFile.QuadPart = st.st_size;
+             info->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;
+             info->NumberOfLinks = (ULONG)st.st_nlink;
+-            info->DeletePending = FALSE;
++            info->DeletePending = w32_file_delete_pending(FileHandle);
+             info->Directory = S_ISDIR(st.st_mode) ? TRUE : FALSE;
+             IoStatusBlock->Status = STATUS_SUCCESS;
+             IoStatusBlock->Information = sizeof(XBOX_FILE_STANDARD_INFORMATION);
+@@ -1113,11 +1135,28 @@
          }
          case XboxFileDispositionInformation: {
              PXBOX_FILE_DISPOSITION_INFORMATION info = (PXBOX_FILE_DISPOSITION_INFORMATION)FileInformation;
 -            /* POSIX: unlinking an open file removes it on last close -- this
 -             * matches NT "delete on close" semantics exactly. */
-+            /* Remove the name while the handle retains the open object.
-+             * Directories require rmdir, and a failed removal must propagate
-+             * to the caller rather than pretending the save was deleted. */
++            /* File deletion stays pending until the final handle closes.
++             * Directories require rmdir so nonempty saves fail immediately. */
              if (info->DeleteFile) {
                  const char* p = w32_handle_path(FileHandle);
 -                if (p) unlink(p);
@@ -2841,17 +2858,23 @@ diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 +                    IoStatusBlock->Status = STATUS_INVALID_HANDLE;
 +                    return STATUS_INVALID_HANDLE;
 +                }
-+                int result = S_ISDIR(st.st_mode) ? rmdir(p) : unlink(p);
++                /* A regular file is removed after its final handle closes:
++                 * OPFS rejects unlink while the sync access handle is open. */
++                int result;
++                if (S_ISDIR(st.st_mode)) result = rmdir(p);
++                else result = w32_file_delete_on_close(FileHandle, TRUE) ? 0 : -1;
 +                if (result) {
 +                    NTSTATUS status = errno_to_status(errno);
 +                    IoStatusBlock->Status = status;
 +                    IoStatusBlock->Information = 0;
 +                    return status;
 +                }
++            } else {
++                w32_file_delete_on_close(FileHandle, FALSE);
              }
              IoStatusBlock->Status = STATUS_SUCCESS;
              return STATUS_SUCCESS;
-@@ -1197,8 +1231,7 @@
+@@ -1197,8 +1236,7 @@
 
      if (!FileInformation)
          return STATUS_INVALID_PARAMETER;
@@ -3145,6 +3168,18 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      printf("%s (driver %s)\n", fails ? "FAILED" : "ALL PASS", s_sg.dev ? SDL_GetGPUDeviceDriver(s_sg.dev) : "none");
      SDL_Quit();
      return fails != 0;
+diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
+--- a/src/platform/win32_compat.h
++++ b/src/platform/win32_compat.h
+@@ -136,6 +136,8 @@
+ HANDLE      w32_open_handle(int fd, const char *host_path);
+ int         w32_handle_fd(HANDLE h);
+ const char *w32_handle_path(HANDLE h);
++BOOL        w32_file_delete_on_close(HANDLE h, BOOL enabled);
++BOOL        w32_file_delete_pending(HANDLE h);
+
+ /* ---- Events ----------------------------------------------------------- */
+ HANDLE CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialState, LPCSTR name);
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -8184,7 +8219,15 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  #else
  #include <sys/sysinfo.h>
  #endif
-@@ -459,7 +465,15 @@
+@@ -421,6 +427,7 @@
+     int             fd;
+     SIZE_T          map_size;
+     char           *file_path;
++    BOOL            file_delete_pending;
+ } w32_object;
+
+ /* pseudo handles for "current thread"/"current process" */
+@@ -459,7 +466,15 @@
  static uintptr_t *s_reg;            /* 0 = empty, 1 = tombstone */
  static size_t     s_reg_cap, s_reg_used, s_reg_live;
 
@@ -8201,7 +8244,72 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
 
  static void reg_insert_nolock(uintptr_t k)
  {
-@@ -1407,6 +1421,21 @@
+@@ -535,12 +550,17 @@
+     return o;
+ }
+
+-static void obj_release(w32_object *o)
++static BOOL obj_release(w32_object *o)
+ {
+     if (InterlockedDecrement(&o->refcount) > 0)
+-        return;
++        return TRUE;
++    int file_error = 0;
+     if (o->kind == K_FILE) {
+-        if (o->fd >= 0) close(o->fd);
++        if (o->fd >= 0 && close(o->fd)) file_error = errno;
++        /* OPFS cannot remove an entry while its synchronous access handle
++         * is open. Win32 deletion also remains pending until the last close. */
++        if (!file_error && o->file_delete_pending && o->file_path && unlink(o->file_path))
++            file_error = errno;
+         free(o->file_path);
+     } else if (o->kind == K_FILEMAP) {
+         if (o->fd >= 0) close(o->fd);
+@@ -553,6 +573,8 @@
+     pthread_cond_destroy(&o->cond);
+     pthread_cond_destroy(&o->gate);
+     free(o);
++    if (file_error) { errno = file_error; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
++    return TRUE;
+ }
+
+ /* ---- fd-backed file handle (for the file-I/O HLE) -------------------- */
+@@ -576,13 +598,32 @@
+     return (o && o->kind == K_FILE) ? o->file_path : NULL;
+ }
+
++BOOL w32_file_delete_on_close(HANDLE h, BOOL enabled)
++{
++    w32_object *o = (w32_object *)h;
++    if (!o || o->kind != K_FILE) return FALSE;
++    pthread_mutex_lock(&o->lock);
++    o->file_delete_pending = enabled;
++    pthread_mutex_unlock(&o->lock);
++    return TRUE;
++}
++
++BOOL w32_file_delete_pending(HANDLE h)
++{
++    w32_object *o = (w32_object *)h;
++    if (!o || o->kind != K_FILE) return FALSE;
++    pthread_mutex_lock(&o->lock);
++    BOOL pending = o->file_delete_pending;
++    pthread_mutex_unlock(&o->lock);
++    return pending;
++}
++
+ BOOL CloseHandle(HANDLE h)
+ {
+     if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS ||
+         h == INVALID_HANDLE_VALUE)
+         return TRUE;
+-    obj_release((w32_object *)h);
+-    return TRUE;
++    return obj_release((w32_object *)h);
+ }
+
+ BOOL DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc, PHANDLE dst,
+@@ -1407,6 +1448,21 @@
 
  LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
  {
@@ -8223,7 +8331,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      LPVOID result = virtual_alloc_impl(address, size, allocationType, protect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1432,6 +1461,12 @@
+@@ -1432,6 +1488,12 @@
 
  BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
  {
@@ -8236,7 +8344,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_free_impl(address, size, freeType);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1445,6 +1480,14 @@
+@@ -1445,6 +1507,14 @@
 
  BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
  {
@@ -8251,7 +8359,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_protect_impl(address, size, newProtect, oldProtect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1870,9 +1913,23 @@
+@@ -1870,9 +1940,23 @@
                            DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
  {
      (void)file; (void)sa; (void)protect;
@@ -8278,7 +8386,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int fd = anon_map_fd(name);
      if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
      if (ftruncate(fd, (off_t)size) != 0) {
-@@ -1902,6 +1959,20 @@
+@@ -1902,6 +1986,20 @@
 
      off_t  off = ((off_t)offHigh << 32) | offLow;
      SIZE_T len = count ? count : (o->map_size - (SIZE_T)off);
@@ -8299,7 +8407,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int prot   = PROT_READ | ((access != FILE_MAP_READ) ? PROT_WRITE : 0);
      int flags  = MAP_SHARED;
 
-@@ -1948,6 +2019,10 @@
+@@ -1948,6 +2046,10 @@
 
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
@@ -8310,7 +8418,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      size_t len = view_take(baseAddr);
      if (len == 0) return FALSE;
      return munmap((void *)baseAddr, len) == 0;
-@@ -2038,6 +2113,13 @@
+@@ -2038,6 +2140,13 @@
      b->ullAvailPhys     = avail;
      b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
      b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;

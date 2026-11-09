@@ -45,6 +45,10 @@ completion of every season, team, tutorial or historical objective.
   honor the directory handle and FATX case lookup. FileDisposition uses rmdir
   for directories and propagates removal failures. Retail overwrite now
   succeeds, and restarting the game loads the replaced VIP successfully.
+- Browser files marked for deletion now close their OPFS access handle before
+  removing the entry. Deletion remains pending across duplicated handles and
+  can be cancelled; the final close reports any removal failure. The save
+  regression checks these cases through the real Nt APIs.
 
 ## Evidence and reproduction
 
@@ -80,7 +84,7 @@ Optional --capture-memory enables read-only guest-memory peek for diagnosis.
   rollback/recovery, concurrent-tab exclusion and Xbox save replacement
   through the real Nt APIs on OPFS, including rejected nonempty deletion.
 - Fresh application of the published patch to the pinned runtime reproduces
-  all 48 modified/added runtime files exactly (normalizing line endings).
+    all 51 modified/added runtime files exactly (normalizing line endings).
 - test_gameplay_flag_joins.py passes DEC/TEST and transition TEST/CMP paths, wraparound and
   all 256 x87 status bytes, and verifies regeneration/idempotence.
 
