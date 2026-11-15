@@ -347,7 +347,12 @@ provide the rest of the rendering.
   while retaining WebGPU drawing. `?env=RECOMP_SDLGPU=0` forces software drawing.
   The direct presenter defaults to the 640×448 action area of the game's
   720×480 widescreen scanout. Use **Crop sides** in Video Settings to adjust
-  or disable overscan cropping.
+  or disable overscan cropping. The GPU canvas uses a 16:9 backing size,
+  fitted inside the SDL window; fullscreen preserves that shape. The SDL
+  presenter updates the built-in camera patch for the visible action area
+  during match views and restores its menu constants for panels and flat
+  presentation cards. With the default crop, the camera stretch is 56/45.
+  Explicit stretch/zoom modes retain the window shape instead.
 
 Every page that loads a module with this kernel needs a `#gpucanvas`, and the
 module links with em++, because the WebGPU port's library is C++.

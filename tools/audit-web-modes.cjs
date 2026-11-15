@@ -139,7 +139,7 @@ async function act(c){
 (async()=>{
   context=await chromium.launchPersistentContext(profile,{executablePath,headless:!args.includes('--headed'),viewport:{width:1280,height:900}});
   page=await context.newPage();for(const old of context.pages())if(old!==page)await old.close();
-  page.on('pageerror',e=>browserEvent('PAGEERROR '+e.message,'pageerror'));
+  page.on('pageerror',e=>browserEvent('PAGEERROR '+(e.stack||e.message),'pageerror'));
   page.on('crash',()=>browserEvent('PAGEERROR browser page crashed','pageerror'));
   page.on('console',message=>{
     if(!['warning','error'].includes(message.type()))return;

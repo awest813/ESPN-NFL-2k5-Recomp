@@ -1389,7 +1389,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_vpcache.inc.c"
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
-@@ -310,8 +355,10 @@
+@@ -306,12 +351,15 @@
+     if (s_sg.dev) {
+         sg_queue_flush();
+         sg_present_register();
++        sg_present_anamorphic_update();
+         if (sg_present_active())
              sg_present_flip();
          else
              sg_download_all();
@@ -3173,7 +3178,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,9 +220,57 @@
+@@ -231,34 +220,111 @@
      return bad == 0;
  }
 
@@ -3223,6 +3228,35 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_tex_reg[(0x1B14 - NV_TEX_FIRST)/4] = s_tex_reg[(0x1B24 - NV_TEX_FIRST)/4] = 0;
 +}
 +
++static int test_match_view(void) { return 1; }
++static void test_widescreen_camera(void)
++{
++    VideoSettings saved = s_vs;
++    float block[9] = {1.1851852f,0.84375f,56.25f,40,680,720,2,360,1};
++    float *k = (float *)(g_ram + 0x10254);
++    memcpy(k, block, sizeof block);
++    s_vs.widescreen = 1; s_vs.crop = 40;
++    SDL_SetAtomicInt(&s_sgp.aspect, 1777778);
++    xbox_present_in_match_fn = test_match_view;
++    s_frame_vp_draws = 1;
++    sg_present_anamorphic_update();
++    CHECK(fabsf(k[0] - 56.0f/45.0f) < 1e-5f && fabsf(k[0]*k[1]-1) < 1e-5f,
++        "widescreen camera did not compensate the cropped anamorphic display");
++    CHECK(fabsf(k[2]-360*(1-1/k[0])) < 1e-5f, "widescreen HUD offset differs from patch formula");
++    xbox_present_in_match_fn = NULL; s_frame_vp_draws = 1;
++    sg_present_anamorphic_update();
++    CHECK(k[0]==1 && k[1]==1 && k[2]==0, "menu/panel camera retained gameplay squeeze");
++    xbox_present_in_match_fn = test_match_view; s_frame_vp_draws = 1;
++    sg_present_anamorphic_update();
++    for (int i=0;i<6;i++) { s_frame_vp_draws=0; sg_present_anamorphic_update(); }
++    CHECK(k[0]==1, "flat presentation card retained world camera widening");
++    k[3]=39; k[0]=1.5f; s_frame_vp_draws=1;
++    sg_present_anamorphic_update();
++    CHECK(k[0]==1.5f, "unrecognized executable header was modified");
++    memset(k,0,sizeof block); xbox_present_in_match_fn=NULL;
++    SDL_SetAtomicInt(&s_sgp.aspect,0); s_vs=saved;
++}
++
  int main(void)
  {
      setenv("RECOMP_SDLGPU", "1", 1);
@@ -3231,7 +3265,10 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      if (!SDL_Init(SDL_INIT_VIDEO)) { printf("SDL_Init: %s\n", SDL_GetError()); return 2; }
      g_ram = calloc(1, 16u << 20);
      g_ref = calloc(1, 16u << 20);
-@@ -243,22 +280,21 @@
++    test_widescreen_camera();
+
+     /* ---- milestone 0: clears ---- */
+     target(0x100000, 640, 480, 640 * 4);
      memset(g_ram + 0x100000, 0x5A, 640 * 480 * 4);
      s_gpu.clear_color = 0xFF2040C0u;
      CHECK(sg_clear(0xF0) == 1, "full colour clear not taken by the GPU");
@@ -3257,7 +3294,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +303,8 @@
+@@ -267,8 +333,8 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -3268,7 +3305,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
      run_scene("textured, wrapped, modulated, negative u clamps", 0);
 
-@@ -308,7 +344,10 @@
+@@ -308,7 +374,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -3280,7 +3317,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +361,32 @@
+@@ -322,6 +391,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -3328,10 +3365,60 @@ diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
-@@ -1,6 +1,30 @@
+@@ -1,6 +1,80 @@
 
  void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
 -uint32_t xbox_FramebufferWindowVa(void);
++
++/* Presentation geometry. Guest scanout pixels are anamorphic; their numeric
++ * width/height is not the display aspect of the widescreen picture. */
++typedef struct {
++    uint32_t sx, sy, sw, sh, dx, dy, dw, dh;
++    float aspect;
++} SgPresentLayout;
++
++static SgPresentLayout sg_present_layout(uint32_t fw, uint32_t fh,
++        uint32_t ww, uint32_t wh, int crop, int wide, int mode)
++{
++    SgPresentLayout r = {0};
++    if (!fw || !fh || !ww || !wh) return r;
++    r.sx = fw == 720 && fh == 480 ? (uint32_t)(crop < 0 ? 0 : crop > 40 ? 40 : crop) : 0;
++    r.sy = r.sx == 40 && wide ? 16 : 0;
++    r.sw = fw - 2 * r.sx; r.sh = fh - 2 * r.sy;
++    float window = (float)ww / wh;
++    r.aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
++    if (mode == AR_16_9) r.aspect = 16.0f / 9.0f;
++    else if (mode == AR_21_9) r.aspect = 21.0f / 9.0f;
++    else if (mode == AR_32_9) r.aspect = 32.0f / 9.0f;
++    else if (mode == AR_ORIGINAL && wide && window > r.aspect)
++        r.aspect = window > 32.0f / 9.0f ? 32.0f / 9.0f : window;
++    if (mode == AR_STRETCH || mode == AR_ZOOM) {
++        if (mode == AR_ZOOM) {
++            if (window > r.aspect) {
++                uint32_t h = (uint32_t)(r.sh * r.aspect / window + 0.5f);
++                if (!h) h = 1;
++                r.sy += (r.sh - h) / 2; r.sh = h;
++            } else {
++                uint32_t w = (uint32_t)(r.sw * window / r.aspect + 0.5f);
++                if (!w) w = 1;
++                r.sx += (r.sw - w) / 2; r.sw = w;
++            }
++        }
++        r.dw = ww; r.dh = wh;
++        return r;
++    }
++    if (window > r.aspect) {
++        r.dh = wh; r.dw = (uint32_t)(wh * r.aspect + 0.5f);
++    } else {
++        r.dw = ww; r.dh = (uint32_t)(ww / r.aspect + 0.5f);
++    }
++    if (!r.dw) r.dw = 1;
++    if (!r.dh) r.dh = 1;
++    if (r.dw > ww) r.dw = ww;
++    if (r.dh > wh) r.dh = wh;
++    r.dx = (ww - r.dw) / 2; r.dy = (wh - r.dh) / 2;
++    return r;
++}
 +
 +/* Pace completed game frames, not just repeated scanout of the last texture.
 + * Keep an absolute fractional deadline and never catch up in a burst after
@@ -3360,35 +3447,110 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static struct {
      SDL_Mutex      *lock;             /* tex, w, h: replaced on the flip thread */
-@@ -66,16 +90,22 @@
+@@ -9,7 +83,36 @@
+     int             registered;
+     SDL_AtomicInt   failed;           /* the window could not be claimed */
+     int             claimed;          /* fb_thread only */
++    SDL_AtomicInt   aspect;           /* display aspect * 1e6, read by command thread */
+ } s_sgp;
++
++/* The built-in patch widens the world camera using this validated header
++ * block. Menus/play-call cards use F=1, as on the native presenter. Update
++ * on the command thread at flip, while guest execution is serialized. */
++static void sg_present_anamorphic_update(void)
++{
++    float k[9];
++    uintptr_t base = (uintptr_t)xbox_GetMemoryOffset();
++    if (!xbox_guest_memory_read(base, 0x10254u, k, sizeof k) ||
++        k[3] != 40 || k[4] != 680 || k[5] != 720 || k[7] != 360 || k[8] != 1 ||
++        !(k[0] >= 1 && k[0] < 3)) return;
++    static int flat_frames;
++    if (!InterlockedExchange(&s_frame_vp_draws, 0)) { if (flat_frames < 6) flat_frames++; }
++    else flat_frames = 0;
++    int encoded = SDL_GetAtomicInt(&s_sgp.aspect);
++    float ar = encoded ? encoded / 1000000.0f : 16.0f / 9.0f;
++    SgPresentLayout visible = sg_present_layout(s_sgp.w ? s_sgp.w : 720,
++        s_sgp.h ? s_sgp.h : 480, 1, 1, s_vs.crop, s_vs.widescreen, AR_STRETCH);
++    float source = (float)visible.sw / visible.sh;
++    float f = s_vs.widescreen && flat_frames < 6 && xbox_present_in_match_fn && xbox_present_in_match_fn()
++        ? ar / source : 1.0f;
++    if (f < 1) f = 1;
++    if (k[0] != f) {
++        k[0] = f; k[1] = 1 / f; k[2] = 360 * (1 - 1 / f);
++        if (xbox_guest_memory_write(base, 0x10254u, k, 3 * sizeof(float)))
++            fprintf(stderr, "  [PRESENT] built-in widescreen: display %.3f, stretch %.4f\n", ar, f);
++    }
++}
+
+ static int sg_present_wanted(void)
+ {
+@@ -40,6 +143,14 @@
+         s_sgp.claimed = 0;
+         return 1;
+     }
++#ifdef __EMSCRIPTEN__
++    float display = s_vs.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
++    if (s_vs.aspect == AR_16_9) display = 16.0f / 9.0f;
++    else if (s_vs.aspect == AR_21_9) display = 21.0f / 9.0f;
++    else if (s_vs.aspect == AR_32_9) display = 32.0f / 9.0f;
++    else if (s_vs.aspect == AR_STRETCH || s_vs.aspect == AR_ZOOM) display = 0;
++    wg_set_present_aspect(display);
++#endif
+     if (!s_sgp.claimed) {
+         if (!SDL_ClaimWindowForGPUDevice(s_sg.dev, win)) {
+             fprintf(stderr, "  [SDLGPU] cannot present on the window (%s); frames go through guest RAM\n",
+@@ -65,22 +176,20 @@
+         SDL_LockMutex(s_sgp.lock);
          if (s_sgp.tex) {
              SDL_GPUBlitInfo blit;
-             float dw = (float)sw, dh = (float)sh;
-+            /* The 720x480 scanout includes a 640x448 widescreen action area. */
-+            Uint32 crop_x = s_sgp.w == 720 && s_sgp.h == 480 ? (Uint32)s_vs.crop : 0;
-+            Uint32 crop_y = crop_x == 40 && s_vs.widescreen ? 16 : 0;
-+            Uint32 frame_w = s_sgp.w - 2 * crop_x, frame_h = s_sgp.h - 2 * crop_y;
+-            float dw = (float)sw, dh = (float)sh;
++            SgPresentLayout layout = sg_present_layout(s_sgp.w, s_sgp.h, sw, sh,
++                s_vs.crop, s_vs.widescreen, s_vs.aspect);
++            SDL_SetAtomicInt(&s_sgp.aspect, (int)(layout.aspect * 1000000.0f + 0.5f));
              SDL_zero(blit);
-             if (letterbox) {                      /* fit, keeping the frame's shape */
+-            if (letterbox) {                      /* fit, keeping the frame's shape */
 -                float sx = (float)sw / (float)s_sgp.w, sy = (float)sh / (float)s_sgp.h;
-+                float sx = (float)sw / (float)frame_w, sy = (float)sh / (float)frame_h;
-                 float s = sx < sy ? sx : sy;
+-                float s = sx < sy ? sx : sy;
 -                dw = (float)s_sgp.w * s;
 -                dh = (float)s_sgp.h * s;
-+                dw = (float)frame_w * s;
-+                dh = (float)frame_h * s;
-             }
+-            }
              blit.source.texture = s_sgp.tex;
 -            blit.source.w = s_sgp.w;
 -            blit.source.h = s_sgp.h;
-+            blit.source.x = crop_x;
-+            blit.source.y = crop_y;
-+            blit.source.w = frame_w;
-+            blit.source.h = frame_h;
++            blit.source.x = layout.sx;
++            blit.source.y = layout.sy;
++            blit.source.w = layout.sw;
++            blit.source.h = layout.sh;
              blit.destination.texture = swap;
-             blit.destination.x = (Uint32)(((float)sw - dw) * 0.5f);
-             blit.destination.y = (Uint32)(((float)sh - dh) * 0.5f);
-@@ -103,15 +133,22 @@
+-            blit.destination.x = (Uint32)(((float)sw - dw) * 0.5f);
+-            blit.destination.y = (Uint32)(((float)sh - dh) * 0.5f);
+-            blit.destination.w = (Uint32)dw;
+-            blit.destination.h = (Uint32)dh;
++            blit.destination.x = layout.dx;
++            blit.destination.y = layout.dy;
++            blit.destination.w = layout.dw;
++            blit.destination.h = layout.dh;
+             blit.load_op = SDL_GPU_LOADOP_CLEAR;  /* black outside the frame */
+             blit.clear_color = (SDL_FColor){ 0.0f, 0.0f, 0.0f, 1.0f };
+             blit.filter = (s_vs.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+@@ -92,9 +201,14 @@
+             };
+             SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
+         }
++        /* Recording keeps raw texture handles until synchronous submission
++         * replays the blit. Keep the snapshot alive across that handoff: the
++         * flip thread may replace and release it as soon as we unlock. */
++        SDL_SubmitGPUCommandBuffer(cmd);
+         SDL_UnlockMutex(s_sgp.lock);
+-    }
+-    SDL_SubmitGPUCommandBuffer(cmd);
++    } else {
++        SDL_CancelGPUCommandBuffer(cmd);
++    }
+     return 1;
+ }
+
+@@ -103,15 +217,22 @@
   * renderer holds (the previous frame stays). */
  static void sg_present_flip(void)
  {
@@ -3414,7 +3576,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -178,4 +215,4 @@
+@@ -178,4 +299,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);
@@ -4328,10 +4490,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..313d97f
+index 0000000..f01e895
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1521 @@
+@@ -0,0 +1,1537 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -5779,6 +5941,13 @@ index 0000000..313d97f
 +
 +/* ── Presenting ───────────────────────────────────────────────────────── */
 +typedef struct { uint32_t w, h; } SizeArgs;
++static atomic_uint s_present_aspect;
++
++void wg_set_present_aspect(float aspect)
++{
++    atomic_store(&s_present_aspect, aspect >= 1.0f && aspect <= 4.0f
++        ? (unsigned)(aspect * 1000000.0f + 0.5f) : 0u);
++}
 +static void do_configure(void *p)
 +{
 +    SizeArgs *a = (SizeArgs *)p;
@@ -5798,6 +5967,15 @@ index 0000000..313d97f
 +    if (w) SDL_GetWindowSizeInPixels(w, &x, &y);
 +    *pw = x > 0 ? (uint32_t)x : 640;
 +    *ph = y > 0 ? (uint32_t)y : 480;
++    uint32_t aspect = atomic_load(&s_present_aspect);
++    if (aspect) {
++        if ((uint64_t)*pw * 1000000u > (uint64_t)*ph * aspect)
++            *pw = (uint32_t)(((uint64_t)*ph * aspect + 500000u) / 1000000u);
++        else
++            *ph = (uint32_t)(((uint64_t)*pw * 1000000u + aspect / 2u) / aspect);
++        if (!*pw) *pw = 1;
++        if (!*ph) *ph = 1;
++    }
 +}
 +
 +bool WG_ClaimWindowForGPUDevice(SDL_GPUDevice *d, SDL_Window *w)
@@ -5855,10 +6033,10 @@ index 0000000..313d97f
 +#endif /* __EMSCRIPTEN__ */
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
 new file mode 100644
-index 0000000..b1e0dec
+index 0000000..52408ac
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,157 @@
 +#ifndef SDL_GPU_WEBGPU_H
 +#define SDL_GPU_WEBGPU_H
 +/* The SDL GPU renderer on WebGPU (Emscripten builds).
@@ -5895,6 +6073,10 @@ index 0000000..b1e0dec
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
++
++/* Logical display shape, independent of anamorphic guest framebuffer pixels.
++ * Zero keeps the SDL window's shape (explicit stretch/zoom modes). */
++void wg_set_present_aspect(float aspect);
 +
 +/* Start the GPU server and create the WebGPU device; `canvas_id` is the id of
 + * the transferred presentation canvas (no '#'). Call once, on the main
@@ -9064,10 +9246,10 @@ index 0000000..4691e41
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..aaaafd4
+index 0000000..54d6447
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,875 @@
+@@ -0,0 +1,879 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -9922,12 +10104,16 @@ index 0000000..aaaafd4
 +        download(color, 0, W, H, img);
 +        CHECK(px(img, 0, 0) == 0xFF00C030u && px(img, W - 1, H - 1) == 0xFF00C030u,
 +              "scaled source rectangle excludes the overscan border at both corners");
++        wg_set_present_aspect(16.0f / 9.0f);
 +        CHECK(SDL_ClaimWindowForGPUDevice(dev, NULL), "claim the window (the GPU canvas)");
 +        for (int frame = 0; frame < 3; frame++) {
++            wg_set_present_aspect(frame == 1 ? 0 : 16.0f / 9.0f);
 +            SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
 +            SDL_GPUTexture *swap = NULL;
 +            Uint32 sw = 0, sh = 0;
 +            SDL_WaitAndAcquireGPUSwapchainTexture(c, NULL, &swap, &sw, &sh);
++            CHECK(sw == 640 && sh == (frame == 1 ? 480 : 360),
++                  "canvas follows live aspect changes (frame %d)", frame);
 +            SDL_GPUBlitInfo b = { .source = crop.source,
 +                                  .destination = { .texture = swap, .x = 0, .y = 0, .w = sw, .h = sh },
 +                                  .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 }, .filter = SDL_GPU_FILTER_NEAREST };

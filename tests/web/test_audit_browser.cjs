@@ -24,7 +24,8 @@ document.getElementById('play').onclick=()=>{
   console.warn('WebGPU is experimental');
   console.warn('Error while validating [RenderPipelineDescriptor]');
   console.error('Audit fixture console failure');
-  setTimeout(()=>{throw Error('Audit fixture page failure');},0);
+  function auditPageFailure(){throw Error('Audit fixture page failure');}
+  setTimeout(auditPageFailure,0);
 };</script>`;
 const server=http.createServer((req,res)=>{
   if(req.url==='/favicon.ico'){res.writeHead(404);res.end();return;}
@@ -55,6 +56,7 @@ const server=http.createServer((req,res)=>{
     assert.equal(report.cases[0].result,'fail');
     for(const text of ['RenderPipelineDescriptor','console failure','page failure','runtime failure'])
       assert.ok(report.cases[0].failures.some(row=>row.line.includes(text)),text);
+    assert.ok(report.cases[0].failures.some(row=>row.line.includes('auditPageFailure')), 'page exception stack retained');
     assert.ok(report.cases[0].diagnostics.some(row=>row.line.includes('[TODO]')));
     assert.ok(!report.failures.some(row=>/CACHE|device ready|experimental|TODO/.test(row.line)));
     assert.ok(!report.failures.some(row=>(row.url||'').endsWith('/favicon.ico')));

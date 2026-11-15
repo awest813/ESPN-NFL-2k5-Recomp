@@ -59,3 +59,51 @@ runtime GPU error reaches the case report before it is finalized.
 node tests/web/test_audit_diagnostics.cjs
 node tests/web/test_audit_browser.cjs
 ```
+
+## Widescreen stopping point — November 15, 2026
+
+The SDL/WebGPU presenter now distinguishes display aspect from guest pixel
+aspect. Its default crop (640×448 from 720×480) fills a 16:9 GPU canvas;
+fullscreen fits that canvas inside the window. The portable presentation
+callback identifies match views using checked guest reads, including pregame,
+and excludes pause/play-call states. The camera patch uses the visible source
+area (default stretch 56/45); menu/flat-card constants return to 1/1/0.
+
+The presentation texture also stays locked through synchronous submission.
+Previously the flip thread could replace/release it between recording a blit
+and replaying the command buffer. Minimized windows cancel the unused buffer.
+
+Validation at this stopping point:
+
+- Live layout helper: default crop, 4:3, 16:9, ultrawide, zoom, empty inputs,
+  and bounds across 10,000 window sizes. The actual portable match callback
+  rejects invalid pointers, scores, timeouts, periods and non-finite clocks.
+- Native renderer suite: camera constants, menu/flat transitions, patch-header
+  validation, and the existing GPU/reference and failure-recovery scenes.
+- Hardware Chrome 156 and CI Chromium 153/SwiftShader: exact rendered pixels,
+  no GPU validation errors, and canvas changes 640×360 → 640×480 → 640×360.
+- Full launcher browser suite: imports, OPFS mounting, disc reads and static-host
+  isolation fallback. A fresh pinned checkout reproduces all 51 patched runtime
+  files without changing the submodule revision.
+
+The retail diagnostic run (`build-web-tests/widescreen-handle-debug`) rendered
+Carolina at San Francisco, intro titles, kickoff and pause. A fresh attract
+run also rendered stadium tiers, sideline players, staff/equipment and coin
+toss. Logs confirm the world-camera transition from 1.0000 to 1.2444.
+
+The preceding run (`build-web-tests/widescreen-final-retail`) **failed** during
+an attract match with an undefined vertex shader module/resource at WebGPU
+pipeline/bind-group creation and a black screen. This exception did not repeat
+in the two fresh diagnostic cases. Its exact cause is unresolved; the texture
+handoff fix closes a concrete lifetime race, but is not proof that this specific
+exception is fixed. The failed evidence remains separate from later cases. A later final-build
+attempt (`build-web-tests/widescreen-publish-retail`) also failed on stadium
+entry with a WebAssembly out-of-bounds exception. Stadium-entry stability
+therefore remains an open failure, not a passed check. The audit now retains
+full exception stacks to support the next debugging pass.
+
+Audio drops and intervals below 30 FPS occurred during the diagnostic run.
+Original-Xbox pixel/audio/gameplay comparisons, every stadium/staff variant,
+weather/night combinations, software-presenter widescreen parity, and a
+sustained 30 FPS floor remain unverified. This is a tested implementation
+checkpoint, not a claim of complete graphics, audio or gameplay accuracy.

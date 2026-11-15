@@ -12,6 +12,33 @@
 #include <string.h>
 #include "nfl2k5_broadcast.h"
 #include "nfl2k5_presentation.h"
+#include "platform/guest_memory.h"
+
+extern "C" ptrdiff_t xbox_GetMemoryOffset(void);
+extern "C" int (*xbox_present_in_match_fn)(void);
+
+/* Camera/view state is independent of the Windows broadcast packages. Keep
+ * this predicate available to the SDL presenter so Hor+ works on the web. */
+static int match_view(void)
+{
+    const uintptr_t base = (uintptr_t)xbox_GetMemoryOffset();
+    uint32_t pause, playcall, clock, period;
+    float seconds;
+    if (!xbox_guest_memory_read(base, 0x00B38C30u, &playcall, 4) || playcall ||
+        !xbox_guest_memory_read(base, 0x00AC7444u, &pause, 4) || pause ||
+        !xbox_guest_memory_read(base, 0x00E6028Cu, &clock, 4) || !clock ||
+        !xbox_guest_memory_read(base, (uint64_t)clock + 0x10, &seconds, 4) ||
+        !(seconds >= 0 && seconds < 4000) ||
+        !xbox_guest_memory_read(base, 0x00E602C4u, &period, 4) || period > 12) return 0;
+    const uint32_t teams[2] = {0x00E5FC60u, 0x00E5FC20u};
+    for (uint32_t team : teams) {
+        uint32_t score_ptr, values[2];
+        if (!xbox_guest_memory_read(base, team + 8, &score_ptr, 4) || !score_ptr ||
+            !xbox_guest_memory_read(base, score_ptr, values, sizeof values) ||
+            values[0] > 250 || values[1] > 9) return 0;
+    }
+    return 1;
+}
 
 extern "C" {
 
@@ -49,7 +76,7 @@ int nfl2k5_presentation_pregame_draw_replaced(uint32_t) { return 0; }
 int nfl2k5_lineup_hide_native(void) { return 0; }
 int nfl2k5_lineup_active(void) { return 0; }
 void nfl2k5_lineup_ticker(uint32_t) {}
-void nfl2k5_presentation_init(void) {}
+void nfl2k5_presentation_init(void) { xbox_present_in_match_fn = match_view; }
 void nfl2k5_presentation_coin_toss(const char *, const char *, float, int, int, uint32_t) {}
 void nfl2k5_presentation_featured_players(uint32_t, const uint32_t[2], const unsigned[2],
                                           const Nfl2k5FeaturedPlayer[2]) {}
