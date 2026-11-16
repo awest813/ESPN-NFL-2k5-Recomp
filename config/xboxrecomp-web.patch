@@ -4134,7 +4134,28 @@ diff --git a/src/kernel/xbox_ggl.h b/src/kernel/xbox_ggl.h
 diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
 --- a/src/apu/apu_vp.c
 +++ b/src/apu/apu_vp.c
-@@ -1318,13 +1318,19 @@
+@@ -117,7 +117,19 @@
+ static float attenuate(uint16_t vol)
+ {
+     vol &= 0xFFF;
+-    return (vol == 0xFFF) ? 0.0f : powf(10.0f, vol / (64.0f * -20.0f));
++    if (vol == 0xFFF) return 0.0f;
++    /* Called by the serialized APU voice mixer. Retain the original powf
++     * result for each 12-bit attenuation rather than recomputing it for
++     * every mixbin of every 32-sample frame. All non-muted gains are positive,
++     * so zero denotes an uncomputed entry. Populate lazily to avoid a startup
++     * burst of 4095 exponentiations; this is an exact cache, not a curve fit. */
++    static float gains[0xFFF];
++    float gain = gains[vol];
++    if (gain == 0.0f) {
++        gain = powf(10.0f, vol / (64.0f * -20.0f));
++        gains[vol] = gain;
++    }
++    return gain;
+ }
+
+ /* ============================================================
+@@ -1318,13 +1330,19 @@
      dbg->rate = rate;
      {
          /* RECOMP_APU_VOICE_LOG=1: each voice's pitch, rate and format, once
@@ -4156,7 +4177,7 @@ diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
          calls[v]++;
          if (on && GetTickCount() - last[v] > 5000) {
              uint32_t fmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFFu);
-@@ -1347,7 +1353,7 @@
+@@ -1347,7 +1365,7 @@
                          ldl_le_phys(address_space_memory, sge + (ba / 4096 + 1) * 8),
                          ldl_le_phys(address_space_memory, sge + (ba / 4096 + 2) * 8),
                          xbox_ContiguousAllocatedBytes());
@@ -4165,7 +4186,7 @@ diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
                      /* ADPCM: how many of the buffer's blocks carry a valid
                       * header (step index <= 88, reserved byte 0)? Garbage
                       * in the buffer decodes as noise. */
-@@ -1723,11 +1729,16 @@
+@@ -1723,11 +1741,16 @@
                  static DWORD lock_log;
                  bool skip = false;
                  if (is_voice_locked(d, v)) {

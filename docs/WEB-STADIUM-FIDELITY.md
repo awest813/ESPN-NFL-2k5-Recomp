@@ -877,3 +877,33 @@ other windows record DSP delays, and shorter IRQ waits also occur. Host
 scheduling and instrumentation remain uncontrolled. This narrows the next
 investigation to frame-processing throughput and scheduling as well as IRQ
 latency; it does not establish an audio-continuity fix or complete fidelity.
+
+## Exact voice attenuation cache
+
+The serialized voice mixer now retains the original `powf` result for each
+12-bit attenuation value. Mixing, voice dumps and VP monitoring share these
+gains. The muted value still returns zero directly; every other gain is
+positive, allowing zero-initialized entries to be populated on first use.
+The cache uses 16,380 bytes and avoids a full-table initialization burst.
+
+The production helper regression checks all 65,536 possible input words,
+including masked upper bits, in forward and reverse order. Every result has
+the original float bits. It also checks exact sample/gain/headroom arithmetic
+and confirms only 4,095 exponentiations across the full warmed domain. Wasm
+undefined-behavior checks, native Linux address/undefined-behavior checks and
+Windows/MSVC pass. The actual native APU and full browser game build, and the
+persisted runtime patch reproduces all 74 files from a fresh pinned tree.
+
+Seven alternating release-Wasm measurements of two million calls have
+medians of 19.173 ms for the original helper and 9.942 ms for the cache, about
+1.9x for this isolated calculation. This does not measure total mixer speed.
+
+The 132-second retail capture (`voice-attenuation-retail/report.json`) reaches
+player introductions with no recorded browser/GPU/DSP faults. It still records
+5,242 worklet underrun blocks. Three independent native runner processes
+started during the capture and each consumed more than one CPU core; they
+were left running. Scene and scheduling differences prevent a retail timing
+comparison. The corrected producer diagnostic now also reports starved
+submissions at four queued bytes, confirming the former zero-only counter
+missed that dry state. Uninterrupted audio, original-Xbox matching and the
+sustained 30 FPS floor remain unfinished.
