@@ -207,12 +207,11 @@ index 0000000..f2bf1e7
 +#endif
 +#endif
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
-index 1fb4ce3..00bbe4d 100644
 --- a/src/apu/apu_xaudio2.c
 +++ b/src/apu/apu_xaudio2.c
 @@ -6,6 +6,7 @@
   */
- 
+
  #include "apu_xaudio2.h"
 +#include "apu_web_audio.h"
  #include <SDL3/SDL.h>
@@ -220,16 +219,16 @@ index 1fb4ce3..00bbe4d 100644
  #include <stdio.h>
 @@ -21,6 +22,9 @@
  #define XA2_MAX_QUEUED_BYTES (XA2_NUM_BUFS * XA2_BUF_SAMPLES * XA2_FRAME_BYTES)
- 
+
  static SDL_AudioStream *g_sdl_stream = NULL;
 +/* WebAssembly: frames go to an AudioWorklet's ring instead of SDL's stream
 + * when the browser has AudioWorklet (apu_web_audio.h). */
 +static int              g_web_audio = 0;
  static int              g_xa2_initialized = 0;
  static int              g_xa2_frames_written = 0;
- 
-@@ -54,6 +58,16 @@ int xa2_init(void)
- 
+
+@@ -54,6 +58,16 @@
+
      if (g_xa2_initialized)
          return 1;
 +#ifdef __EMSCRIPTEN__
@@ -242,11 +241,11 @@ index 1fb4ce3..00bbe4d 100644
 +        return 1;
 +    }
 +#endif
- 
+
      if (!SDL_WasInit(SDL_INIT_AUDIO)) {
          if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-@@ -87,6 +101,12 @@ int xa2_init(void)
- 
+@@ -87,6 +101,12 @@
+
  void xa2_shutdown(void)
  {
 +#ifdef __EMSCRIPTEN__
@@ -258,19 +257,19 @@ index 1fb4ce3..00bbe4d 100644
      if (g_sdl_stream) {
          SDL_DestroyAudioStream(g_sdl_stream);
          g_sdl_stream = NULL;
-@@ -106,7 +126,7 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -106,7 +126,7 @@
      int queued_bytes;
      int copy_samples;
- 
+
 -    if (!g_xa2_initialized || !g_sdl_stream || num_samples <= 0)
 +    if (!g_xa2_initialized || !(g_sdl_stream || g_web_audio) || num_samples <= 0)
          return 0;
- 
+
      /* RECOMP_AUDIO_WAV=<path>: record up to 10 minutes of speaker output */
-@@ -185,6 +205,11 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -185,6 +205,11 @@
          }
      }
- 
+
 +#ifdef __EMSCRIPTEN__
 +    if (g_web_audio)
 +        queued_bytes = (int)web_audio_queued() * XA2_FRAME_BYTES;
@@ -279,18 +278,19 @@ index 1fb4ce3..00bbe4d 100644
      queued_bytes = SDL_GetAudioStreamQueued(g_sdl_stream);
      if (queued_bytes < 0)
          queued_bytes = 0;
-@@ -209,10 +234,21 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
-     /* Cushion against underruns when queue drops below 1 buffer (~4KB) */
-     if (queued_bytes <= (XA2_BUF_SAMPLES * XA2_FRAME_BYTES)) {
+@@ -206,13 +231,20 @@
+     if (queued_bytes >= XA2_MAX_QUEUED_BYTES)
+         return 0;
+
+-    /* Cushion against underruns when queue drops below 1 buffer (~4KB) */
+-    if (queued_bytes <= (XA2_BUF_SAMPLES * XA2_FRAME_BYTES)) {
++    /* The worklet supplies silence on an empty ring. Padding its producer
++     * inserts gaps into the APU timeline on every low-queue submission. */
++    if (!g_web_audio && queued_bytes <= (XA2_BUF_SAMPLES * XA2_FRAME_BYTES)) {
          static const int16_t silence[XA2_BUF_SAMPLES][2] = { 0 };
-+#ifdef __EMSCRIPTEN__
-+        if (g_web_audio)
-+            web_audio_put(&silence[0][0], XA2_BUF_SAMPLES);
-+        else
-+#endif
          SDL_PutAudioStreamData(g_sdl_stream, silence, sizeof(silence));
      }
- 
+
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 +#ifdef __EMSCRIPTEN__
 +    if (g_web_audio) {
@@ -300,7 +300,14 @@ index 1fb4ce3..00bbe4d 100644
 +#endif
      if (!SDL_PutAudioStreamData(g_sdl_stream, samples, copy_samples * XA2_FRAME_BYTES))
          return 0;
- 
+
+@@ -223,4 +255,4 @@
+ int xa2_get_buffer_size(void)
+ {
+     return XA2_BUF_SAMPLES;
+-}
+\ No newline at end of file
++}
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 index 101118c..19c7c01 100644
 --- a/src/kernel/CMakeLists.txt

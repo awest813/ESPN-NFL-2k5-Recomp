@@ -164,6 +164,7 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       await page.evaluate(() => __pressPad(0,true,1));
       check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'second controller maps to a separate Xbox port');
       await page.evaluate(() => {
+        smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 1:'));
         const pad = __pads[1]; pad.connected=false; __pads[1]=null;
         const e = new Event('gamepaddisconnected'); e.gamepad=pad; dispatchEvent(e);
       });

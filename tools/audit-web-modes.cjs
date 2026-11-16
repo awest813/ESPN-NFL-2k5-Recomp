@@ -1,6 +1,7 @@
 // Interactive or JSON-scripted retail mode audit against a locally built game.
 // Reuses a dedicated Playwright profile with an already imported user-owned disc.
 // node tools/audit-web-modes.cjs --profile build-web-render-lab --url http://127.0.0.1:8081/
+// {"action":"audio"} saves AudioContext timing and worklet counters in report.json.
 'use strict';
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
@@ -127,6 +128,16 @@ async function act(c){
     case 'status':
       await flush();result=await page.evaluate(()=>({running:state.running,status:document.querySelector('#launch-status').textContent,
         recent:nfl2k5Log.slice(-12)}));break;
+    case 'audio':{
+      const sample=await page.evaluate(()=>{
+        const mod=window.nfl2k5Module,ctx=mod?.nfl2k5AudioContext,s=mod?.nfl2k5Audio;
+        return {at:performance.now(),context:ctx?{state:ctx.state,rate:ctx.sampleRate,time:ctx.currentTime,
+          baseLatency:ctx.baseLatency,outputLatency:ctx.outputLatency}:null,
+          output:s?{state:s.state,played:s.played,underruns:s.underruns,queued:s.queued,
+            peak:s.peak,frequency:s.frequency}:null};
+      });
+      (report.audioSamples||=[]).push(sample);writeReport();result=sample;break;
+    }
     case 'close':{
       await flush();report.ended=new Date().toISOString();writeReport();
       if(report.failures.length||report.cases.some(c=>c.result==='fail'))process.exitCode=1;

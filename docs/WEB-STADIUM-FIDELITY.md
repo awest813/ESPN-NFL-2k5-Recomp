@@ -274,3 +274,44 @@ passes the full integration suite, including reconnect.
 
 This fixes a demonstrated resampling fault. It does not establish the cause
 of the retail queue drops at 48 kHz or original-Xbox audio/gameplay parity.
+
+## Exact audio submission and playback clock diagnostics
+
+The retail audit's `audio` action now records AudioContext time/rate/state,
+latencies and worklet playback/queue/underrun/level counters. In
+`build-web-tests/audio-clock-retail/report.json`, one 10.00-second wall-clock
+interval advanced the context by 6.79 seconds, with zero output peaks at both
+sampled boundaries. The
+APU continued submitting at its normal rate and the runtime drop count grew.
+After nonzero audio began, subsequent context intervals tracked wall time.
+This separates playback-clock slowdown from producer starvation. Chromium's
+[current renderer source](https://chromium.googlesource.com/chromium/src/+/HEAD/content/renderer/media/renderer_webaudiodevice_impl.cc)
+installs a silent-sink suspender with a 30-second threshold. That is a plausible
+lead for this observation, not proof of the exact browser mechanism or a
+reason to dismiss the drops.
+
+A separate production-code regression found that low-queue worklet submissions
+inserted 1,024 zero frames before each real APU block. Those added ~21 ms gaps
+were absent from the APU output. The worklet submission path now preserves the
+exact PCM. Startup buffers two real submissions before playback; it does not
+insert samples into the producer stream. The SDL fallback retains its existing
+behavior. `tests/web/test_audio_submission.py` fails on the preceding path and
+verifies exact startup, low-queue and short submissions after the fix, plus
+full-queue rejection. Worklet tests also check that priming retains the first
+samples and does not count startup buffering as an underrun.
+
+The browser reconnect regression also needed a fresh observation boundary:
+an initial disconnected-state log could satisfy its later unplug assertion.
+The test clears that port's old state logs before unplugging and waits for the
+new neutral state before reconnecting. Monotonic simulated timestamps alone
+did not close this race. This corrects test evidence; it does not change the
+game's controller implementation.
+
+The final exact-PCM/priming build passes Windows hardware Chrome and Linux CI
+Chromium integration (`audio-priming-hardware.log`, `audio-priming-linux.log`).
+The retail case in `build-web-tests/audio-priming-retail/report.json` reaches
+Minnesota at Pittsburgh, readable career and coin-toss overlays, sideline
+equipment, players/referee and stadium tiers without recorded browser/GPU
+exceptions. Its worklet reports one underrun, and runtime queue drops remain.
+This does not prove original-Xbox audio parity, resolution of the earlier
+coach geometry fault, or a sustained 30 FPS floor.

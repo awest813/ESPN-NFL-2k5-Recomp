@@ -6,9 +6,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../web/audio-worklet.js'), 'utf8');
 
-function fixture(rate, initial = 0) {
+function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
   let Processor;
-  const cap = 32, memory = new SharedArrayBuffer(16 + cap * 4);
+  const memory = new SharedArrayBuffer(16 + cap * 4);
   const hdr = new Uint32Array(memory, 0, 4), data = new Int16Array(memory, 16);
   hdr[0] = hdr[1] = initial; hdr[2] = cap;
   vm.runInNewContext(source, {
@@ -17,6 +17,8 @@ function fixture(rate, initial = 0) {
     registerProcessor(name, type) { Processor = type; },
   });
   const processor = new Processor({processorOptions: {memory, ring: 0, rate: 48000}});
+  // Most cases exercise a running stream after its initial buffering.
+  processor.started = afterStartup;
   let next = 100;
   return {hdr, processor,
     put(count) {
@@ -36,6 +38,20 @@ function fixture(rate, initial = 0) {
       return Array.from(left);
     },
   };
+}
+
+// Buffer source audio at startup without consuming it or injecting samples.
+{
+  const f = fixture(48000, 0, {cap:4096, afterStartup:false});
+  f.put(1024);
+  assert(f.render(128).every(x => x === 0));
+  assert.equal(f.hdr[1], 0);
+  assert.equal(f.processor.underruns, 0);
+  f.put(1024);
+  assert.deepEqual(f.render(8).map(x => x * 32768), [100,101,102,103,104,105,106,107]);
+  assert.equal(f.hdr[1], 8);
+  assert.equal(f.processor.underruns, 0);
+  console.log('ok: startup buffering preserves the first samples without underruns');
 }
 
 // Repeated starvation must never turn unsigned ring occupancy into billions.
