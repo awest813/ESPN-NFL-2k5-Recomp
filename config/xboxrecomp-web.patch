@@ -1302,7 +1302,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      uint32_t        vs_offset;       /* bytes into the queue's vertex-uniform data */
      uint32_t        vs_size, fs_size;
 -    uint8_t fs[384]; /* fits SgXfShade (304 bytes) */
-+    uint8_t fs[384]; /* fits SgXfShade */
++    uint8_t fs[512]; /* shader uniform structures must fit; checked at definition */
  } SgQueuedDraw;
 
  typedef struct {
@@ -1548,7 +1548,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          fprintf(stderr, "  [SDLGPU] drawing unavailable: %s\n", SDL_GetError());
          return 0;
      }
-@@ -154,6 +170,33 @@
+@@ -154,11 +170,40 @@
      return grown;
  }
 
@@ -1580,9 +1580,18 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +}
 +
  /* Add one draw to the queue: its vertices, new textures and uniforms are
-  * copied, so the caller's buffers can be reused at once. Returns 0 only
-  * when memory runs out. */
-@@ -171,20 +214,24 @@
+- * copied, so the caller's buffers can be reused at once. Returns 0 only
+- * when memory runs out. */
++ * copied, so the caller's buffers can be reused at once. Returns 0 for an
++ * oversized uniform block or when memory runs out. */
+ static int sg_queue_draw(const SgDraw *d) {
+     SgQueue *q = &s_sg_queue;
++    /* Reject before any queue mutation, including a flush or an allocation. */
++    if (d->fs_uniform_size > sizeof q->draws[0].fs) return 0;
+     uint32_t i, tex_bytes = 0, ibytes = d->index_count * 4u;
+     SgQueuedDraw *qd;
+     void *g;
+@@ -171,20 +216,24 @@
 
      for (i = 0; i < (uint32_t) d->tex_count; i++)
          if (d->tex[i].upload)
@@ -1612,7 +1621,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (!(g = sg_grow(q->udata, &q->ucap, q->ubytes + d->vs_uniform_size, 1))) return 0;
      q->udata = (uint8_t *)g;
 
-@@ -197,8 +244,10 @@
+@@ -197,8 +246,10 @@
      qd->pipe = d->pipe;
      qd->vertex_offset = q->vbytes;
      qd->vertex_count = d->vertex_count;
@@ -1623,7 +1632,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      qd->index_offset = q->ibytes;
      qd->index_count = d->index_count;
-@@ -222,18 +271,22 @@
+@@ -222,18 +273,22 @@
      qd->tex_count = d->tex_count;
      for (i = 0; i < (uint32_t) d->tex_count; i++) {
          SgTextureUse *t = &d->tex[i];
@@ -1649,7 +1658,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      qd->blend_constant = (SDL_FColor){
          (float) ((s_gpu.blend_color >> 16) & 0xFF) / 255.0f, (float) ((s_gpu.blend_color >> 8) & 0xFF) / 255.0f,
          (float) (s_gpu.blend_color & 0xFF) / 255.0f, (float) (s_gpu.blend_color >> 24) / 255.0f,
-@@ -243,7 +296,13 @@
+@@ -243,7 +298,13 @@
      qd->fs_size = d->fs_uniform_size;
     // memcpy(qd->vs, d->vs_uniform, d->vs_uniform_size);
      memcpy(qd->fs, d->fs_uniform, d->fs_uniform_size);
@@ -1664,7 +1673,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      /* The GPU copy will be the newer one. Anything that reads the surface on
       * the CPU flushes the queue first (sg_cpu_access, sg_flip). */
-@@ -265,6 +324,7 @@
+@@ -265,6 +326,7 @@
          q->upload_surface = 0;
          return 1;
      }
@@ -1672,7 +1681,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      sbytes = q->upload_surface ? s->w * s->h * 4 : 0;
      total = q->vbytes + q->ibytes + sbytes + q->tbytes;
-@@ -278,10 +338,12 @@
+@@ -278,10 +340,12 @@
          }
          /* Transfer layout: vertices | indices | surface | textures */
          memcpy(stage, q->vdata, q->vbytes);
@@ -1687,7 +1696,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
 
-@@ -310,11 +372,14 @@
+@@ -310,11 +374,14 @@
              }
              for (i = 0; i < q->upload_count; i++) {
                  const SgQueuedUpload *u = &q->uploads[i];
@@ -1707,7 +1716,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
              }
              SDL_EndGPUCopyPass(copy);
              for (i = 0; i < q->upload_count; i++)
-@@ -329,14 +394,22 @@
+@@ -329,14 +396,22 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
@@ -1731,7 +1740,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,9 +423,14 @@
+@@ -350,9 +425,14 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -1749,7 +1758,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
-@@ -360,19 +438,27 @@
+@@ -360,19 +440,27 @@
                  if (qd->index_count) {
                      SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
                      SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -1782,7 +1791,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          static int told;
          if (!told++)
              fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
-@@ -385,6 +471,7 @@
+@@ -385,6 +473,7 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -1790,7 +1799,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +543,7 @@
+@@ -456,7 +545,7 @@
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},
@@ -3702,7 +3711,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
   */
 
 
-@@ -18,19 +17,21 @@
+@@ -18,20 +17,25 @@
  } SgXfList;
 
  /* std140 mirror of the `Shade` block in shaders/xf.frag. Every member there
@@ -3726,9 +3735,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +    float depth_offset[4];
 +    uint32_t border[4]; /* ARGB border colour per texture stage */
  } SgXfShade;
++
++_Static_assert(sizeof(SgXfShade) <= sizeof(((SgQueuedDraw *)0)->fs),
++               "queued fragment storage must hold the complete 3D uniform block");
 
  /* std140 mirror of `Viewport` in shaders/xf.vert. */
-@@ -85,18 +86,36 @@
+ typedef struct {
+@@ -85,18 +89,36 @@
      const XfVert *v = s_probe.v;
      fprintf(stderr, "  [PROBE] tex %08X %ux%u fmt %02X prog %08X comb %08X final %08X/%08X"
              " | blend %u %04X/%04X | depth %u %04X mask %u | alpha %u %04X %02X"
@@ -3769,7 +3782,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      fprintf(stderr, "  [PROBE]   C0 %08X C1 %08X specfog %08X/%08X | stage1 %ux%u fmt %02X\n",
              s_comb.factor0[0], s_comb.factor1[0], s_comb.specfog[0], s_comb.specfog[1],
              s_stage[1].width, s_stage[1].height, s_stage[1].color);
-@@ -171,18 +190,14 @@
+@@ -171,18 +193,14 @@
 
      if (!a->ok || !b->ok || !c->ok)
          return;
@@ -3793,7 +3806,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              int front = (s_vp.front_face == 0x0900) ? cw : !cw;
              if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front) ||
                  s_vp.cull_face == 0x0408)
-@@ -197,7 +212,9 @@
+@@ -197,7 +215,9 @@
          float w0 = (b->x - a->x) * (py - a->y) - (b->y - a->y) * (px - a->x);
          float w1 = (c->x - b->x) * (py - b->y) - (c->y - b->y) * (px - b->x);
          float w2 = (a->x - c->x) * (py - c->y) - (a->y - c->y) * (px - c->x);
@@ -3804,7 +3817,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              s_probe.hit = 1;
              s_probe.v[0] = *a;
              s_probe.v[1] = *b;
-@@ -211,7 +228,7 @@
+@@ -211,7 +231,7 @@
       * triangles use w = 1: plain screen-space interpolation, which equals the
       * software result whenever the three w agree (the pie-chart case). */
      for (k = 0; k < 3; k++)
@@ -3813,7 +3826,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              affine = 1;
      /* RECOMP_SDLGPU_UVTRACE=1: describe large triangles (the field, the
  * stands) once per texture -- what the vertex program hands over, to
-@@ -303,8 +320,10 @@
+@@ -303,8 +323,10 @@
          const Texture *tx = sg_stage_texture(st);
          sh->tex[st][0] = tx->width;
          sh->tex[st][1] = tx->height;
@@ -3826,7 +3839,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
 
      memcpy(sh->factor0, s_comb.factor0, sizeof sh->factor0);
-@@ -316,7 +335,11 @@
+@@ -316,7 +338,11 @@
      sh->fog[0] = s_fog.color;
      for (st = 0; st < 4; st++) {
          sh->mode[st] = sg_stage_mode(st);
@@ -3839,7 +3852,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
 
      {
-@@ -330,6 +353,10 @@
+@@ -330,6 +356,10 @@
          memcpy(&sh->depth[2], &cmin, sizeof cmin);
          memcpy(&sh->depth[3], &cmax, sizeof cmax);
      }
@@ -3850,7 +3863,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  }
 
  /* ── 3D batches with the vertex program on the GPU ──────────────────────
-@@ -339,13 +366,79 @@
+@@ -339,13 +369,79 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -3932,7 +3945,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -359,17 +452,15 @@
+@@ -359,17 +455,15 @@
  static uint32_t sg_vp_vertex(uint32_t index) {
      uint32_t a, k;
      index &= 0xFFFF;
@@ -3956,7 +3969,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -379,7 +470,7 @@
+@@ -379,7 +473,7 @@
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
   * CPU path instead: program still compiling or not translatable, points or
   * lines, or out of memory. */
@@ -3965,7 +3978,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
      SDL_GPUGraphicsPipeline *pipe;
-@@ -397,18 +488,42 @@
+@@ -397,18 +491,42 @@
          default:
              return 0; /* points and lines: not on the GPU yet */
      }
@@ -4014,7 +4027,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +536,15 @@
+@@ -421,7 +539,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -4031,7 +4044,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +592,10 @@
+@@ -469,10 +595,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -4044,7 +4057,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +617,8 @@
+@@ -494,7 +620,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -4054,7 +4067,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,7 +632,7 @@
+@@ -508,7 +635,7 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -4063,7 +4076,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t sampled = 0;
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
-@@ -532,31 +656,41 @@
+@@ -532,31 +659,41 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -4110,7 +4123,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,14 +703,13 @@
+@@ -569,14 +706,13 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,

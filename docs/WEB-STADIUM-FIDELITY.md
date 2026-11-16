@@ -212,3 +212,36 @@ samples below 30 FPS and audio drops also remain in the runtime log.
 These checks establish resource-version correctness for the covered cases.
 They do not establish full stadium/staff-model fidelity, audio/gameplay parity,
 or a sustained 30 FPS floor.
+
+## Queued fragment-uniform overrun
+
+The geometry investigation found a separate memory corruption defect: the
+current `SgXfShade` block is 400 bytes, but `SgQueuedDraw.fs` reserved only 384.
+Queue insertion copied all 400 bytes. A later adjacent draw overwrote the
+previous draw's final uniform values; a final draw could write past the allocated
+draw array. This affects the shared SDL GPU queue, including the web backend.
+
+`tests/web/test_draw_uniforms.py` extracts the production queue insertion,
+structures and shader uniform block. On the preceding implementation it fails
+when the second insertion changes the first draw's uniforms
+(`build-web-tests/draw-uniforms-before.log`). The fix reserves 512 bytes,
+statically checks the 3D uniform structure against that capacity, and rejects
+oversized blocks before any queue mutation. The regression now verifies both
+complete adjacent uniform blocks and a guard after the final record, plus
+oversized-input rejection. It runs in the regular web CI suite.
+
+A pre-fix comparison with draw merging disabled rendered New York at Miami
+intro players, staff, sideline equipment and text without recorded browser/GPU
+exceptions (`build-web-tests/stadium-nomerge`). It did not reproduce the earlier
+coach shot, so it cannot establish that merging caused the polygons. Likewise,
+the demonstrated uniform overrun is not proof that every geometry or earlier
+shader-handle exception has the same cause.
+
+With the fix and normal merging enabled, the retail run in
+`build-web-tests/draw-uniforms-retail/report.json` completed Baltimore stadium
+entry, Ray Lewis's player intro with readable career text, and coin toss without
+recorded browser/GPU exceptions. The four captured scenes show no large stray
+polygons, but do not match the earlier coach shot. Launcher/OPFS and
+audio/video/controller integration checks pass against the rebuilt runtime.
+Audio drops and sub-30 FPS samples remain; this is not a full fidelity or
+performance pass.
