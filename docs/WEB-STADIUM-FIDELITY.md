@@ -1143,3 +1143,71 @@ use of bump stages, uninterrupted audio or a sustained 30 FPS floor.
 Original-Xbox scene/audio matching remains unfinished. Existing local xemu
 Arizona/New Orleans gameplay stills provide a reference for a future matched
 scene comparison; this run uses different teams and camera sequences.
+
+
+## Retail texture-stage tracing and software reflections
+
+`RECOMP_SDLGPU_STAGE_STATS=1` now records per-stage mode counts for accepted
+3D GPU batches in each existing five-second statistics interval. It also
+counts bound stages using alpha-kill, color keying, volume textures and cube
+maps. It is disabled by default and adds no per-stage counting or register
+reads while disabled. Counts describe guest batches accepted by the GPU path,
+not pixels, post-merge draw calls, or proof of pixel correctness.
+
+The 250-second `texture-stage-retail-trace/report.json` run reaches New York
+Jets at Denver in snow/fog. Forty-three complete statistics intervals record
+2,055,587 accepted batches. The counts for each stage sum independently to
+the interval's batch count. Observed stage programs are NONE, PROJECT2D,
+CUBEMAP, DOTPRODUCT, DOT_RFLCT_DIFF and DOT_RFLCT_SPEC. Stage 1 records 200,171
+cube-map batches, while stages 2/3 record 59,911 diffuse and 119,822 specular
+reflection batches. No counted bound stage uses alpha-kill, color keying or
+volume textures, and no bump or clip-plane program appears in these intervals.
+This evidence prioritizes reflection fidelity; it does not prove that unused
+features never appear in other teams, weather, modes or views.
+
+The trace retains crowd tiers, staff, players, snowy field and live play with
+no recorded browser/GPU/DSP fault. Host CPU usage reached 100%, with unrelated
+work active; no user processes were stopped. Its 17,399 worklet underrun blocks
+and delayed startup do not establish an uncontended performance comparison.
+Audio continuity and a sustained 30 FPS floor remain unfinished.
+
+The trace also exposes a software fallback gap: cube and reflection modes
+were still plain 2D lookups there. The software 3D rasterizer now samples the
+six independently aligned cube faces with the correct major-axis orientation,
+and implements dot-only stages plus diffuse/specular reflection directions.
+Each dot stage uses its selected earlier stage and signed mapping. Specular
+eye components come from the interpolated W values of stages 1..3. Direction
+sampling also supports the existing GPU renderer's 2D remapping when a stage
+has no cube texture. The stage semantics follow the primary
+[xemu texture-stage implementation](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/psh.c).
+
+Cube sampling moves and restores both the guest texture address and the POSIX
+snapshot window, retaining palette data and checking the face offset before
+access. Alpha-kill runs on the selected face before depth/stencil writes.
+Ordinary 2D stages skip the additional direction-coordinate interpolation.
+The remaining software texture stages, filtering and full original-Xbox
+scene/audio parity still require broader conformance work.
+
+A controlled baseline with explicit point filtering reproduces 232 incorrect
+software results out of 240 direction/reflection scenes; the same scenes have
+zero native Vulkan mismatches. The final expanded fixture checks 384 outcomes
+each on Vulkan and software (768 total), covering all six face orientations,
+four quadrants per face, every cube stage, 2D direction remapping, alpha-kill,
+diffuse/specular eye/normal axes and all four currently supported dot mappings.
+Software cases also check depth/stencil preservation on rejection. These scenes
+and existing renderer checks pass address/undefined-behavior sanitizers with
+driver leak checking disabled. The complete browser game and actual native
+kernel build, and a fresh pinned tree reproduces all 77 patched files.
+
+The forced-software browser check (`software-direction-retail/report.json`)
+runs 246 seconds with `RECOMP_SDLGPU_NO3D=1`, executable DSP audio and combiner
+tracing. It shows Houston crowd models/clothing, an enclosed stadium roof,
+field, sideline figures and Miami/Houston intro graphics. Logs report zero GPU
+3D batches and thousands of software batches per interval. It records no
+browser/GPU/DSP fault and zero worklet underrun blocks in this run, but reaches
+only the stadium intro. Five-second frame averages after 90 seconds are
+0.7–1.1 FPS. This is an integrated fallback stability check, not a playable
+software-performance result or proof of original-Xbox graphics/audio parity.
+Software filtering, presentation/widescreen behavior and complete texture-
+stage conformance remain unfinished. The final polish skips reflection-helper
+calls on unrelated modes and rejects an unrepresentable cube-face stride.
