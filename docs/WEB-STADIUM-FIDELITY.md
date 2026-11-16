@@ -1088,3 +1088,58 @@ records 142 worklet underrun blocks; five-second frame averages after 150
 seconds range from 27.4 to 30.1 FPS. It does not establish uninterrupted
 audio, a sustained 30 FPS floor or that these retail scenes use clip-plane
 texture stages. Original-Xbox scene matching remains unfinished.
+
+
+## Bump-environment texture stages
+
+Texture-shader modes 6 and 7 previously performed plain texture lookups.
+The transformed 3D SDL/WebGPU, D3D11 and software paths now displace two-
+dimensional lookups using the selected earlier stage's signed blue/green
+channels and the current stage's 2x2 bump matrix. Mode 7 additionally scales
+all four sampled channels by source red times luminance scale plus offset.
+Bump lookups use raw interpolated XY without division by Q, and respect the
+texture's normalized or texel coordinate convention.
+
+The channel conversion and stage behavior follow the primary
+[xemu texture-stage implementation](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/psh.c).
+Matrix method words 2/3 require a swap when packing column-major uniforms,
+following [xemu's register mapping](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/pgraph.c).
+The runtime reads recorded bump coefficients for stages 1..3. The SDL uniform
+block grows from 400 to 496 bytes, within the existing 512-byte queue storage;
+the adjacent-draw guard regression verifies that complete uniforms survive
+queue insertion without overwriting their neighbors. D3D11 bump values remain
+runtime uniforms, allowing one shader variant to handle changing coefficients.
+
+The correctly bound baseline WebGPU scene reproduced 96 failures before the
+implementation. The final expanded checks pass 207 pixel outcomes each on
+hardware WebGPU, native Vulkan and the actual software rasterizer (621 total).
+They check every valid earlier-stage selection, every matrix word, positive
+and negative displacement, normalized/texel textures, nonunit Q, both modes,
+and luminance scaling of RGB and alpha. Zero, negative, tiny positive, half
+and excessive luminance gains check clamping and alpha-kill behavior. Zero
+sample alpha rejects; a tiny positive alpha survives even when quantization
+produces zero. Software cases also verify depth/stencil writes or rejection.
+Native tests use the production register recorder, uniform packer, draw queue
+and rasterizer. The existing texture decoding/sampler and clip-state tests pass.
+
+The final renderer suite passes address/undefined-behavior sanitizers with
+driver leak checking disabled. The complete browser game and actual native
+kernel build; Windows vertex/pixel/geometry shaders compile. A fresh pinned
+runtime reproduces all 77 patched files. D3D11 pixel readback, volume textures,
+the simplified flat 2D texture/combiners path, and original-Xbox scene matching
+remain outside this check. Signed displacement is reconstructed from the
+existing unsigned decoded/filter results; exact signed-format filtering still
+requires hardware-reference validation. No retail FPS or audio improvement is
+inferred from these component tests.
+
+The final 246-second retail check (`bump-environment-gameplay/report.json`)
+uses Chrome 157 on the Intel hardware WebGPU adapter and reaches New England
+at the New York Giants. Examined views include readable Troy Brown intro
+text, sideline staff/equipment, the coin-toss referee, player uniforms,
+stadium tiers and active first-quarter play. No browser/GPU/DSP fault was
+recorded. The run records 354 worklet underrun blocks; five-second frame averages
+after 150 seconds range from 24.7 to 30.1 FPS. These scenes do not prove retail
+use of bump stages, uninterrupted audio or a sustained 30 FPS floor.
+Original-Xbox scene/audio matching remains unfinished. Existing local xemu
+Arizona/New Orleans gameplay stills provide a reference for a future matched
+scene comparison; this run uses different teams and camera sequences.
