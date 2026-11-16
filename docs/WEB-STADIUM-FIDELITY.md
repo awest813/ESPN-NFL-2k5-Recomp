@@ -985,5 +985,60 @@ remained enabled.
 The complete browser game and actual native graphics runtime build, and
 the published patch reproduces all 76 files from a fresh pinned tree. This
 change is exercised directly through the software rasterizer; it establishes
-no retail FPS or audio improvement. Texture ALPHAKILL remains an open fidelity
-gap, alongside full original-Xbox scene matching and uninterrupted audio.
+no retail FPS or audio improvement. Texture ALPHAKILL was still missing at
+this checkpoint; the follow-up below implements it. Full original-Xbox scene
+matching and uninterrupted audio remain unfinished.
+
+## Texture alpha-kill across NV2A rendering paths
+
+Texture CONTROL0 bit 2 now reaches all four stages and rejects zero-alpha
+texture samples independently of final alpha testing. The bit and behavior
+follow the primary [xemu register definitions](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/nv2a_regs.h)
+and [texture-stage shader implementation](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/psh.c).
+GPU checks use floating sample alpha before framebuffer quantization, so a
+tiny positive filtered alpha survives. XRGB opacity is applied before the
+test. Untextured geometry and non-sampling modes do not trigger alpha-kill.
+
+Flat SDL shaders use two bits of the existing flags word for opaque XRGB
+alpha and alpha-kill. Three-dimensional shaders receive per-stage kill bits
+in their existing uniforms. D3D11 carries bound/kill flags in the existing
+texture word, which its shader-specialization cache already keys in full.
+Uniform layouts remain the same size. GPU sampling finishes before discard
+so later stages retain derivative evaluation. The software rasterizer defers
+depth/stencil operations whenever an active texture may kill a fragment,
+including color-masked passes with final alpha testing disabled.
+
+The new checks verify 155 exact pixel outcomes: 47 on hardware WebGPU, 54 on
+native Vulkan and 54 through the actual software rasterizer. They cover all
+four stages, enabled/disabled kill flags, zero and nonzero source alpha,
+XRGB, non-sampling modes, transparent final combiner output, color masks,
+flat overlays and a killed foreground/rear geometry scene. Register-recorder
+to uniform propagation is checked separately. The WebGPU fixture reproduced
+the old opaque red output at all four stages where the background should
+have remained untouched. Existing renderer and recovery scenes also pass.
+
+The final native/Vulkan/software suite passes address/undefined-behavior
+checks with driver leak checking disabled. The full browser game and actual
+native graphics runtime build. D3D11 vertex, pixel and geometry shaders
+compile with the Windows compiler; D3D11 pixel readback remains outside this
+check. A fresh pinned tree reproduces all 76 patched files.
+
+The initial 132-second retail check (`alpha-kill-retail/report.json`) reaches
+Indianapolis at St. Louis. Examined captures retain player uniforms, crowd
+tiers, sideline players, standing/kneeling staff and equipment, with no
+recorded browser/GPU/DSP faults. It records five worklet underrun blocks and
+some five-second frame averages below 30 FPS. The optional texture-state
+setting emitted no register dumps, so this capture does not prove that its
+scenes exercised alpha-kill. Scene and scheduling differences prevent an
+audio/performance comparison with earlier runs.
+
+The final gameplay capture (`alpha-kill-final-gameplay/report.json`) runs
+246 seconds and reaches Dallas at Carolina, including active first-quarter
+play through fourth-and-12 at 2:06. Examined views retain player models,
+sideline staff/equipment, stadium tiers, broadcast overlays and readable
+scoreboard text, with no recorded browser/GPU/DSP faults. It records 384
+worklet underrun blocks. Five-second averages after 150 seconds range from
+25.1 to 30.0 FPS; this disproves a sustained 30 FPS floor for the run. Full
+original-Xbox matching and continuous audio remain unfinished. The shader
+audit also identifies unimplemented clip-plane and bump-environment texture
+stage behavior as remaining fidelity work.

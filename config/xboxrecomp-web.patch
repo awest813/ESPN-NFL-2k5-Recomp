@@ -520,7 +520,20 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
  /* What each vertex attribute reads when the batch does not supply it as an
   * array: the last SET_VERTEX_DATA* value, or the last element of the last
-@@ -488,62 +492,20 @@
+@@ -384,6 +388,12 @@
+ #define NV_TEX_LAST  0x1BFC
+ static uint32_t s_tex_reg[(NV_TEX_LAST - NV_TEX_FIRST) / 4 + 1];
+ static uint8_t s_tex_set[(NV_TEX_LAST - NV_TEX_FIRST) / 4 + 1];
++
++/* CONTROL0 bit 2 rejects a zero-alpha texture sample independently of the
++ * final alpha test. Call only when this stage actually samples a texture. */
++static int texture_alpha_kill(unsigned stage) {
++    return stage < 4 && (s_tex_reg[(NV097_SET_TEXTURE_CONTROL0 + stage*64u - NV_TEX_FIRST)/4] & 4u) != 0;
++}
+
+ /* Formats whose dimensions come from the format word and whose coordinates
+  * arrive normalised, rather than from a pitch and SET_TEXTURE_IMAGE_RECT with
+@@ -488,62 +498,20 @@
  /* Read attribute `a` of vertex `index` as floats. Only the float and the
   * normalised-byte types appear in practice; anything else returns 0 so a
   * caller sees a degenerate vertex rather than reading past the array. */
@@ -592,7 +605,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      switch (a->type) {
          case 0: /* D3DCOLOR */
              /* A DWORD 0xAARRGGBB, so little-endian bytes are B,G,R,A -- not the
-@@ -601,6 +563,53 @@
+@@ -601,6 +569,53 @@
      }
  }
 
@@ -646,7 +659,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  static uint32_t surface_bpp(void) {
      /* The pitch and the clip width together give the pixel size, which is more
       * reliable than decoding the format field: the format's colour code is
-@@ -622,7 +631,7 @@
+@@ -622,7 +637,7 @@
   * format every viewer reads and it is 30 lines; PNG would need a dependency.
   */
  static int pb_diagnostic_read(uint64_t address, void *output, size_t bytes) {
@@ -655,7 +668,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      return xbox_guest_memory_read((uintptr_t) xbox_GetMemoryOffset(), address, output, bytes);
  #else
      memcpy(output, (const uint8_t *) xbox_GetMemoryOffset() + address, bytes);
-@@ -640,7 +649,7 @@
+@@ -640,7 +655,7 @@
      uint32_t row_bytes, pad, filesz;
      uint8_t hdr[54];
      FILE *f;
@@ -664,7 +677,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint8_t *staged_row;
      if ((uint64_t) w * 3 > UINT32_MAX - 3 ||
          (uint64_t) 54 + (((uint64_t) w * 3 + 3) & ~UINT64_C(3)) * h > UINT32_MAX)
-@@ -658,7 +667,7 @@
+@@ -658,7 +673,7 @@
      f = fopen(path, "wb");
      if (!f)
          return;
@@ -673,7 +686,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      staged_row = (uint8_t *) malloc((size_t) w * bpp);
      if (!staged_row) {
          fclose(f);
-@@ -681,7 +690,7 @@
+@@ -681,7 +696,7 @@
 
      /* BMP rows run bottom-up. */
      for (y = h; y-- > 0;) {
@@ -682,7 +695,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          uint64_t row_index = (uint64_t) s_gpu.clip_y + y;
          uint64_t row_offset = (row_index <= UINT32_MAX ? row_index : 0) * s_gpu.pitch;
          uint64_t address = dma_resolve(s_gpu.drawn_offset ? s_gpu.drawn_offset : s_gpu.color_offset)
-@@ -705,7 +714,7 @@
+@@ -705,7 +720,7 @@
              uint8_t bgr[3];
              if (bpp == 4) {
                  uint32_t v = ((const uint32_t *) row)[
@@ -691,7 +704,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      x
  #else
                      s_gpu.clip_x + x
-@@ -716,7 +725,7 @@
+@@ -716,7 +731,7 @@
                  bgr[2] = (uint8_t) (v >> 16);
              } else {
                  uint16_t v = ((const uint16_t *) row)[
@@ -700,7 +713,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      x
  #else
                      s_gpu.clip_x + x
-@@ -734,7 +743,7 @@
+@@ -734,7 +749,7 @@
          }
      }
      fclose(f);
@@ -709,7 +722,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      free(staged_row);
  #endif
      if (seq == 1)
-@@ -994,8 +1003,44 @@
+@@ -994,8 +1009,44 @@
      }
  }
 
@@ -755,7 +768,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  typedef struct {
      uint8_t *pixels;
      size_t bytes; /* of pixels: the texture's footprint in guest RAM */
-@@ -1052,6 +1097,11 @@
+@@ -1052,6 +1103,11 @@
              bytes = ((uint64_t) texture->height - 1) * texture->pitch + texture->width * bpp;
          }
      }
@@ -767,7 +780,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!bytes || bytes > SIZE_MAX || bytes > UINT64_C(0x100000000) - texture->offset) return;
      uintptr_t base = (uintptr_t) xbox_GetMemoryOffset();
      if (texture->color == 0x0B &&
-@@ -1098,7 +1148,7 @@
+@@ -1098,7 +1154,7 @@
  #endif
 
  static int sample_texture(uint32_t u, uint32_t v, uint32_t *argb) {
@@ -776,7 +789,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
  #endif
      const uint8_t *p;
-@@ -1106,7 +1156,7 @@
+@@ -1106,7 +1162,7 @@
 
      if (!s_gpu.tex.valid)
          return 0;
@@ -785,7 +798,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_texture_snapshot[s_sampler_stage].ready) return 0;
      const uint8_t *image = s_texture_snapshot[s_sampler_stage].pixels;
  #else
-@@ -1127,7 +1177,7 @@
+@@ -1127,7 +1183,7 @@
          if (!s_gpu.tex.palette)
              return 0;
          idx = image[swizzle_offset(u, v, s_gpu.tex.width, s_gpu.tex.height)];
@@ -794,7 +807,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          *argb = s_texture_snapshot[s_sampler_stage].palette[idx];
  #else
          *argb = *(const uint32_t *) (mem + s_gpu.tex.palette + (size_t) idx * 4u);
-@@ -1256,7 +1306,7 @@
+@@ -1256,7 +1312,7 @@
 
      if (!prefix || !w || !h || w > 4096 || h > 4096)
          return;
@@ -803,7 +816,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      snapshot_texture(0, &s_gpu.tex);
      s_sampler_stage = 0;
      if (!s_texture_snapshot[0].ready) return;
-@@ -1318,7 +1368,7 @@
+@@ -1318,7 +1374,7 @@
   * This is not a micro-optimisation for its own sake: the loader's video
   * paces on frames actually presented, so the rasteriser's throughput is the
   * playback rate. */
@@ -812,7 +825,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  static uint32_t *s_surface_first, *s_surface_end;
  static uint32_t s_surface_base, s_surface_rows, s_surface_pitch, s_surface_bpp;
  /* Linux: the staged surface is guest RAM itself (readable and writable,
-@@ -1328,7 +1378,7 @@
+@@ -1328,7 +1384,7 @@
  #endif
 
  static void surface_stage_reset(void) {
@@ -821,7 +834,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface_direct)
          free(s_surface);
      s_surface_direct = 0;
-@@ -1342,7 +1392,7 @@
+@@ -1342,7 +1398,7 @@
 
  static int surface_stage_begin(const uint8_t *mem) {
      uint32_t base = dma_resolve(s_gpu.color_offset);
@@ -830,7 +843,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint64_t right = (uint64_t) s_gpu.clip_x + s_gpu.clip_w;
      uint64_t bottom = (uint64_t) s_gpu.clip_y + s_gpu.clip_h;
      uint32_t bpp = surface_bpp();
-@@ -1398,7 +1448,7 @@
+@@ -1398,7 +1454,7 @@
  }
 
  static void surface_stage_dirty(uint32_t y, uint32_t first, uint32_t end) {
@@ -839,7 +852,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface || s_surface_direct || y >= s_surface_rows || first >= end) return;
      if (first < s_surface_first[y]) s_surface_first[y] = first;
      if (end > s_surface_end[y]) s_surface_end[y] = end;
-@@ -1408,7 +1458,7 @@
+@@ -1408,7 +1464,7 @@
  }
 
  static int surface_stage_flush(const uint8_t *mem) {
@@ -848,7 +861,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t y;
      if (!s_surface || s_surface_direct) return 1; /* drawn in place */
      for (y = 0; y < s_surface_rows; y++)
-@@ -1480,6 +1530,21 @@
+@@ -1480,6 +1536,21 @@
      }
  }
 
@@ -870,7 +883,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Write one fragment through alpha test and blending.
   *
   * The rasteriser used to store the texel as-is, so every translucent quad
-@@ -1490,30 +1555,7 @@
+@@ -1490,30 +1561,7 @@
  static void shade_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t src) {
      uint32_t a = src >> 24;
 
@@ -902,7 +915,15 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (s_gpu.blend && bpp == 4
          && x >= (int) s_gpu.clip_x && x < (int) (s_gpu.clip_x + s_gpu.clip_w)
          && y >= (int) s_gpu.clip_y && y < (int) (s_gpu.clip_y + s_gpu.clip_h)) {
-@@ -1985,12 +2027,12 @@
+@@ -1638,6 +1686,7 @@
+                 if (su < 0.0f) su = 0.0f;
+                 if (sv < 0.0f) sv = 0.0f;
+                 if (sample_texture((uint32_t) su, (uint32_t) sv, &texel)) {
++                    if (s_gpu.tex.enabled && texture_alpha_kill(0) && (texel >> 24) == 0) continue;
+                     shade_pixel(mem, bpp, x, y, modulate(texel, argb));
+                     continue;
+                 }
+@@ -1985,12 +2034,12 @@
          return sample_texture(u, v, argb);
      saved = s_gpu.tex;
      s_gpu.tex = s_stage[st];
@@ -917,7 +938,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_sampler_stage = saved_stage;
  #endif
      s_gpu.tex = saved;
-@@ -2540,10 +2582,60 @@
+@@ -2540,10 +2589,60 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
@@ -979,7 +1000,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                     float R[13][4], float O[16][4], const float V[16][4], int a0,
                     int scalar, float out[4]) {
      const float *s;
-@@ -2553,11 +2645,11 @@
+@@ -2553,11 +2652,11 @@
      switch (mux) {
          case 1: s = reg == 12 ? O[0] : R[reg < 13 ? reg : 0];
              break;
@@ -994,7 +1015,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2715,19 @@
+@@ -2623,7 +2722,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -1015,7 +1036,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +2738,54 @@
+@@ -2634,68 +2745,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1106,7 +1127,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +2818,12 @@
+@@ -2728,20 +2825,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1129,7 +1150,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +2856,13 @@
+@@ -2774,13 +2863,13 @@
                  break;
              }
              case 7: {
@@ -1147,7 +1168,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +2905,18 @@
+@@ -2823,11 +2912,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1171,7 +1192,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +2936,29 @@
+@@ -2847,7 +2943,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1201,7 +1222,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +2975,9 @@
+@@ -2864,8 +2982,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1213,7 +1234,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3124,47 @@
+@@ -3012,6 +3131,47 @@
      }
  }
 
@@ -1229,7 +1250,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +}
 +
 +/* Commit stencil/depth operations only after any fragment rejection tests.
-+ * Opaque draws can call this early; alpha-tested draws call it after shading. */
++ * Opaque draws can call this early; alpha test/texture kill defer it until shading. */
 +static int vp_fragment_tests(int x,int y,float z) {
 +    size_t zi=(size_t)y*ZB_W+(size_t)x;
 +    float *zp=&s_zbuf[zi];
@@ -1261,7 +1282,22 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3057,26 +3210,15 @@
+@@ -3019,6 +3179,14 @@
+     float area, iwa, iwb, iwc;
+     int minx, maxx, miny, maxy, x, y;
+     int textured = s_gpu.tex.valid && s_gpu.tex.enabled;
++    int kill_stage[4]={0},late_tests=s_gpu.alpha_test != 0;
++    for(unsigned st=0;st<4;st++) {
++        const Texture *tx=st?&s_stage[st]:&s_gpu.tex;
++        uint32_t mode=(s_comb.stage_prog>>(st*5))&31u;
++        if(!comb_active()) { if(st)continue;if(!mode)mode=1; }
++        if(tx->valid && tx->enabled && mode!=0 && mode!=4 && mode!=5 && mode!=0x11 && texture_alpha_kill(st))
++            kill_stage[st]=late_tests=1;
++    }
+
+     if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
+         s_vp.rej_bad++;
+@@ -3057,26 +3225,15 @@
          }
          return;
      }
@@ -1291,7 +1327,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3123,31 +3265,11 @@
+@@ -3123,31 +3280,11 @@
              lb = w2 / area;
              lc = w0 / area;
              z = la * a->z + lb * b->z + lc * c->z;
@@ -1320,15 +1356,15 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 -                 * a stencil- or depth-only pass. */
 -                if ((s_vp.color_mask & 0x01010101u) == 0)
 -                    continue;
-+            /* Opaque fragments retain early rejection. Alpha-tested fragments
-+             * must finish shading and pass alpha before depth/stencil writes. */
-+            if (!s_gpu.alpha_test) {
++            /* Opaque fragments retain early rejection. Alpha test/texture kill
++             * must finish shading before depth/stencil writes. */
++            if (!late_tests) {
 +                if (!vp_fragment_tests(x,y,z)) continue;
 +                if ((s_vp.color_mask & 0x01010101u) == 0) continue;
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3170,7 +3292,7 @@
+@@ -3170,7 +3307,7 @@
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
                  int sampled = 0;
                  uint32_t texel = 0;
@@ -1337,10 +1373,18 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3184,11 +3306,16 @@
+@@ -3178,26 +3315,35 @@
+                     if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
+                     if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
+                     sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
++                    if (sampled && kill_stage[0] && (texel >> 24) == 0) continue;
+                     if (sampled)
+                         comb_unpack(texel, t0);
+                 }
                  if (comb_active()) {
                      float tn[3][4];
-                     int st;
+-                    int st;
++                    int st,killed=0;
 +                    if ((s_comb.stage_prog & 0x1Fu) == 4u)
 +                        vp_passthru_color(a,b,c,pa,pb,pc,0,t0);
                      for (st = 1; st < 4; st++) {
@@ -1355,18 +1399,31 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t tex2;
                              float su2 = pa * a->uvn[st - 1][0] + pb * b->uvn[st - 1][0] + pc * c->uvn[st - 1][0];
                              float sv2 = pa * a->uvn[st - 1][1] + pb * b->uvn[st - 1][1] + pc * c->uvn[st - 1][1];
-@@ -3232,6 +3359,10 @@
+                             if (su2 < 0.0f) su2 += (float) tx->width * (floorf(-su2 / (float) tx->width) + 1.0f);
+                             if (sv2 < 0.0f) sv2 += (float) tx->height * (floorf(-sv2 / (float) tx->height) + 1.0f);
+-                            if (sample_stage(st, (uint32_t) su2, (uint32_t) sv2, &tex2))
++                            if (sample_stage(st, (uint32_t) su2, (uint32_t) sv2, &tex2)) {
++                                if (kill_stage[st] && (tex2 >> 24) == 0) { killed=1;break; }
+                                 comb_unpack(tex2, o);
++                            }
+                         }
+                     }
++                    if(killed)continue;
+                     {
+                         /* Register 3, as the D3D11 path builds it: fog colour
+                          * (low byte red) and the clamped fog factor. */
+@@ -3232,6 +3378,10 @@
                      }
                  }
              }
-+            if (s_gpu.alpha_test) {
++            if (late_tests) {
 +                if (!alpha_test_pass(argb >> 24) || !vp_fragment_tests(x,y,z)) continue;
 +                if ((s_vp.color_mask & 0x01010101u) == 0) continue;
 +            }
              shade_pixel(mem, bpp, x, y, argb);
          }
      }
-@@ -3253,7 +3384,7 @@
+@@ -3253,7 +3403,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1375,7 +1432,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3393,34 @@
+@@ -3262,32 +3412,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1422,7 +1479,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,27 +3467,41 @@
+@@ -3334,27 +3486,41 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -1477,7 +1534,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* The triangles of the current vertex-program batch, after the vertex
-@@ -3605,7 +3752,7 @@
+@@ -3605,7 +3771,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -1486,7 +1543,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +3990,7 @@
+@@ -3843,7 +4009,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -1495,7 +1552,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4013,7 @@
+@@ -3866,7 +4032,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -1504,7 +1561,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4452,7 @@
+@@ -4305,7 +4471,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -1513,7 +1570,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +4903,7 @@
+@@ -4756,7 +4922,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -1522,7 +1579,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5021,7 @@
+@@ -4874,7 +5040,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1531,7 +1588,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5029,7 @@
+@@ -4882,7 +5048,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -1540,7 +1597,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5081,7 @@
+@@ -4934,7 +5100,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1549,7 +1606,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5089,7 @@
+@@ -4942,7 +5108,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -2108,12 +2165,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +545,7 @@
+@@ -456,7 +545,8 @@
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},
 -            s_gpu.alpha_test != 0, s_gpu.alpha_func, s_gpu.alpha_ref & 0xFF, 0,
-+            s_gpu.alpha_test != 0, s_gpu.alpha_func, s_gpu.alpha_ref & 0xFF, s_gpu.tex.color == 0x1E,
++            s_gpu.alpha_test != 0, s_gpu.alpha_func, s_gpu.alpha_ref & 0xFF,
++            (s_gpu.tex.color == 0x1E ? 1u : 0u) | (s_gpu.tex.enabled && texture_alpha_kill(0) ? 2u : 0u),
          };
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -2234,6 +2292,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
 diff --git a/src/kernel/nv2a_gpu_d3d11.inc.c b/src/kernel/nv2a_gpu_d3d11.inc.c
 --- a/src/kernel/nv2a_gpu_d3d11.inc.c
 +++ b/src/kernel/nv2a_gpu_d3d11.inc.c
+@@ -192,7 +192,7 @@
+     uint32_t misc[4];                    /* control, stage_prog, final0, final1 */
+     float    specfog0[4], specfog1[4];
+     uint32_t alpha[4];                   /* test enable, func, ref, combiner active */
+-    uint32_t texon[4];                   /* per stage: 1 when a texture is bound */
++    uint32_t texon[4];                   /* per stage: bit 0 texture bound; bit 1 alpha-kill */
+     uint32_t mode[4];                    /* texture stage modes (PS_TEXTUREMODES_*) */
+     uint32_t dotmap[4];                  /* SET_DOT_RGBMAPPING per stage */
+     uint32_t input[4];                   /* SET_SHADER_OTHER_STAGE_INPUT per stage */
 @@ -759,41 +759,6 @@
      if ((tex_override_wants(t) & 2) && g_xbox_tex_override_gen)
          h ^= g_xbox_tex_override_gen() * 0x9E3779B1u;    /* its replacement changed */
@@ -2276,6 +2343,15 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.inc.c b/src/kernel/nv2a_gpu_d3d11.inc.c
  }
 
  /* SRV for texture stage st, decoding it through the software sampler the
+@@ -2128,7 +2093,7 @@
+         c.tsize[st][0] = t->width ? (float)t->width : 1.0f;
+         c.tsize[st][1] = t->height ? (float)t->height : 1.0f;
+         { uint64_t a = DP_NOW(); view = want ? gpu_texture(st, c.cube[st]) : NULL; if (s_dp_on) s_dp_acc[1] += __rdtsc() - a; }
+-        c.texon[st] = view ? 1u : 0u;
++        c.texon[st] = view ? 1u | (t->enabled && texture_alpha_kill((unsigned)st) ? 2u : 0u) : 0u;
+         srv[st] = (view && !c.cube[st]) ? view : s_gpu11.white_srv;
+         cubes[st] = (view && c.cube[st]) ? view : s_gpu11.white_cube_srv;
+         /* Hold them until the draw is issued: fetching a later stage can
 diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_texture.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_texture.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_texture.inc.c
@@ -3128,15 +3204,16 @@ diff --git a/src/kernel/sdlgpu/shaders/flat2d.frag b/src/kernel/sdlgpu/shaders/f
      uint  alpha_func;        // GL compare enum, 0x0200..0x0207
      uint  alpha_ref;         // 0..255
 -    uint  pad;
-+    uint  pad;               // nonzero: XRGB texture samples have alpha 1
++    uint  pad;               // bit 0: opaque XRGB alpha; bit 1: texture alpha-kill
  } sh;
 
  // As raster_triangle: negative coordinates clamp to 0, then a C cast to
-@@ -59,6 +59,7 @@
+@@ -59,6 +59,8 @@
          ivec2 at = ivec2(texel_coord(v_uv.x, sh.tex_size.x, sh.tex_wrap.x),
                           texel_coord(v_uv.y, sh.tex_size.y, sh.tex_wrap.y));
          uvec4 t = uvec4(round(texelFetch(tex, at, 0) * 255.0));
-+        if (sh.pad != 0u) t.a = 255u;
++        if ((sh.pad & 1u) != 0u) t.a = 255u;
++        if ((sh.pad & 2u) != 0u && t.a == 0u) discard;
          c = (t * c + 127u) / 255u;
      }
      if (sh.alpha_test != 0u && !alpha_pass(c.a))
@@ -3947,7 +4024,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,276 @@
+@@ -231,34 +220,367 @@
      return bad == 0;
  }
 
@@ -4159,6 +4236,96 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_gpu.alpha_test=old_alpha;s_gpu.alpha_func=old_func;s_gpu.alpha_ref=old_ref;s_gpu.tex=old_texture;
 +}
 +
++static uint32_t draw_native_alpha_sample(const SgXfShade *shade,unsigned sampled)
++{
++    unsigned depth=s_vp.depth_test,stencil=s_vp.stencil_test,mask=g_color_mask;
++    s_vp.depth_test=s_vp.stencil_test=0;
++    g_color_mask=s_vp.color_mask; /* SET_COLOR_MASK updates both mirrors. */
++    SgXfVertex v[3]={{.pos={0,0,0.25f,1}},{.pos={16,0,0.25f,1}},{.pos={0,16,0.25f,1}}};
++    SgTextureUse textures[8]={0};SgXfViewport view={{16,16},1,0};
++    for(unsigned st=0;st<4;st++)if(sampled&(1u<<st))
++        CHECK(sg_texture_for_stage(st,&textures[st]),"native alpha-kill texture upload failed");
++    SgSurface *surface=sg_surface_current();surface->owner=SG_OWNER_GUEST;
++    SgDraw draw={.surface=surface,.pipe=sg_pipeline_current(1,0),.vertices=v,.vertex_bytes=sizeof v,.vertex_count=3,
++        .tex=textures,.tex_count=8,.vs_uniform=&view,.vs_uniform_size=sizeof view,.fs_uniform=shade,.fs_uniform_size=sizeof *shade};
++    CHECK(draw.pipe && sg_queue_draw(&draw),"native alpha-kill draw failed");download_frame();
++    s_vp.depth_test=depth;s_vp.stencil_test=stencil;
++    g_color_mask=mask;
++    uint32_t pixel;memcpy(&pixel,g_ram+0x200000+2*64+2*4,4);return pixel;
++}
++
++static void test_texture_alpha_kill(void)
++{
++    unsigned char saved_vp[sizeof s_vp],saved_comb[sizeof s_comb];
++    memcpy(saved_vp,&s_vp,sizeof s_vp);memcpy(saved_comb,&s_comb,sizeof s_comb);
++    Texture saved_tex=s_gpu.tex,saved_stages[4];memcpy(saved_stages,s_stage,sizeof saved_stages);
++    uint32_t saved_ctrl[4];uint8_t saved_set[4];
++    for(unsigned st=0;st<4;st++) {
++        unsigned index=(0x1B0C+st*64-NV_TEX_FIRST)/4;saved_ctrl[st]=s_tex_reg[index];saved_set[st]=s_tex_set[index];
++    }
++    unsigned saved_alpha=s_gpu.alpha_test;s_gpu.alpha_test=0;target(0x200000,16,16,64);
++    XfVert tri[3]={{.x=0,.y=0,.z=0.25f,.w=1,.ok=1},{.x=16,.y=0,.z=0.25f,.w=1,.ok=1},{.x=0,.y=16,.z=0.25f,.w=1,.ok=1}};
++    const size_t zi=2*ZB_W+2,offset=0x200000+2*64+2*4;
++    s_vp.depth_test=s_vp.depth_mask=s_vp.stencil_test=1;s_vp.depth_func=0x0201;
++    s_vp.stencil_func=0x0207;s_vp.stencil_ref=7;s_vp.stencil_fmask=s_vp.stencil_wmask=255;
++    s_vp.op_fail=s_vp.op_zfail=0x1E00;s_vp.op_zpass=0x1E01;
++    for(unsigned st=0;st<4;st++)for(unsigned test=0;test<12;test++) {
++        memset(&s_gpu.tex,0,sizeof s_gpu.tex);memset(s_stage,0,sizeof s_stage);memset(&s_comb,0,sizeof s_comb);
++        for(unsigned j=0;j<4;j++)s_tex_reg[(0x1B0C+j*64-NV_TEX_FIRST)/4]=0;
++        uint32_t mode=test==4?4:test==5?0x11:test==6?0:1;
++        s_comb.set=1;s_comb.control=1;s_comb.stage_prog=mode<<(st*5);
++        s_comb.factor0[0]=test==10?0x00FF0000u:0xFFFF0000u;
++        s_comb.color_icw[0]=0x01200000u;s_comb.alpha_icw[0]=0x11200000u;
++        s_comb.color_ocw[0]=s_comb.alpha_ocw[0]=0xC0u;
++        record_tex_reg(0x1B0C+st*64,(test==7?0:0x40000000u)|(test?4u:0));
++        Texture texture={.offset=0x300000,.width=1,.height=1,.pitch=4,.color=test==11?0x1E:0x12,.enabled=test!=7,.valid=1};
++        if(st)s_stage[st]=texture;else s_gpu.tex=texture;
++        uint32_t texel=(test==2||test==9||test==10)?0x01FFFFFFu:test==3?0xFFFFFFFFu:0x00FFFFFFu;
++        memcpy(g_ram+0x300000,&texel,4);CHECK(snapshot_textures(),"alpha-kill texture snapshot failed");
++        s_vp.color_mask=(test==8||test==9)?0:0x01010101u;
++        SgXfShade shade;unsigned sampled=sg_stage_wants_texture(st)?1u<<st:0;
++        sg_xf_shade_fill(&shade,sampled);
++        CHECK(((shade.misc[3]>>(16+st))&1)==(test && sampled?1u:0u),"alpha-kill stage %u flag did not reach shader",st);
++        uint32_t initial=0xFF0000FFu;memcpy(g_ram+offset,&initial,4);
++        int killed=test==1||test==8;
++        uint32_t expected=killed||test==9?initial:test==10?0x00FF0000u:0xFFFF0000u;
++        uint32_t native=draw_native_alpha_sample(&shade,sampled);
++        CHECK(native==expected,"alpha-kill Vulkan stage %u case %u: %08X",st,test,native);
++        memcpy(g_ram+offset,&initial,4);s_zbuf[zi]=1;s_sbuf[zi]=9;
++        raster_triangle_xf(&tri[0],&tri[1],&tri[2]);CHECK(surface_stage_flush(g_ram),"alpha-kill software flush failed");surface_stage_reset();
++        uint32_t pixel;memcpy(&pixel,g_ram+offset,4);
++        CHECK(pixel==expected && s_zbuf[zi]==(killed?1.0f:0.25f) && s_sbuf[zi]==(killed?9:7),
++              "alpha-kill software stage %u case %u: %08X z %g s %u",st,test,pixel,s_zbuf[zi],s_sbuf[zi]);
++    }
++    memset(&s_comb,0,sizeof s_comb);s_vp.color_mask=0x01010101u;
++    for(unsigned test=0;test<6;test++) {
++        uint32_t initial=0xFF0000FFu;memcpy(g_ram+offset,&initial,4);
++        s_gpu.tex=(Texture){.offset=0x300000,.width=1,.height=1,.pitch=4,.color=test==3?0x1E:0x12,.enabled=1,.valid=1};
++        record_tex_reg(0x1B0C,0x40000000u|(test==1?0:4));
++        uint32_t texel=test==2?0x01FFFFFFu:test==5?0xFFFFFFFFu:0x00FFFFFFu;memcpy(g_ram+0x300000,&texel,4);
++        CHECK(snapshot_textures(),"flat alpha-kill snapshot failed");
++        const float a[2]={0,0},b[2]={16,0},c[2]={0,16},uv[3][2]={{0,0},{0,0},{0,0}};
++        g_ntris=1;g_tris[0]=(Tri){{{0,0},{16,0},{0,16}},{{0,0},{0,0},{0,0}},test==5?0x00FFFFFFu:0xFFFFFFFFu,test!=4};
++        upload_scene();if(test==4)s_gpu.attr[9].size=0;
++        sg_surface_current()->owner=SG_OWNER_GUEST;
++        CHECK(sg_draw_batch(1),"flat native alpha-kill draw failed");download_frame();
++        uint32_t native;memcpy(&native,g_ram+offset,4);
++        const uint32_t expected[]={0xFF0000FFu,0x00FFFFFFu,0x01FFFFFFu,0xFFFFFFFFu,0xFFFFFFFFu,0x00FFFFFFu};
++        CHECK(native==expected[test],"flat Vulkan alpha-kill case %u: %08X",test,native);
++        memcpy(g_ram+offset,&initial,4);
++        raster_triangle(a,b,c,test==5?0x00FFFFFFu:0xFFFFFFFFu,test==4?NULL:uv);
++        CHECK(surface_stage_flush(g_ram),"flat alpha-kill flush failed");surface_stage_reset();
++        uint32_t pixel;memcpy(&pixel,g_ram+offset,4);
++        CHECK(pixel==expected[test],"flat alpha-kill case %u: %08X",test,pixel);
++    }
++    memcpy(&s_vp,saved_vp,sizeof s_vp);memcpy(&s_comb,saved_comb,sizeof s_comb);
++    s_gpu.tex=saved_tex;memcpy(s_stage,saved_stages,sizeof s_stage);s_gpu.alpha_test=saved_alpha;
++    for(unsigned st=0;st<4;st++) {
++        unsigned index=(0x1B0C+st*64-NV_TEX_FIRST)/4;s_tex_reg[index]=saved_ctrl[st];s_tex_set[index]=saved_set[st];
++    }
++    CHECK(snapshot_textures(),"restoring alpha-kill fixture snapshots failed");
++}
++
 +static int test_match_view(void) { return 1; }
 +static void test_widescreen_camera(void)
 +{
@@ -4217,6 +4384,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
 +    test_passthru_clamp();
 +    test_alpha_depth_order();
++    test_texture_alpha_kill();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
      target(0x400000, 320, 240, 1536);              /* padded rows, like the title */
@@ -4228,7 +4396,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +498,8 @@
+@@ -267,8 +589,8 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -4239,7 +4407,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
      run_scene("textured, wrapped, modulated, negative u clamps", 0);
 
-@@ -308,7 +539,10 @@
+@@ -308,7 +630,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -4251,7 +4419,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +556,32 @@
+@@ -322,6 +647,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -18945,7 +19113,22 @@ index 0000000..efd7b84
 diff --git a/src/kernel/nv2a_gpu_d3d11.hlsl b/src/kernel/nv2a_gpu_d3d11.hlsl
 --- a/src/kernel/nv2a_gpu_d3d11.hlsl
 +++ b/src/kernel/nv2a_gpu_d3d11.hlsl
-@@ -279,7 +279,7 @@
+@@ -49,7 +49,7 @@
+     float4 sf0;
+     float4 sf1;
+     uint4  alpha;         // test enable, func, ref, combiner active
+-    uint4  texon;         // 1 when a texture is bound for the stage
++    uint4  texon;         // bit 0: texture bound; bit 1: zero sample alpha kills
+     uint4  mode;          // texture stage mode per stage (PS_TEXTUREMODES_*)
+     uint4  dotmap;        // dot mapping per stage (SET_DOT_RGBMAPPING)
+     uint4  input;         // input stage per stage (SET_SHADER_OTHER_STAGE_INPUT)
+@@ -274,12 +274,13 @@
+     float4 T[4] = { i.t0, i.t1, i.t2, i.t3 };
+     float4 t[4] = { float4(0, 0, 0, 1), float4(0, 0, 0, 1), float4(0, 0, 0, 1), float4(0, 0, 0, 1) };
+     float dt[4] = { 0, 0, 0, 0 };
++    bool kill_fragment = false;
+     [unroll] for (uint s = 0; s < 4; s++) {
+         uint m = mode[s];
          float4 pt = T[s];
          uint src = input[s];
          float4 prev = t[min(src, 3u)];
@@ -18954,7 +19137,7 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.hlsl b/src/kernel/nv2a_gpu_d3d11.hlsl
          if (m == 0u)                        t[s] = float4(0, 0, 0, 1);         // NONE
          else if (m == 0xFFu)                t[s] = float4(1, 1, 1, 1);
          else if (m == 1u || m == 2u || m == 6u || m == 7u) {               // PROJECT2D/3D, BUMPENVMAP (unimplemented: plain)
-@@ -287,7 +287,7 @@
+@@ -287,7 +288,7 @@
              t[s] = texon[s] ? (cube[s] ? texcube(s, pt.xyz) : tex2dc(s, pt.xy / w)) : float4(1, 1, 1, 1);
          }
          else if (m == 3u)                   t[s] = texon[s] ? texdir(s, pt.xyz) : float4(1, 1, 1, 1);   // CUBEMAP
@@ -18963,10 +19146,37 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.hlsl b/src/kernel/nv2a_gpu_d3d11.hlsl
          else if (m == 0x11u) {                                                   // DOTPRODUCT
              dt[s] = dot(pt.xyz, dotmapf(dotmap[s], prev));
              t[s] = float4(0, 0, 0, 0);
+@@ -315,7 +316,10 @@
+         else if (m == 0x0Fu)                t[s] = tex2d(s, prev.ar);           // DEPENDENT_AR
+         else if (m == 0x10u)                t[s] = tex2d(s, prev.gb);           // DEPENDENT_GB
+         else                                t[s] = float4(0, 0, 0, 1);          // unimplemented
+-    }
++        if ((texon[s] & 2u) != 0u && m != 0u && m != 4u && m != 5u && m != 0x11u && t[s].a == 0.0)
++            kill_fragment = true;
++    }
++    if (kill_fragment) discard; // Finish sampling before rejection so derivatives remain available.
+
+     float4 d0 = saturate(i.d0), d1 = saturate(i.d1);
+     float4 o;
 diff --git a/src/kernel/nv2a_gpu_d3d11_hlsl.inc b/src/kernel/nv2a_gpu_d3d11_hlsl.inc
 --- a/src/kernel/nv2a_gpu_d3d11_hlsl.inc
 +++ b/src/kernel/nv2a_gpu_d3d11_hlsl.inc
-@@ -281,7 +281,7 @@
+@@ -51,7 +51,7 @@
+     "    float4 sf0;\n"
+     "    float4 sf1;\n"
+     "    uint4  alpha;         // test enable, func, ref, combiner active\n"
+-    "    uint4  texon;         // 1 when a texture is bound for the stage\n"
++    "    uint4  texon;         // bit 0: texture bound; bit 1: zero sample alpha kills\n"
+     "    uint4  mode;          // texture stage mode per stage (PS_TEXTUREMODES_*)\n"
+     "    uint4  dotmap;        // dot mapping per stage (SET_DOT_RGBMAPPING)\n"
+     "    uint4  input;         // input stage per stage (SET_SHADER_OTHER_STAGE_INPUT)\n"
+@@ -276,12 +276,13 @@
+     "    float4 T[4] = { i.t0, i.t1, i.t2, i.t3 };\n"
+     "    float4 t[4] = { float4(0, 0, 0, 1), float4(0, 0, 0, 1), float4(0, 0, 0, 1), float4(0, 0, 0, 1) };\n"
+     "    float dt[4] = { 0, 0, 0, 0 };\n"
++    "    bool kill_fragment = false;\n"
+     "    [unroll] for (uint s = 0; s < 4; s++) {\n"
+     "        uint m = mode[s];\n"
      "        float4 pt = T[s];\n"
      "        uint src = input[s];\n"
      "        float4 prev = t[min(src, 3u)];\n"
@@ -18975,7 +19185,7 @@ diff --git a/src/kernel/nv2a_gpu_d3d11_hlsl.inc b/src/kernel/nv2a_gpu_d3d11_hlsl
      "        if (m == 0u)                        t[s] = float4(0, 0, 0, 1);         // NONE\n"
      "        else if (m == 0xFFu)                t[s] = float4(1, 1, 1, 1);\n"
      "        else if (m == 1u || m == 2u || m == 6u || m == 7u) {               // PROJECT2D/3D, BUMPENVMAP (unimplemented: plain)\n"
-@@ -289,7 +289,7 @@
+@@ -289,7 +290,7 @@
      "            t[s] = texon[s] ? (cube[s] ? texcube(s, pt.xyz) : tex2dc(s, pt.xy / w)) : float4(1, 1, 1, 1);\n"
      "        }\n"
      "        else if (m == 3u)                   t[s] = texon[s] ? texdir(s, pt.xyz) : float4(1, 1, 1, 1);   // CUBEMAP\n"
@@ -18984,6 +19194,18 @@ diff --git a/src/kernel/nv2a_gpu_d3d11_hlsl.inc b/src/kernel/nv2a_gpu_d3d11_hlsl
      "        else if (m == 0x11u) {                                                   // DOTPRODUCT\n"
      "            dt[s] = dot(pt.xyz, dotmapf(dotmap[s], prev));\n"
      "            t[s] = float4(0, 0, 0, 0);\n"
+@@ -317,7 +318,10 @@
+     "        else if (m == 0x0Fu)                t[s] = tex2d(s, prev.ar);           // DEPENDENT_AR\n"
+     "        else if (m == 0x10u)                t[s] = tex2d(s, prev.gb);           // DEPENDENT_GB\n"
+     "        else                                t[s] = float4(0, 0, 0, 1);          // unimplemented\n"
+-    "    }\n"
++    "        if ((texon[s] & 2u) != 0u && m != 0u && m != 4u && m != 5u && m != 0x11u && t[s].a == 0.0)\n"
++    "            kill_fragment = true;\n"
++    "    }\n"
++    "    if (kill_fragment) discard; // Finish sampling before rejection so derivatives remain available.\n"
+     "\n"
+     "    float4 d0 = saturate(i.d0), d1 = saturate(i.d1);\n"
+     "    float4 o;\n"
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -19378,7 +19600,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  typedef struct {
      uint32_t prog[4]; /* control (0 = combiners off), stage_prog, final0, final1 */
 -    uint32_t misc[4]; /* specfog[0], specfog[1], sampled-stage bits, unused */
-+    uint32_t misc[4]; /* specfog[0], specfog[1], sampled bits, cube bits 0..3 / opaque-alpha bits 8..11 */
++    uint32_t misc[4]; /* specfog[0], specfog[1], sampled bits; cube 0..3 / opaque alpha 8..11 / alpha-kill 16..19 */
      uint32_t alpha[4]; /* test on, func, ref, unused */
 -    uint32_t tex[4][4]; /* per stage: width, height, wrap u, wrap v */
 +    uint32_t tex[4][4]; /* per stage: width, height, dot mapping, input stage */
@@ -19484,7 +19706,17 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              affine = 1;
      /* RECOMP_SDLGPU_UVTRACE=1: describe large triangles (the field, the
  * stands) once per texture -- what the vertex program hands over, to
-@@ -303,8 +323,10 @@
+@@ -292,7 +312,8 @@
+     sh->misc[0] = s_comb.specfog[0];
+     sh->misc[1] = s_comb.specfog[1];
+     sh->misc[2] = sampled;
+-    /* RECOMP_SDLGPU_NOALPHATEST=1: never discard by alpha (diagnostic). */
++    /* RECOMP_SDLGPU_NOALPHATEST=1 disables the final alpha comparison.
++     * Texture alpha-kill is an independent stage operation. */
+     static int no_alpha_test = -1;
+     if (no_alpha_test < 0)
+         no_alpha_test = getenv("RECOMP_SDLGPU_NOALPHATEST") != NULL;
+@@ -303,8 +324,11 @@
          const Texture *tx = sg_stage_texture(st);
          sh->tex[st][0] = tx->width;
          sh->tex[st][1] = tx->height;
@@ -19494,10 +19726,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +        sh->tex[st][3] = st < 2 ? 0 : (s_comb.shaderctl >> (st == 2 ? 16 : 20)) & 15u;
 +        if (gpu_stage_is_cube(st)) sh->misc[3] |= 1u << st;
 +        if (tx->color == 0x1E) sh->misc[3] |= 1u << (8 + st); /* XRGB surface samples have alpha 1 */
++        if ((sampled & (1u << st)) && texture_alpha_kill((unsigned)st)) sh->misc[3] |= 1u << (16 + st);
      }
 
      memcpy(sh->factor0, s_comb.factor0, sizeof sh->factor0);
-@@ -316,7 +338,11 @@
+@@ -316,7 +340,11 @@
      sh->fog[0] = s_fog.color;
      for (st = 0; st < 4; st++) {
          sh->mode[st] = sg_stage_mode(st);
@@ -19510,7 +19743,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
 
      {
-@@ -330,6 +356,10 @@
+@@ -330,6 +358,10 @@
          memcpy(&sh->depth[2], &cmin, sizeof cmin);
          memcpy(&sh->depth[3], &cmax, sizeof cmax);
      }
@@ -19521,7 +19754,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  }
 
  /* ── 3D batches with the vertex program on the GPU ──────────────────────
-@@ -339,13 +369,79 @@
+@@ -339,13 +371,79 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -19603,7 +19836,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -359,17 +455,15 @@
+@@ -359,17 +457,15 @@
  static uint32_t sg_vp_vertex(uint32_t index) {
      uint32_t a, k;
      index &= 0xFFFF;
@@ -19627,7 +19860,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -379,7 +473,7 @@
+@@ -379,7 +475,7 @@
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
   * CPU path instead: program still compiling or not translatable, points or
   * lines, or out of memory. */
@@ -19636,7 +19869,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
      SDL_GPUGraphicsPipeline *pipe;
-@@ -397,18 +491,42 @@
+@@ -397,18 +493,42 @@
          default:
              return 0; /* points and lines: not on the GPU yet */
      }
@@ -19685,7 +19918,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +539,15 @@
+@@ -421,7 +541,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -19702,7 +19935,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +595,10 @@
+@@ -469,10 +597,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -19715,7 +19948,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +620,8 @@
+@@ -494,7 +622,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -19725,7 +19958,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,7 +635,7 @@
+@@ -508,7 +637,7 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -19734,7 +19967,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t sampled = 0;
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
-@@ -532,31 +659,41 @@
+@@ -532,31 +661,41 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -19781,7 +20014,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,14 +706,13 @@
+@@ -569,14 +708,13 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,
@@ -19815,7 +20048,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
  layout(set = 3, binding = 0, std140) uniform Shade {
      uvec4 prog;           // x control (0 = combiners off), y stage_prog, z final0, w final1
 -    uvec4 misc;           // x specfog[0], y specfog[1], z stage flags (bit n: stage n sampled)
-+    uvec4 misc;           // x specfog[0], y specfog[1], z sampled-stage bits, w cube-stage bits
++    uvec4 misc;           // x/y specfog; z sampled stages; w cube 0..3, opaque alpha 8..11, alpha-kill 16..19
      uvec4 alpha;          // x alpha test on, y alpha func, z alpha ref (0..255)
 -    uvec4 tex[4];         // per stage: x width, y height, z wrap u, w wrap v
 +    uvec4 tex[4];         // per stage: x width, y height, z dot mapping, w input stage
@@ -20105,7 +20338,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      }
 
      vec4 result;
-@@ -302,16 +394,31 @@
+@@ -302,16 +394,39 @@
 
  void main()
  {
@@ -20123,9 +20356,17 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +        stage_dot[st] = 0.0;
 +        stage_value[st] = vec4(0.0, 0.0, 0.0, 1.0);
 +    }
++    bool kill_fragment = false;
 +    for (int st = 0; st < 4; st++) {
 +        stage_value[st] = stage_sample(st, stage_coord[st], sh.mode[st], (sh.misc.z & (1u << uint(st))) != 0u);
++        uint m = sh.mode[st];
++        if ((sh.misc.z & (1u << uint(st))) != 0u &&
++            (sh.misc.w & (1u << uint(16 + st))) != 0u &&
++            m != 0u && m != 4u && m != 5u && m != 0x11u && stage_value[st].a == 0.0)
++            kill_fragment = true;
 +    }
++    // Keep later stages' implicit derivatives ahead of fragment rejection.
++    if (kill_fragment) discard;
 +    vec4 t0 = stage_value[0];
      uvec4 c8;
 
@@ -20141,7 +20382,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
          c8 = to8(comb_eval(t0, v_col, v_spec, tn));
      } else if (sampled0) {
          // modulate(texel, argb): (t * c + 127) / 255 per channel, in integers.
-@@ -323,10 +430,14 @@
+@@ -323,10 +438,14 @@
      if (sh.alpha.x != 0u && !alpha_pass(c8.a))
          discard;
      out_color = vec4(c8) / 255.0;
@@ -22049,10 +22290,10 @@ index 0000000..f1e7f28
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..d9d8f98
+index 0000000..cbbb8be
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,2038 @@
+@@ -0,0 +1,2065 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -22240,22 +22481,27 @@ index 0000000..d9d8f98
 +    "            let _e58 = textureLoad(tex_t, _e56, 0i);\n"
 +    "            t = vec4<u32>(round((_e58 * 255f)));\n"
 +    "            let _e64 = sh;\n"
-+    "            if (_e64.pad != 0u) {\n"
++    "            if ((_e64.pad & 1u) != 0u) {\n"
 +    "                t.w = 255u;\n"
 +    "            }\n"
-+    "            let _e70 = t;\n"
-+    "            let _e71 = c_2;\n"
-+    "            c_2 = (((_e70 * _e71) + vec4(127u)) / vec4(255u));\n"
++    "            let _e72 = sh;\n"
++    "            let _e78 = t;\n"
++    "            if (((_e72.pad & 2u) != 0u) && (_e78.w == 0u)) {\n"
++    "                discard;\n"
++    "            }\n"
++    "            let _e83 = t;\n"
++    "            let _e84 = c_2;\n"
++    "            c_2 = (((_e83 * _e84) + vec4(127u)) / vec4(255u));\n"
 +    "        }\n"
 +    "    }\n"
-+    "    let _e79 = sh;\n"
-+    "    let _e83 = c_2;\n"
-+    "    let _e85 = alpha_pass(_e83.w);\n"
-+    "    if ((_e79.alpha_test != 0u) && !(_e85)) {\n"
++    "    let _e92 = sh;\n"
++    "    let _e96 = c_2;\n"
++    "    let _e98 = alpha_pass(_e96.w);\n"
++    "    if ((_e92.alpha_test != 0u) && !(_e98)) {\n"
 +    "        discard;\n"
 +    "    }\n"
-+    "    let _e88 = c_2;\n"
-+    "    out_color = (vec4<f32>(_e88) / vec4(255f));\n"
++    "    let _e101 = c_2;\n"
++    "    out_color = (vec4<f32>(_e101) / vec4(255f));\n"
 +    "    return;\n"
 +    "}\n"
 +    "\n"
@@ -23748,7 +23994,9 @@ index 0000000..d9d8f98
 +    "    var slope_inv_w: f32;\n"
 +    "    var sampled0_: bool;\n"
 +    "    var st: i32 = 0i;\n"
++    "    var kill_fragment: bool = false;\n"
 +    "    var st_1: i32 = 0i;\n"
++    "    var m_2: u32;\n"
 +    "    var t0_2: vec4<f32>;\n"
 +    "    var c8_: vec4<u32>;\n"
 +    "    var tn_2: array<vec4<f32>, 3>;\n"
@@ -23801,123 +24049,143 @@ index 0000000..d9d8f98
 +    "        }\n"
 +    "    }\n"
 +    "    loop {\n"
-+    "        let _e140 = st_1;\n"
-+    "        if !((_e140 < 4i)) {\n"
++    "        let _e142 = st_1;\n"
++    "        if !((_e142 < 4i)) {\n"
 +    "            break;\n"
 +    "        }\n"
 +    "        {\n"
-+    "            let _e147 = st_1;\n"
 +    "            let _e149 = st_1;\n"
-+    "            let _e150 = st_1;\n"
-+    "            let _e152 = stage_coord[_e150];\n"
-+    "            let _e153 = st_1;\n"
-+    "            let _e156 = sh.mode[_e153];\n"
-+    "            let _e157 = sh;\n"
-+    "            let _e161 = st_1;\n"
-+    "            let _e167 = stage_sample(_e149, _e152, _e156, ((_e157.misc.z & (1u << u32(_e161))) != 0u));\n"
-+    "            stage_value[_e147] = _e167;\n"
++    "            let _e151 = st_1;\n"
++    "            let _e152 = st_1;\n"
++    "            let _e154 = stage_coord[_e152];\n"
++    "            let _e155 = st_1;\n"
++    "            let _e158 = sh.mode[_e155];\n"
++    "            let _e159 = sh;\n"
++    "            let _e163 = st_1;\n"
++    "            let _e169 = stage_sample(_e151, _e154, _e158, ((_e159.misc.z & (1u << u32(_e163))) != 0u));\n"
++    "            stage_value[_e149] = _e169;\n"
++    "            let _e170 = st_1;\n"
++    "            let _e173 = sh.mode[_e170];\n"
++    "            m_2 = _e173;\n"
++    "            let _e175 = sh;\n"
++    "            let _e179 = st_1;\n"
++    "            let _e185 = sh;\n"
++    "            let _e190 = st_1;\n"
++    "            let _e198 = m_2;\n"
++    "            let _e202 = m_2;\n"
++    "            let _e206 = m_2;\n"
++    "            let _e210 = m_2;\n"
++    "            let _e214 = st_1;\n"
++    "            let _e216 = stage_value[_e214];\n"
++    "            if ((((((((_e175.misc.z & (1u << u32(_e179))) != 0u) && ((_e185.misc.w & (1u << u32((16i + _e190)))) != 0u)) && (_e198 != 0u)) && (_e202 != 4u)) && (_e206 != 5u)) && (_e210 != 17u)) && (_e216.w == 0f)) {\n"
++    "                kill_fragment = true;\n"
++    "            }\n"
 +    "        }\n"
 +    "        continuing {\n"
-+    "            let _e144 = st_1;\n"
-+    "            st_1 = (_e144 + 1i);\n"
++    "            let _e146 = st_1;\n"
++    "            st_1 = (_e146 + 1i);\n"
 +    "        }\n"
 +    "    }\n"
-+    "    let _e170 = stage_value[0];\n"
-+    "    t0_2 = _e170;\n"
-+    "    let _e173 = sh;\n"
-+    "    if (_e173.prog.x != 0u) {\n"
++    "    let _e222 = kill_fragment;\n"
++    "    if _e222 {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e225 = stage_value[0];\n"
++    "    t0_2 = _e225;\n"
++    "    let _e228 = sh;\n"
++    "    if (_e228.prog.x != 0u) {\n"
 +    "        {\n"
-+    "            let _e183 = stage_value[1];\n"
-+    "            tn_2[0i] = _e183;\n"
-+    "            let _e188 = stage_value[2];\n"
-+    "            tn_2[1i] = _e188;\n"
-+    "            let _e193 = stage_value[3];\n"
-+    "            tn_2[2i] = _e193;\n"
-+    "            let _e194 = t0_2;\n"
-+    "            let _e195 = v_col_1;\n"
-+    "            let _e196 = v_spec_1;\n"
-+    "            let _e197 = tn_2;\n"
-+    "            let _e198 = comb_eval(_e194, _e195, _e196, _e197);\n"
-+    "            let _e199 = to8_(_e198);\n"
-+    "            c8_ = _e199;\n"
++    "            let _e238 = stage_value[1];\n"
++    "            tn_2[0i] = _e238;\n"
++    "            let _e243 = stage_value[2];\n"
++    "            tn_2[1i] = _e243;\n"
++    "            let _e248 = stage_value[3];\n"
++    "            tn_2[2i] = _e248;\n"
++    "            let _e249 = t0_2;\n"
++    "            let _e250 = v_col_1;\n"
++    "            let _e251 = v_spec_1;\n"
++    "            let _e252 = tn_2;\n"
++    "            let _e253 = comb_eval(_e249, _e250, _e251, _e252);\n"
++    "            let _e254 = to8_(_e253);\n"
++    "            c8_ = _e254;\n"
 +    "        }\n"
 +    "    } else {\n"
-+    "        let _e200 = sampled0_;\n"
-+    "        if _e200 {\n"
++    "        let _e255 = sampled0_;\n"
++    "        if _e255 {\n"
 +    "            {\n"
-+    "                let _e201 = t0_2;\n"
-+    "                let _e208 = v_col_1;\n"
-+    "                let _e209 = to8_(_e208);\n"
-+    "                c8_ = (((vec4<u32>(((_e201 * 255f) + vec4(0.5f))) * _e209) + vec4(127u)) / vec4(255u));\n"
++    "                let _e256 = t0_2;\n"
++    "                let _e263 = v_col_1;\n"
++    "                let _e264 = to8_(_e263);\n"
++    "                c8_ = (((vec4<u32>(((_e256 * 255f) + vec4(0.5f))) * _e264) + vec4(127u)) / vec4(255u));\n"
 +    "            }\n"
 +    "        } else {\n"
 +    "            {\n"
-+    "                let _e217 = v_col_1;\n"
-+    "                let _e218 = to8_(_e217);\n"
-+    "                c8_ = _e218;\n"
++    "                let _e272 = v_col_1;\n"
++    "                let _e273 = to8_(_e272);\n"
++    "                c8_ = _e273;\n"
 +    "            }\n"
 +    "        }\n"
 +    "    }\n"
-+    "    let _e219 = sh;\n"
-+    "    let _e224 = c8_;\n"
-+    "    let _e226 = alpha_pass(_e224.w);\n"
-+    "    if ((_e219.alpha.x != 0u) && !(_e226)) {\n"
++    "    let _e274 = sh;\n"
++    "    let _e279 = c8_;\n"
++    "    let _e281 = alpha_pass(_e279.w);\n"
++    "    if ((_e274.alpha.x != 0u) && !(_e281)) {\n"
 +    "        discard;\n"
 +    "    }\n"
-+    "    let _e229 = c8_;\n"
-+    "    out_color = (vec4<f32>(_e229) / vec4(255f));\n"
-+    "    let _e234 = w_buffer;\n"
-+    "    if _e234 {\n"
-+    "        let _e235 = v_w_1;\n"
-+    "        local_24 = _e235;\n"
++    "    let _e284 = c8_;\n"
++    "    out_color = (vec4<f32>(_e284) / vec4(255f));\n"
++    "    let _e289 = w_buffer;\n"
++    "    if _e289 {\n"
++    "        let _e290 = v_w_1;\n"
++    "        local_24 = _e290;\n"
 +    "    } else {\n"
-+    "        let _e236 = gl_FragCoord_1;\n"
-+    "        let _e238 = zmax;\n"
-+    "        local_24 = (_e236.z * _e238);\n"
++    "        let _e291 = gl_FragCoord_1;\n"
++    "        let _e293 = zmax;\n"
++    "        local_24 = (_e291.z * _e293);\n"
 +    "    }\n"
-+    "    let _e241 = local_24;\n"
-+    "    zd = _e241;\n"
-+    "    let _e243 = sh;\n"
-+    "    if (_e243.depth_offset.y != 0f) {\n"
++    "    let _e296 = local_24;\n"
++    "    zd = _e296;\n"
++    "    let _e298 = sh;\n"
++    "    if (_e298.depth_offset.y != 0f) {\n"
 +    "        {\n"
-+    "            let _e248 = w_buffer;\n"
-+    "            if _e248 {\n"
-+    "                let _e249 = slope_inv_w;\n"
-+    "                let _e250 = zd;\n"
-+    "                let _e252 = zd;\n"
-+    "                local_25 = ((_e249 * _e250) * _e252);\n"
++    "            let _e303 = w_buffer;\n"
++    "            if _e303 {\n"
++    "                let _e304 = slope_inv_w;\n"
++    "                let _e305 = zd;\n"
++    "                let _e307 = zd;\n"
++    "                local_25 = ((_e304 * _e305) * _e307);\n"
 +    "            } else {\n"
-+    "                let _e254 = slope_z;\n"
-+    "                local_25 = _e254;\n"
++    "                let _e309 = slope_z;\n"
++    "                local_25 = _e309;\n"
 +    "            }\n"
-+    "            let _e256 = local_25;\n"
-+    "            slope = _e256;\n"
-+    "            let _e258 = zd;\n"
-+    "            let _e259 = sh;\n"
-+    "            let _e262 = slope;\n"
-+    "            zd = (_e258 + (_e259.depth_offset.y * _e262));\n"
++    "            let _e311 = local_25;\n"
++    "            slope = _e311;\n"
++    "            let _e313 = zd;\n"
++    "            let _e314 = sh;\n"
++    "            let _e317 = slope;\n"
++    "            zd = (_e313 + (_e314.depth_offset.y * _e317));\n"
 +    "        }\n"
 +    "    }\n"
-+    "    let _e265 = zd;\n"
-+    "    let _e266 = sh;\n"
-+    "    zd = (_e265 + _e266.depth_offset.x);\n"
-+    "    let _e270 = sh;\n"
-+    "    cmin = bitcast<f32>(_e270.depth.z);\n"
-+    "    let _e275 = sh;\n"
-+    "    cmax = bitcast<f32>(_e275.depth.w);\n"
-+    "    let _e280 = sh;\n"
-+    "    let _e287 = zd;\n"
-+    "    let _e288 = cmin;\n"
-+    "    let _e290 = zd;\n"
-+    "    let _e291 = cmax;\n"
-+    "    if (((_e280.depth.x & 2u) != 0u) && ((_e287 < _e288) || (_e290 > _e291))) {\n"
++    "    let _e320 = zd;\n"
++    "    let _e321 = sh;\n"
++    "    zd = (_e320 + _e321.depth_offset.x);\n"
++    "    let _e325 = sh;\n"
++    "    cmin = bitcast<f32>(_e325.depth.z);\n"
++    "    let _e330 = sh;\n"
++    "    cmax = bitcast<f32>(_e330.depth.w);\n"
++    "    let _e335 = sh;\n"
++    "    let _e342 = zd;\n"
++    "    let _e343 = cmin;\n"
++    "    let _e345 = zd;\n"
++    "    let _e346 = cmax;\n"
++    "    if (((_e335.depth.x & 2u) != 0u) && ((_e342 < _e343) || (_e345 > _e346))) {\n"
 +    "        discard;\n"
 +    "    }\n"
-+    "    let _e296 = zd;\n"
-+    "    let _e297 = cmin;\n"
-+    "    let _e298 = cmax;\n"
-+    "    let _e300 = zmax;\n"
-+    "    gl_FragDepth = clamp((clamp(_e296, _e297, _e298) / _e300), 0f, 1f);\n"
++    "    let _e351 = zd;\n"
++    "    let _e352 = cmin;\n"
++    "    let _e353 = cmax;\n"
++    "    let _e355 = zmax;\n"
++    "    gl_FragDepth = clamp((clamp(_e351, _e352, _e353) / _e355), 0f, 1f);\n"
 +    "    return;\n"
 +    "}\n"
 +    "\n"
@@ -25142,10 +25410,10 @@ index 0000000..4691e41
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..a3cd7d9
+index 0000000..9714f8f
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1383 @@
+@@ -0,0 +1,1440 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -25601,6 +25869,24 @@ index 0000000..a3cd7d9
 +        draw(&d);
 +        download(color, 0, W, H, img);
 +        CHECK(px(img, 1, 1) == 0xFF00FF00u, "XRGB surface samples force alpha to one");
++        /* Texture alpha-kill precedes modulation and the final alpha test. */
++        d.shade.pad=2; /* bit 1: kill zero texture alpha */
++        draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,1,1)==0xFF000000u,"flat alpha-kill discards transparent texels");
++        green=0x0100FF00u;upload(alternate,&green,1,1);draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,1,1)==0x0100FF00u,"flat alpha-kill preserves nonzero one-byte alpha");
++        green=0x0000FF00u;upload(alternate,&green,1,1);d.shade.pad=3;
++        draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,1,1)==0xFF00FF00u,"flat XRGB alpha is opaque before alpha-kill");
++        d.shade.pad=2;for(int vi=0;vi<6;vi++)v[vi].uv[2]=0;
++        draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,1,1)==0xFFFFFFFFu,"untextured flat geometry ignores texture alpha-kill");
++        for(int vi=0;vi<6;vi++){v[vi].uv[2]=1;v[vi].color[3]=0;}
++        green=0xFF00FF00u;upload(alternate,&green,1,1);draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,1,1)==0x0000FF00u,"flat alpha-kill uses texture alpha before vertex modulation");
++        for(int vi=0;vi<6;vi++)v[vi].color[3]=1;
++        green=0x0000FF00u;upload(alternate,&green,1,1);d.shade.pad=1;
++        draw(&d);
 +        SDL_GPUTexture *snapshot = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
 +                                             SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, W, H, 9);
 +        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
@@ -25884,6 +26170,45 @@ index 0000000..a3cd7d9
 +                    CHECK(px(img,159,25)==0x54545454u,"PASSTHRU stage %u preserves perspective interpolation (%08X)",stage,px(img,159,25));
 +                    for(unsigned vertex=0;vertex<3;vertex++)tri[vertex][3]=1;
 +                }
++                memcpy(&shade,saved_shade,sizeof shade);memcpy(tri,saved_tri,sizeof tri);d=saved_draw;
++            }
++
++            {
++                unsigned char saved_shade[sizeof shade],saved_tri[sizeof tri];Draw saved_draw=d;
++                memcpy(saved_shade,&shade,sizeof shade);memcpy(saved_tri,tri,sizeof tri);
++                SDL_GPUTexture *sample=make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,SDL_GPU_TEXTUREUSAGE_SAMPLER,1,1,1);
++                SDL_GPUTextureSamplerBinding bindings[4];
++                for(unsigned st=0;st<4;st++)bindings[st]=(SDL_GPUTextureSamplerBinding){sample,point_wrap};
++                d.pipe=xf;d.bindings=bindings;d.binding_count=4;d.clear_depth=1;d.depth_value=1;
++                for(unsigned st=0;st<4;st++)for(unsigned test=0;test<10;test++) {
++                    memset(&shade,0,sizeof shade);shade.depth[1]=shade.depth[3]=0x3f800000u;
++                    shade.prog[0]=1;shade.mode[st]=test==4?4:test==5?0x11:test==6?0:1;
++                    shade.prog[1]=shade.mode[st]<<(st*5);shade.misc[2]=test==7?0:1u<<st;
++                    shade.misc[3]=(test==0?0:1u<<(16+st))|(test==8?1u<<(8+st):0);
++                    shade.factor0[0]=test==9?0x00FF0000u:0xFFFF0000u;shade.color_icw[0]=0x01200000u;shade.alpha_icw[0]=0x11200000u;
++                    shade.color_ocw[0]=shade.alpha_ocw[0]=0xC0u;shade.tex[st][0]=shade.tex[st][1]=1;
++                    uint32_t rgba=(test==2||test==9)?0x0100FF00u:test==3?0xFF00FF00u:0x0000FF00u;
++                    upload(sample,&rgba,1,1);draw(&d);download(color,0,W,H,img);
++                    CHECK(px(img,25,25)==(test==1?0xFF000000u:test==9?0x00FF0000u:0xFFFF0000u),
++                          "texture alpha-kill stage %u case %u is independent of final alpha (%08X)",st,test,px(img,25,25));
++                }
++                /* A tiny positive filtered alpha must survive even if it
++                 * rounds to zero when converted to framebuffer alpha. */
++                shade.mode[3]=1;shade.prog[1]=1u<<15;shade.misc[2]=8;shade.misc[3]=1u<<19;
++                shade.factor0[0]=0xFFFF0000u;
++                shade.rect[3]=2u|0x300u;shade.tex[3][0]=shade.tex[3][1]=1;
++                for(unsigned vi=0;vi<3;vi++)tri[vi][24]=0;
++                uint32_t tiny=0x0100FF00u;upload(sample,&tiny,1,1);draw(&d);download(color,0,W,H,img);
++                CHECK(px(img,25,25)==0xFFFF0000u,"alpha-kill tests floating sample alpha before 8-bit rounding");
++                /* Killed foreground fragments must leave depth available. */
++                shade.rect[3]=0;tiny=0x0000FF00u;upload(sample,&tiny,1,1);
++                for(unsigned vi=0;vi<3;vi++)tri[vi][2]=0.2f;
++                draw(&d);
++                shade.misc[3]=0;shade.factor0[0]=0xFF00FF00u;d.clear_color=d.clear_depth=0;
++                for(unsigned vi=0;vi<3;vi++)tri[vi][2]=0.4f;
++                draw(&d);download(color,0,W,H,img);
++                CHECK(px(img,25,25)==0xFF00FF00u,"alpha-killed foreground does not occlude rear geometry");
++                SDL_ReleaseGPUTexture(dev,sample);
 +                memcpy(&shade,saved_shade,sizeof shade);memcpy(tri,saved_tri,sizeof tri);d=saved_draw;
 +            }
 +
