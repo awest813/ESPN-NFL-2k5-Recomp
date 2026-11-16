@@ -107,3 +107,34 @@ Original-Xbox pixel/audio/gameplay comparisons, every stadium/staff variant,
 weather/night combinations, software-presenter widescreen parity, and a
 sustained 30 FPS floor remain unverified. This is a tested implementation
 checkpoint, not a claim of complete graphics, audio or gameplay accuracy.
+
+## Recorded resource ownership follow-up
+
+The next retail reproduction captured an undefined texture in
+`copyTextureToTexture`, with the stack resolving to the WebGPU shim's `replay`
+and `do_submit`. Evidence is in `build-web-tests/stadium-crash-stack-2`.
+A standalone regression then reproduced the same exception by recording a
+copy, releasing its source, allowing the queued destruction to run, and
+submitting the recorded copy. This is valid deferred-destruction use under
+[SDL's release contract](https://wiki.libsdl.org/SDL3/SDL_ReleaseGPUTexture).
+
+The shim now retains textures, GPU buffers and transfer storage referenced by
+recorded operations. Submission releases those references after replay and
+readbacks complete; cancellation and rejected recordings release them too.
+The application reference can be released independently. This replaces
+immediate wrapper destruction while pending commands still hold raw pointers.
+
+The regression fails on the preceding implementation with the retail copy
+exception. Hardware WebGPU and Chromium/SwiftShader pass the fixed version,
+including shared/cancelled/rejected recordings, early texture and upload-buffer
+release, mip generation, blits, sampled textures, color/depth targets, indexed
+vertex/index buffers, and exact readback pixels. Launcher/OPFS and audio/video/
+input integration checks also exercise the rebuilt shim.
+
+Post-fix retail evidence is in `build-web-tests/resource-lifetime-retail`.
+Stadium entry, intro overlays, players and coin toss rendered without the
+recorded-copy exception in the first run; repeated entry is recorded separately.
+These checks identify and fix one demonstrated resource lifetime fault. They
+do not establish that every previously observed shader-handle or out-of-bounds
+exception shares this cause. Full graphics/audio/gameplay reference fidelity
+and a sustained 30 FPS floor remain open.

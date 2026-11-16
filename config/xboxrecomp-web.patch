@@ -4490,10 +4490,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..f01e895
+index 0000000..cd86495
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1537 @@
+@@ -0,0 +1,1591 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -4527,6 +4527,7 @@ index 0000000..f01e895
 + * it are only touched on the server thread. */
 +struct SDL_GPUDevice { int unused; };
 +struct SDL_GPUTexture {
++    atomic_uint refs;             /* application plus recorded commands */
 +    WGPUTexture tex;
 +    WGPUTextureView view;         /* all levels: sampling */
 +    WGPUTextureView *level_views; /* one per level: render targets, mip generation */
@@ -4534,8 +4535,8 @@ index 0000000..f01e895
 +    uint32_t w, h, levels, layers;
 +    int swapchain;                /* the canvas's current texture, resolved at replay */
 +};
-+struct SDL_GPUBuffer { WGPUBuffer buf; uint32_t size; };
-+struct SDL_GPUTransferBuffer { uint8_t *mem; uint32_t size; };
++struct SDL_GPUBuffer { WGPUBuffer buf; uint32_t size; atomic_uint refs; };
++struct SDL_GPUTransferBuffer { uint8_t *mem; uint32_t size; atomic_uint refs; };
 +struct SDL_GPUSampler { WGPUSampler s; };
 +struct SDL_GPUShader { WGPUShaderModule mod; SDL_GPUShaderStage stage; };
 +struct SDL_GPUGraphicsPipeline { WGPURenderPipeline pipe; };
@@ -4991,6 +4992,7 @@ index 0000000..f01e895
 +            .mipLevelCount = t->levels, .arrayLayerCount = t->layers, .aspect = WGPUTextureAspect_All };
 +        t->view = wgpuTextureCreateView(t->tex, &vd);
 +    }
++    atomic_init(&t->refs, 1);
 +    t->level_views = (WGPUTextureView *)calloc(t->levels * t->layers, sizeof *t->level_views);
 +    if (!t->level_views) {
 +        if (t->view) wgpuTextureViewRelease(t->view);
@@ -5038,7 +5040,8 @@ index 0000000..f01e895
 +void WG_ReleaseGPUTexture(SDL_GPUDevice *d, SDL_GPUTexture *t)
 +{
 +    (void)d;
-+    if (t && !t->swapchain) emscripten_proxy_async(q(), s_server, do_release_texture, t);
++    if (t && !t->swapchain && atomic_fetch_sub(&t->refs, 1) == 1)
++        emscripten_proxy_async(q(), s_server, do_release_texture, t);
 +}
 +
 +/* ── Buffers ──────────────────────────────────────────────────────────── */
@@ -5051,6 +5054,7 @@ index 0000000..f01e895
 +    if (a->info->usage & SDL_GPU_BUFFERUSAGE_INDEX) u |= WGPUBufferUsage_Index;
 +    SDL_GPUBuffer *b = (SDL_GPUBuffer *)calloc(1, sizeof *b);
 +    if (!b) return;
++    atomic_init(&b->refs, 1);
 +    b->size = (a->info->size + 3u) & ~3u;
 +    WGPUBufferDescriptor d = { .usage = u, .size = b->size };
 +    b->buf = wgpuDeviceCreateBuffer(s_dev, &d);
@@ -5068,7 +5072,8 @@ index 0000000..f01e895
 +void WG_ReleaseGPUBuffer(SDL_GPUDevice *d, SDL_GPUBuffer *b)
 +{
 +    (void)d;
-+    if (b) emscripten_proxy_async(q(), s_server, do_release_buffer, b);
++    if (b && atomic_fetch_sub(&b->refs, 1) == 1)
++        emscripten_proxy_async(q(), s_server, do_release_buffer, b);
 +}
 +
 +/* Transfer buffers are plain memory: the server copies out of (or into) them
@@ -5078,12 +5083,13 @@ index 0000000..f01e895
 +    (void)d;
 +    SDL_GPUTransferBuffer *t = (SDL_GPUTransferBuffer *)calloc(1, sizeof *t);
 +    if (!t) return NULL;
++    atomic_init(&t->refs, 1);
 +    t->size = i->size;
 +    t->mem = (uint8_t *)malloc(i->size ? i->size : 1);
 +    if (!t->mem) { free(t); return NULL; }
 +    return t;
 +}
-+void WG_ReleaseGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; if (t) { free(t->mem); free(t); } }
++void WG_ReleaseGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; if (t && atomic_fetch_sub(&t->refs, 1) == 1) { free(t->mem); free(t); } }
 +void *WG_MapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t, bool cycle) { (void)d; (void)cycle; return t ? t->mem : NULL; }
 +void WG_UnmapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; (void)t; }
 +
@@ -5319,7 +5325,52 @@ index 0000000..f01e895
 +    return o;
 +}
 +
-+static void cmd_free(SDL_GPUCommandBuffer *c) { free(c->ops); free(c->uniforms); free(c); }
++/* SDL release relinquishes the application reference. Recorded commands
++ * keep wrappers and upload/readback storage alive through replay, including
++ * cancellation, rejected submissions, and asynchronous readbacks. */
++static void texture_ref(SDL_GPUTexture *t, int release)
++{
++    if (!t || t->swapchain) return;
++    if (release) WG_ReleaseGPUTexture(NULL, t);
++    else atomic_fetch_add(&t->refs, 1);
++}
++static void buffer_ref(SDL_GPUBuffer *b, int release)
++{
++    if (!b) return;
++    if (release) WG_ReleaseGPUBuffer(NULL, b);
++    else atomic_fetch_add(&b->refs, 1);
++}
++static void transfer_ref(SDL_GPUTransferBuffer *b, int release)
++{
++    if (!b) return;
++    if (release) WG_ReleaseGPUTransferBuffer(NULL, b);
++    else atomic_fetch_add(&b->refs, 1);
++}
++static void op_resources(const Op *o, int release)
++{
++    switch (o->kind) {
++    case OP_UPLOAD_BUFFER: transfer_ref(o->ub.src, release); buffer_ref(o->ub.dst, release); break;
++    case OP_UPLOAD_TEXTURE: transfer_ref(o->ut.src, release); texture_ref(o->ut.dst, release); break;
++    case OP_DOWNLOAD_TEXTURE: texture_ref(o->dt.src, release); transfer_ref(o->dt.dst, release); break;
++    case OP_COPY_TEXTURE: texture_ref(o->ct.src, release); texture_ref(o->ct.dst, release); break;
++    case OP_MIPMAPS: texture_ref(o->mip.tex, release); break;
++    case OP_BLIT: texture_ref(o->blit.src.texture, release); texture_ref(o->blit.dst.texture, release); break;
++    case OP_BEGIN_PASS:
++        if (o->pass.has_color) texture_ref(o->pass.color.texture, release);
++        if (o->pass.has_depth) texture_ref(o->pass.depth.texture, release);
++        break;
++    case OP_VERTEX_BUFFER: case OP_INDEX_BUFFER: buffer_ref(o->vb.buf, release); break;
++    case OP_SAMPLERS:
++        for (uint32_t i = 0; i < o->samplers.n; i++) texture_ref(o->samplers.tex[i], release);
++        break;
++    default: break;
++    }
++}
++static void cmd_free(SDL_GPUCommandBuffer *c)
++{
++    for (uint32_t i = 0; i < c->n; i++) op_resources(&c->ops[i], 1);
++    free(c->ops); free(c->uniforms); free(c);
++}
 +
 +bool WG_CancelGPUCommandBuffer(SDL_GPUCommandBuffer *c) { if (c) cmd_free(c); return true; }
 +
@@ -5338,7 +5389,7 @@ index 0000000..f01e895
 +        cmd_fail(CMD(p), "invalid buffer upload range or alignment"); return;
 +    }
 +    Op *o = push(CMD(p), OP_UPLOAD_BUFFER);
-+    if (o) o->ub = (typeof(o->ub)){ s->transfer_buffer, s->offset, d->buffer, d->offset, d->size };
++    if (o) { o->ub = (typeof(o->ub)){ s->transfer_buffer, s->offset, d->buffer, d->offset, d->size }; op_resources(o, 0); }
 +}
 +static int texture_region_valid(SDL_GPUTexture *t, uint32_t level, uint32_t x, uint32_t y,
 +                                uint32_t w, uint32_t h, uint32_t layer, uint32_t depth)
@@ -5368,9 +5419,9 @@ index 0000000..f01e895
 +        cmd_fail(CMD(p), "invalid texture upload region or transfer range"); return;
 +    }
 +    Op *o = push(CMD(p), OP_UPLOAD_TEXTURE);
-+    if (o) o->ut = (typeof(o->ut)){ s->transfer_buffer, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
++    if (o) { o->ut = (typeof(o->ut)){ s->transfer_buffer, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
 +                                   s->rows_per_layer ? s->rows_per_layer : d->h, d->texture, d->mip_level,
-+                                   d->x, d->y, d->w, d->h, d->layer };
++                                   d->x, d->y, d->w, d->h, d->layer }; op_resources(o, 0); }
 +}
 +void WG_DownloadFromGPUTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureRegion *s, const SDL_GPUTextureTransferInfo *d)
 +{
@@ -5382,6 +5433,7 @@ index 0000000..f01e895
 +    if (o) {
 +        o->dt = (typeof(o->dt)){ s->texture, s->mip_level, s->x, s->y, s->w, s->h, s->layer, d->transfer_buffer, d->offset,
 +                                   d->pixels_per_row ? d->pixels_per_row : s->w };
++        op_resources(o, 0);
 +        CMD(p)->has_download = 1;
 +    }
 +}
@@ -5395,18 +5447,18 @@ index 0000000..f01e895
 +        cmd_fail(CMD(p), "invalid texture copy region or format"); return;
 +    }
 +    Op *o = push(CMD(p), OP_COPY_TEXTURE);
-+    if (o) o->ct = (typeof(o->ct)){ s->texture, d->texture, s->mip_level, s->x, s->y, d->mip_level, d->x, d->y, w, h, s->layer, d->layer };
++    if (o) { o->ct = (typeof(o->ct)){ s->texture, d->texture, s->mip_level, s->x, s->y, d->mip_level, d->x, d->y, w, h, s->layer, d->layer }; op_resources(o, 0); }
 +}
 +void WG_GenerateMipmapsForGPUTexture(SDL_GPUCommandBuffer *c, SDL_GPUTexture *t)
 +{
 +    Op *o = push(c, OP_MIPMAPS);
-+    if (o) o->mip.tex = t;
++    if (o) { o->mip.tex = t; op_resources(o, 0); }
 +}
 +void WG_BlitGPUTexture(SDL_GPUCommandBuffer *c, const SDL_GPUBlitInfo *i)
 +{
 +    Op *o = push(c, OP_BLIT);
-+    if (o) o->blit = (typeof(o->blit)){ i->source, i->destination, i->filter == SDL_GPU_FILTER_LINEAR,
-+                                       i->load_op == SDL_GPU_LOADOP_CLEAR, i->clear_color };
++    if (o) { o->blit = (typeof(o->blit)){ i->source, i->destination, i->filter == SDL_GPU_FILTER_LINEAR,
++                                       i->load_op == SDL_GPU_LOADOP_CLEAR, i->clear_color }; op_resources(o, 0); }
 +}
 +
 +SDL_GPURenderPass *WG_BeginGPURenderPass(SDL_GPUCommandBuffer *c, const SDL_GPUColorTargetInfo *ct, Uint32 n,
@@ -5416,6 +5468,7 @@ index 0000000..f01e895
 +    if (o) {
 +        if (n) { o->pass.color = ct[0]; o->pass.has_color = 1; }
 +        if (ds) { o->pass.depth = *ds; o->pass.has_depth = 1; }
++        op_resources(o, 0);
 +    }
 +    return (SDL_GPURenderPass *)c;
 +}
@@ -5428,13 +5481,13 @@ index 0000000..f01e895
 +void WG_BindGPUVertexBuffers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUBufferBinding *b, Uint32 n)
 +{
 +    (void)first;
-+    if (n) { Op *o = push(CMD(p), OP_VERTEX_BUFFER); if (o) o->vb = (typeof(o->vb)){ b[0].buffer, b[0].offset }; }
++    if (n) { Op *o = push(CMD(p), OP_VERTEX_BUFFER); if (o) { o->vb = (typeof(o->vb)){ b[0].buffer, b[0].offset }; op_resources(o, 0); } }
 +}
 +void WG_BindGPUIndexBuffer(SDL_GPURenderPass *p, const SDL_GPUBufferBinding *b, SDL_GPUIndexElementSize s)
 +{
 +    (void)s;   /* the renderer only uses 32-bit indices */
 +    Op *o = push(CMD(p), OP_INDEX_BUFFER);
-+    if (o) o->vb = (typeof(o->vb)){ b->buffer, b->offset };
++    if (o) { o->vb = (typeof(o->vb)){ b->buffer, b->offset }; op_resources(o, 0); }
 +}
 +void WG_BindGPUFragmentSamplers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUTextureSamplerBinding *b, Uint32 n)
 +{
@@ -5443,6 +5496,7 @@ index 0000000..f01e895
 +    o->samplers.first = first;
 +    o->samplers.n = n > WG_MAX_SAMPLERS ? WG_MAX_SAMPLERS : n;
 +    for (uint32_t i = 0; i < o->samplers.n; i++) { o->samplers.tex[i] = b[i].texture; o->samplers.smp[i] = b[i].sampler; }
++    op_resources(o, 0);
 +}
 +static void push_uniform(SDL_GPUCommandBuffer *c, int fragment, const void *data, Uint32 len)
 +{
@@ -6033,10 +6087,10 @@ index 0000000..f01e895
 +#endif /* __EMSCRIPTEN__ */
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
 new file mode 100644
-index 0000000..52408ac
+index 0000000..1eed721
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,158 @@
 +#ifndef SDL_GPU_WEBGPU_H
 +#define SDL_GPU_WEBGPU_H
 +/* The SDL GPU renderer on WebGPU (Emscripten builds).
@@ -6055,7 +6109,8 @@ index 0000000..52408ac
 + * GPU server, owns the device and sits in its event loop; every call below,
 + * from any thread, runs there through Emscripten's proxying queue. Command
 + * buffers are recorded on the caller's side and replayed into a
-+ * GPUCommandEncoder on submit. Submits are synchronous (they copy upload data
++ * GPUCommandEncoder on submit. Recorded commands retain textures, buffers
++ * and transfer storage until submission or cancellation completes. Submits are synchronous (they copy upload data
 + * into WebGPU before returning) and wait for any downloads in them. The
 + * renderer calls from two threads -- the pushbuffer executor and the window
 + * presenter -- which this makes safe.
@@ -9246,10 +9301,10 @@ index 0000000..4691e41
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..54d6447
+index 0000000..c712fa0
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,879 @@
+@@ -0,0 +1,1018 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -10068,6 +10123,145 @@ index 0000000..54d6447
 +                CHECK(px(img, 25, 25) == colours[3], "reflected eye vector selects specular lighting cube -Y");
 +            }
 +        }
++    }
++
++    /* Recorded work owns its resources even if the application releases
++     * its handle before submission (SDL defers destruction until safe). */
++    {
++        SDL_GPUTexture *held = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *result = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTextureLocation from = {.texture = color}, to = {.texture = held};
++        SDL_GPUCommandBuffer *seed = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(seed);
++        SDL_CopyGPUTextureToTexture(pass, &from, &to, W, H, 1, false);
++        SDL_EndGPUCopyPass(pass);
++        CHECK(SDL_SubmitGPUCommandBuffer(seed), "seed retained texture fixture");
++        download(color, 0, W, H, img);
++        uint32_t expected = px(img, W/2, H/2);
++        SDL_GPUCommandBuffer *pending = SDL_AcquireGPUCommandBuffer(dev);
++        pass = SDL_BeginGPUCopyPass(pending);
++        from.texture = held; to.texture = result;
++        SDL_CopyGPUTextureToTexture(pass, &from, &to, W, H, 1, false);
++        SDL_EndGPUCopyPass(pass);
++        SDL_GPUCommandBuffer *cancelled = SDL_AcquireGPUCommandBuffer(dev);
++        pass = SDL_BeginGPUCopyPass(cancelled);
++        SDL_CopyGPUTextureToTexture(pass, &from, &to, W, H, 1, false);
++        SDL_EndGPUCopyPass(pass);
++        SDL_GPUCommandBuffer *rejected = SDL_AcquireGPUCommandBuffer(dev);
++        pass = SDL_BeginGPUCopyPass(rejected);
++        SDL_CopyGPUTextureToTexture(pass, &from, &to, W, H, 1, false);
++        SDL_CopyGPUTextureToTexture(pass, &from, &to, W + 1, H, 1, false);
++        SDL_EndGPUCopyPass(pass);
++        SDL_ReleaseGPUTexture(dev, held);
++        CHECK(SDL_CancelGPUCommandBuffer(cancelled), "cancel one shared texture recording");
++        CHECK(!SDL_SubmitGPUCommandBuffer(rejected), "reject incomplete shared texture recording");
++        /* A synchronous server call ensures the queued release has run. */
++        SDL_GPUTexture *barrier = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++        CHECK(SDL_SubmitGPUCommandBuffer(pending), "submit after application texture release");
++        download(result, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == expected, "recorded copy retains released source texture");
++        SDL_ReleaseGPUTexture(dev, barrier);
++        SDL_ReleaseGPUTexture(dev, result);
++    }
++
++    {
++        SDL_GPUTexture *mips = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 8, 8, 4);
++        SDL_GPUTransferBufferCreateInfo ti = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 8 * 8 * 4};
++        SDL_GPUTransferBuffer *bytes = SDL_CreateGPUTransferBuffer(dev, &ti);
++        uint32_t *pixels = SDL_MapGPUTransferBuffer(dev, bytes, false);
++        for (int i = 0; i < 64; i++) pixels[i] = 0xFF30C040u; /* RGBA bytes */
++        SDL_UnmapGPUTransferBuffer(dev, bytes);
++        SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(c);
++        SDL_GPUTextureTransferInfo from = {.transfer_buffer = bytes};
++        SDL_GPUTextureRegion to = {.texture = mips, .w = 8, .h = 8, .d = 1};
++        SDL_UploadToGPUTexture(pass, &from, &to, false);
++        SDL_EndGPUCopyPass(pass);
++        SDL_GenerateMipmapsForGPUTexture(c, mips);
++        SDL_GPUBlitInfo blit = {
++            .source = {.texture = mips, .mip_level = 3, .w = 1, .h = 1},
++            .destination = {.texture = color, .w = W, .h = H},
++            .load_op = SDL_GPU_LOADOP_CLEAR, .filter = SDL_GPU_FILTER_NEAREST};
++        SDL_BlitGPUTexture(c, &blit);
++        SDL_ReleaseGPUTexture(dev, mips); SDL_ReleaseGPUTransferBuffer(dev, bytes);
++        CHECK(SDL_SubmitGPUCommandBuffer(c), "released texture upload survives mip generation and blit");
++        download(color, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFF40C030u, "retained upload, mip and blit resources preserve exact pixels");
++    }
++
++    /* Keep every indexed-draw resource and upload/readback allocation alive
++     * after application release, through synchronous replay and async mapping. */
++    {
++        SgVertex vertices[6];
++        quad(vertices, 0, 0, W, H, 0, 0, 1, 1, 0xFF2468ACu, 1);
++        uint32_t indices[6] = {0, 1, 2, 3, 4, 5}, white_pixel = 0xFFFFFFFFu;
++        SDL_GPUBufferCreateInfo bi = {.usage = SDL_GPU_BUFFERUSAGE_VERTEX, .size = sizeof vertices};
++        SDL_GPUBuffer *vb = SDL_CreateGPUBuffer(dev, &bi);
++        bi.usage = SDL_GPU_BUFFERUSAGE_INDEX; bi.size = sizeof indices;
++        SDL_GPUBuffer *ib = SDL_CreateGPUBuffer(dev, &bi);
++        SDL_GPUTransferBufferCreateInfo ti = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
++            .size = sizeof vertices + sizeof indices};
++        SDL_GPUTransferBuffer *upload_data = SDL_CreateGPUTransferBuffer(dev, &ti);
++        uint8_t *mapped = SDL_MapGPUTransferBuffer(dev, upload_data, false);
++        memcpy(mapped, vertices, sizeof vertices);
++        memcpy(mapped + sizeof vertices, indices, sizeof indices);
++        SDL_UnmapGPUTransferBuffer(dev, upload_data);
++        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD; ti.size = W * H * 4;
++        SDL_GPUTransferBuffer *readback = SDL_CreateGPUTransferBuffer(dev, &ti);
++        SDL_GPUTexture *target = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, W, H, 1);
++        SDL_GPUTexture *z = make_tex(depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, W, H, 1);
++        SDL_GPUTexture *sample = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++        upload(sample, &white_pixel, 1, 1);
++        SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(c);
++        SDL_GPUTransferBufferLocation from = {.transfer_buffer = upload_data};
++        SDL_GPUBufferRegion to = {.buffer = vb, .size = sizeof vertices};
++        SDL_UploadToGPUBuffer(copy, &from, &to, false);
++        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices;
++        SDL_UploadToGPUBuffer(copy, &from, &to, false);
++        SDL_EndGPUCopyPass(copy);
++        SDL_GPUColorTargetInfo ct = {.texture = target, .load_op = SDL_GPU_LOADOP_CLEAR,
++            .store_op = SDL_GPU_STOREOP_STORE, .clear_color = {0, 0, 0, 1}};
++        SDL_GPUDepthStencilTargetInfo ds = {.texture = z, .clear_depth = 1,
++            .load_op = SDL_GPU_LOADOP_CLEAR, .store_op = SDL_GPU_STOREOP_STORE,
++            .stencil_load_op = SDL_GPU_LOADOP_CLEAR, .stencil_store_op = SDL_GPU_STOREOP_STORE};
++        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(c, &ct, 1, &ds);
++        SDL_GPUViewport viewport = {0, 0, W, H, 0, 1};
++        SDL_SetGPUViewport(pass, &viewport);
++        SDL_BindGPUGraphicsPipeline(pass, opaque);
++        SDL_GPUBufferBinding binding = {.buffer = vb};
++        SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
++        binding.buffer = ib;
++        SDL_BindGPUIndexBuffer(pass, &binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
++        SDL_GPUTextureSamplerBinding sampler = {.texture = sample, .sampler = point_wrap};
++        SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
++        float size[4] = {W, H, 1, 0};
++        Shade shade = {.tex_size = {1, 1}};
++        SDL_PushGPUVertexUniformData(c, 0, size, sizeof size);
++        SDL_PushGPUFragmentUniformData(c, 0, &shade, sizeof shade);
++        SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
++        SDL_EndGPURenderPass(pass);
++        copy = SDL_BeginGPUCopyPass(c);
++        SDL_GPUTextureRegion region = {.texture = target, .w = W, .h = H, .d = 1};
++        SDL_GPUTextureTransferInfo destination = {.transfer_buffer = readback};
++        SDL_DownloadFromGPUTexture(copy, &region, &destination);
++        SDL_EndGPUCopyPass(copy);
++        SDL_ReleaseGPUBuffer(dev, vb); SDL_ReleaseGPUBuffer(dev, ib);
++        SDL_ReleaseGPUTransferBuffer(dev, upload_data);
++        SDL_ReleaseGPUTexture(dev, target); SDL_ReleaseGPUTexture(dev, z); SDL_ReleaseGPUTexture(dev, sample);
++        SDL_GPUFence *done = SDL_SubmitGPUCommandBufferAndAcquireFence(c);
++        CHECK(done && SDL_WaitForGPUFences(dev, true, &done, 1), "released indexed draw resources survive replay and readback");
++        SDL_ReleaseGPUFence(dev, done);
++        memcpy(img, SDL_MapGPUTransferBuffer(dev, readback, false), W * H * 4);
++        SDL_UnmapGPUTransferBuffer(dev, readback);
++        CHECK(px(img, W/2, H/2) == 0xFF2468ACu, "released buffers, sampler texture, targets and upload bytes render exact pixels");
++        SDL_ReleaseGPUTransferBuffer(dev, readback);
 +    }
 +
 +    /* 10. Presenting: copy the flipped target to a sampled texture, then
