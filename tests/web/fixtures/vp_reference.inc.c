@@ -101,11 +101,12 @@ static void reference_vp_run(const float V[16][4], float O[16][4]) {
         switch (mac) {
             case 1: memcpy(mres, A, sizeof mres);
                 break; /* MOV */
-            case 2: for (i = 0; i < 4; i++) mres[i] = A[i] * B[i];
+            /* NV2A zero products, independent of the optimized helper. */
+            case 2: for (i = 0; i < 4; i++) mres[i] = (A[i] == 0.0f || B[i] == 0.0f) ? 0.0f : A[i] * B[i];
                 break; /* MUL */
             case 3: for (i = 0; i < 4; i++) mres[i] = A[i] + C[i];
                 break; /* ADD */
-            case 4: for (i = 0; i < 4; i++) mres[i] = A[i] * B[i] + C[i];
+            case 4: for (i = 0; i < 4; i++) mres[i] = ((A[i] == 0.0f || B[i] == 0.0f) ? 0.0f : A[i] * B[i]) + C[i];
                 break; /* MAD */
             case 5: mres[0] = mres[1] = mres[2] = mres[3] = /* DP3 */
                                                   A[0] * B[0] + A[1] * B[1] + A[2] * B[2];

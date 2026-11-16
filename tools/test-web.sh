@@ -25,6 +25,8 @@ mkdir -p "$OUT"
 python3 -I "$ROOT/tests/web/test_gen_web_devices.py"
 python3 -I "$ROOT/tests/web/test_frame_pacing.py"
 python3 -I "$ROOT/tests/web/test_vertex_fetch.py"
+python3 -I "$ROOT/tests/web/test_vp_cache.py"
+python3 -I "$ROOT/tests/web/test_vp_interpreter.py" --build-dir "$OUT/vp-interpreter"
 python3 -I "$ROOT/tests/web/test_draw_merge.py"
 python3 -I "$ROOT/tests/web/test_draw_uniforms.py"
 python3 -I "$ROOT/tests/web/test_texture_decode.py"
@@ -57,6 +59,8 @@ emcmake cmake -S "$ROOT/external/xboxrecomp/tests/sdlgpu_web" -B "$OUT/sdlgpu_we
   -DCMAKE_BUILD_TYPE=Release -DSDL3_DIR="$SDL_DIR" -DCMAKE_C_FLAGS="-pthread" -DCMAKE_CXX_FLAGS="-pthread" >/dev/null
 cmake --build "$OUT/sdlgpu_web" -j "${JOBS:-$(nproc)}"
 if [ "$HAVE_PW" = 1 ]; then
+  python3 -I "$ROOT/tests/web/test_vp_wgsl.py" --build-dir "$OUT/vp-wgsl"
+  node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_vp_wgsl.js" "$OUT/vp-wgsl"
   node "$ROOT/tests/web/test_audit_browser.cjs"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"

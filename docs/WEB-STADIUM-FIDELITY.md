@@ -246,6 +246,50 @@ audio/video/controller integration checks pass against the rebuilt runtime.
 Audio drops and sub-30 FPS samples remain; this is not a full fidelity or
 performance pass.
 
+## Exact vertex-program identity and exceptional math
+
+Two three-instruction MOV programs with hash `A3202AA7` at start slot zero
+reproduced incorrect cache reuse. Their CPU outputs and input masks differ,
+but the old cache returned the first program's shader for both. The fixture is
+`tests/web/fixtures/vp_cache_collision.h`; the failing production-lookup result
+is `build-web-tests/vp-cache-before.log`.
+
+The SDL GPU cache now retains and compares the exact instruction words through
+FINAL, using the hash to select the probe sequence. Code after FINAL does not
+change identity, and a failed program does not poison a colliding program.
+The fixed snapshots add about 2.1 MiB at the current cache capacity. Invalid
+start offsets return to the interpreter. Rare collisions are logged so retail
+evidence can distinguish this defect from other geometry faults.
+
+The expanded GPU differential check exposed two math/reference problems.
+SwiftShader's zero-base LIT result differed from the CPU, so WGSL now handles
+zero-base negative, zero and positive exponents explicitly. Separately, the
+CPU expected NaN for zero times infinity. xemu's
+[NV2A shader generator](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/vsh-prog.c)
+documents that MUL returns zero when either operand is zero, including exceptional
+operands; MAD uses that product before addition. The interpreter and WGSL,
+GLSL and HLSL translations now implement that rule. The baseline decoder was
+corrected independently, and explicit expected-value cases check positive zero,
+infinity/NaN operands, both operand orders and MAD's addend.
+
+Validation: 40,000 interpreter comparisons pass; hardware WebGPU and Linux
+SwiftShader pass 2,272 vertex executions across 71 programs, comparing outputs
+and temporary registers. The latter includes both colliding programs, zero-base
+LIT and zero-product cases (`nv2a-zero-math-hardware.log`,
+`nv2a-zero-math-linux.log`). The harness uses explicit compute layouts so valid
+MOV-only programs need not access constants. CPU/cache and GPU comparisons now
+run in the normal web CI workflow. Browser audio/video/controller checks and the
+native Vulkan renderer suite pass. A fresh pinned checkout reproduces all 52
+patched runtime files, including the native HLSL translation change.
+
+The final retail case in `build-web-tests/vp-identity-math-retail/report.json`
+renders Saints player intros, readable career overlays, staff with clipboards,
+sideline equipment and stadium tiers without recorded browser/GPU exceptions.
+No shader-hash collision was logged in this case. These fixes therefore do not
+establish the cause or resolution of the earlier coach-shot polygons. Audio
+queue drops/underruns, full original-Xbox reference parity and a sustained
+30 FPS floor remain open.
+
 ## Browser audio resampling bounds
 
 An independent audio correctness check reproduced a ring-buffer fault at an

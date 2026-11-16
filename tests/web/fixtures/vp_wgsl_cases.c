@@ -1,6 +1,7 @@
 /* Differential inputs for the production WGSL translator and CPU oracle. */
 #include <stdarg.h>
 /* LIVE_GENERATOR */
+#include "vp_cache_collision.h"
 
 static uint32_t random_seed = 0x8cae2193u;
 static uint32_t rng(void) {
@@ -52,10 +53,10 @@ static void compact_vertex_case(void) {
     save("compact.uniforms.bin", uniforms, sizeof uniforms);
 }
 int main(void) {
-    enum { CASES = 64, VERTICES = 32 };
+    enum { CASES = 71, VERTICES = 32 };
     for (unsigned test = 0; test < CASES; test++) {
-        s_vp.start = test % 5;
-        unsigned length = test < 22 ? 1 : 12;
+        s_vp.start = test >= 64 ? 0 : test % 5;
+        unsigned length = test >= 64 ? 0 : test < 22 ? 1 : 12;
         for (unsigned i = 0; i < length; i++) {
             uint32_t *t = s_vp.prog[s_vp.start + i];
             unsigned mac = test < 14 ? test : test < 22 ? 0 : rng() % 14;
@@ -79,13 +80,40 @@ int main(void) {
                      | (3u << 3) | (ilu ? 4u : 0u) | 1u;
             }
         }
+        if (test == 64 || test == 65) memcpy(s_vp.prog, vp_cache_collision[test - 64], sizeof vp_cache_collision[0]);
+        if (test == 66) {
+            uint32_t lit[4] = {0, 7u << 25, (1u << 6) | (2u << 4) | (3u << 2),
+                (2u << 28) | (15u << 16) | (15u << 12) | (1u << 11) | (3u << 3) | 5u};
+            memcpy(s_vp.prog[0], lit, sizeof lit);
+        }
+        if (test >= 67) {
+            uint32_t mac=test&1?2u:4u,reverse=test>=69;
+            uint32_t *t=s_vp.prog[0];
+            t[0]=0;t[1]=(mac<<21)|(2u<<13)|0x1bu;
+            t[2]=((reverse?1u:2u)<<26)|((reverse?2u:1u)<<11)
+                |(1u<<21)|(2u<<19)|(3u<<17)|0x6cu;
+            t[3]=(3u<<28)|(15u<<12)|(1u<<11)|(3u<<3)|1u;
+        }
         for (unsigned i = 0; i < 192; i++)
             for (unsigned k = 0; k < 4; k++) s_vp.c[i][k] = random_float();
         float inputs[VERTICES][16][4], outputs[VERTICES][29][4];
         for (unsigned i = 0; i < VERTICES; i++) {
             for (unsigned a = 0; a < 16; a++)
                 for (unsigned k = 0; k < 4; k++) inputs[i][a][k] = random_float();
+            if (test == 66) {
+                inputs[i][0][0] = i & 1 ? -1.0f : 1.0f;
+                inputs[i][0][1] = (float[]){0.0f,-1.0f,0.5f,1.0f}[(i / 2) % 4];
+                inputs[i][0][3] = (float[]){-1.0f,0.0f,1.0f,127.0f}[i / 8];
+            }
+            if (test >= 67) {
+                inputs[i][0][0]=i&1?-INFINITY:INFINITY;inputs[i][0][1]=NAN;
+                inputs[i][0][2]=-0.0f;inputs[i][0][3]=1.0f;
+            }
             vp_run(inputs[i], outputs[i]);
+            if (test >= 67) for(unsigned k=0;k<4;k++) {
+                float expected=test&1?0.0f:s_vp.c[2][k];
+                if(outputs[i][3][k]!=expected || ((test&1) && signbit(outputs[i][3][k]))) abort();
+            }
             memcpy(outputs[i][16], s_vp_dbg_r, sizeof s_vp_dbg_r);
         }
         char *source = sg_vp_translate_wgsl(s_vp.start);
@@ -103,6 +131,6 @@ int main(void) {
     s_vp.prog[0][3] = (15u << 12) | 1u; /* MOV writes c0 */
     if (sg_vp_translate_wgsl(0)) return 2;
     if (sg_vp_translate_wgsl(VP_PROG_LEN)) return 3;
-    puts("Generated 64 WGSL programs with CPU references; constant writes correctly refused");
+    puts("Generated 71 WGSL programs with CPU references; constant writes correctly refused");
     return 0;
 }

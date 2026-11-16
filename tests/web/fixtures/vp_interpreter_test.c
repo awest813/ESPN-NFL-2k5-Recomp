@@ -62,7 +62,30 @@ static int parity_check(void) {
 }
 
 #include <emscripten/emscripten.h>
+static int zero_product_check(void) {
+    float input[16][4]={{INFINITY,NAN,-0.0f,1.0f}},output[16][4];
+    s_vp.start=0;
+    memset(s_vp.prog,0,sizeof s_vp.prog);
+    for(unsigned reverse=0;reverse<2;reverse++)for(unsigned mac=2;mac<=4;mac+=2) {
+        uint32_t *t=s_vp.prog[0];
+        t[1]=(mac<<21)|(2u<<13)|0x1bu;
+        t[2]=((reverse?1u:2u)<<26)|((reverse?2u:1u)<<11)
+            |(1u<<21)|(2u<<19)|(3u<<17)|0x6cu;
+        t[3]=(3u<<28)|(15u<<12)|(1u<<11)|(3u<<3)|1u;
+        for(unsigned k=0;k<4;k++)s_vp.c[2][k]=(float)(k+2);
+        s_vp_cgen++;vp_run(input,output);
+        for(unsigned k=0;k<4;k++) {
+            float expected=mac==2?0.0f:s_vp.c[2][k];
+            if(output[3][k]!=expected || (mac==2 && signbit(output[3][k]))) {
+                puts("FAIL NV2A zero-product MUL/MAD");return 1;
+            }
+        }
+    }
+    puts("PASS NV2A zero times infinity/NaN and positive-zero MUL/MAD results");
+    return 0;
+}
 int main(void) {
+    if(zero_product_check()) return 1;
     if(parity_check()) return 1;
     s_vp.start=13;
     for(unsigned i=0;i<192;i++) for(unsigned j=0;j<4;j++) s_vp.c[i][j]=0.25f;

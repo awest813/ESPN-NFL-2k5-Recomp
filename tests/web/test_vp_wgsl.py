@@ -42,7 +42,7 @@ def main():
     layout = pipeline[layout_start:pipeline.index("    const uint32_t blend", layout_start)]
     source.write_text(harness + generator.replace("/* LIVE_GENERATOR */", live)
                      .replace("/* LIVE_LAYOUT */", layout), encoding="utf-8")
-    subprocess.run([emcc, str(source), "-O3", "-msimd128", "-sENVIRONMENT=node",
+    subprocess.run([emcc, str(source), "-I", str(fixtures), "-O3", "-msimd128", "-sENVIRONMENT=node",
                     "-sNODERAWFS=1", "-o", str(output)], check=True)
     subprocess.run([node, str(output)], cwd=args.build_dir, check=True)
 

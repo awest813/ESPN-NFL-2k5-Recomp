@@ -44,7 +44,16 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
             if (id.x < arrayLength(&inputs)) { outputs[id.x] = run(inputs[id.x]); }
           }`;
         const module = await check(code);
-        const pipeline = await device.createComputePipelineAsync({layout: 'auto', compute: {module, entryPoint: 'test'}});
+        // MOV-only programs need no constants after the vertex epilogue is
+        // removed. Explicit layouts keep that valid case bound consistently.
+        const ioLayout = device.createBindGroupLayout({entries: [
+          {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: 'read-only-storage'}},
+          {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: 'storage'}}]});
+        const uniformLayout = device.createBindGroupLayout({entries: [
+          {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: 'uniform'}}]});
+        const pipeline = await device.createComputePipelineAsync({
+          layout: device.createPipelineLayout({bindGroupLayouts: [ioLayout, uniformLayout]}),
+          compute: {module, entryPoint: 'test'}});
         const buffer = (data, usage, minSize = 0) => {
           const b = device.createBuffer({size: Math.max(minSize, data.length * 4), usage: usage | GPUBufferUsage.COPY_DST});
           if (data.length) device.queue.writeBuffer(b, 0, new Float32Array(data));

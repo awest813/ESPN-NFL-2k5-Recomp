@@ -1,4 +1,4 @@
-"""Compare the applied runtime's vertex interpreter with its original version.
+"""Compare the optimized interpreter with the baseline decoder and NV2A rules.
 
 Run with Emscripten and Node on PATH after applying xboxrecomp-web.patch.
 The benchmark is informational; correctness is checked byte for byte.
