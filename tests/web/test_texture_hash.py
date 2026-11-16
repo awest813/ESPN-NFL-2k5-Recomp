@@ -8,7 +8,7 @@ def main():
     root = Path(__file__).resolve().parents[2]
     src = (root / "external/xboxrecomp/src/kernel/sdlgpu/sdlgpu_texture.inc.c").read_text(encoding="utf-8")
     memo = src[src.index("#define SG_HASH_MEMO"):src.index("/* One decode buffer")]
-    hashing = src[src.index("static uint64_t sg_hash("):src.index("/* Decode a stage")]
+    hashing = src[src.index("static uint64_t sg_hash("):src.index("/* Decode each DXT block")]
     harness = r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +20,8 @@ static Texture tx[4];
 static TextureSnapshot s_texture_snapshot[4];
 static struct { uint64_t texture_hash_bytes; } s_sg_stats;
 static const Texture *sg_stage_texture(int st) { return &tx[st]; }
+static uint32_t levels[4] = {1,1,1,1};
+static uint32_t texture_mip_levels(int st, const Texture *texture) { (void)texture; return levels[st]; }
 /* LIVE_HASH */
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 int main(void) {
@@ -56,8 +58,10 @@ int main(void) {
     CHECK(s_sg_stats.texture_hash_bytes == bytes); /* palette checked independently */
     tx[0].pitch = 256;
     CHECK(sg_texture_key(0, 0) != before);
+    before = sg_texture_key(0, 0); levels[0] = 2;
+    CHECK(sg_texture_key(0, 0) != before); /* level count participates in memo shape */
     free(data);
-    puts("PASS aligned texture reuse, refresh, new frames, owned snapshots and palette changes");
+    puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes");
     return 0;
 }
 '''

@@ -1257,4 +1257,52 @@ completion beyond the old deadline, failure on a stalled/missing startup,
 and failure at the total bound despite continuing output. Terminal failures
 remain available to the runner's existing failure checks. Hardware WebGPU
 checks pass with the new wait policy. Publication CI remains an additional
-gate for this change.
+gate for this change. Both Build and GitHub Pages subsequently passed at
+`a186465`.
+
+## Preserve authored texture mip chains
+
+The SDL GPU renderer previously uploaded only the base texture image and
+generated replacement lower levels. It now snapshots, hashes, decodes and
+uploads the guest's supplied chain, preserving its declared level count
+through the queue and cache. Each cube face keeps its independently aligned
+chain; decoded uploads group faces within each level. Linear images retain
+one level. Level counts stop at the natural 1x1 tail. The layout follows
+[xemu's texture sizing](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/texture.c)
+and [per-level texture upload](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/gl/texture.c).
+
+Changing only a lower level now invalidates the texture cache. Failed queue
+submission invalidates the pending upload so a retry receives the new data.
+Queue sizing includes every level and face, checks representable byte counts
+before copying, and rejects levels beyond a 1x1 tail. Border-filter coverage
+uses the authored last level for partial chains rather than the last level
+of an assumed full chain. Guest LOD clamps/bias remain a separate gap.
+
+The initial fixture reproduced 1,681 incorrect mip readbacks and a missed
+lower-level cache invalidation. The expanded fixture passes 2,545 full-level
+GPU readbacks across 240 texture configurations, including a cache-change
+readback after an injected submit failure. It covers all four stages, 2D
+and six-face cube textures, 4x4/8x8 chains, 8x2 rectangular chains, palette
+textures, DXT1/3/5 and the currently decoded uncompressed formats. Each face
+and level has an independently encoded expected color. Vulkan checks also
+pass address/undefined-behavior sanitizers with driver leak checks disabled.
+
+Hardware WebGPU pixel checks pass with no validation errors, including two
+partial-chain border/minification cases. Standalone checks pass 600 linear
+ARGB/XRGB images, 900 randomized DXT images, complete queued mip payloads,
+invalid metadata rejection, frame pacing and 10,000 viewport bounds cases.
+The actual native kernel and browser game build. A fresh pinned runtime
+reproduces all 79 patched files.
+
+The 248-second `authored-mips-retail/report.json` run reaches Cleveland at
+Tampa Bay live play, retaining crowd, sideline figures, player clothing and
+intro/HUD text. Stage tracing confirms multi-level textures on stages 0..2,
+including cube maps. No browser/GPU/DSP fault is recorded. Five-second frame
+averages after 150 seconds range from 25.3 to 30.1 FPS, and the run records
+135 worklet underrun blocks. This remains a partial retail stability check;
+it does not satisfy the requested 30 FPS floor or audio continuity.
+
+This change covers SDL GPU/WebGPU texture uploads. CPU software sampling,
+the native D3D11 upload path, remaining formats/volume textures and complete
+Xbox LOD behavior still need fidelity work. These component checks do not
+establish original-Xbox scene/audio parity or a sustained 30 FPS floor.

@@ -5,7 +5,7 @@ import subprocess
 root=Path(__file__).resolve().parents[2]
 kernel=root/'external/xboxrecomp/src/kernel/sdlgpu'
 text=(kernel/'sdlgpu_texture.inc.c').read_text(encoding='utf-8')
-decoder=text[text.index('static int sg_decode_dxt_image('):text.index('/* Decode a stage into')]
+decoder=text[text.index('static int sg_decode_dxt_image('):text.index('/* Decode all authored levels')]
 header=(root/'external/xboxrecomp/src/d3d/d3d8_swizzle.h').as_posix()
 harness=r'''
 #include <assert.h>

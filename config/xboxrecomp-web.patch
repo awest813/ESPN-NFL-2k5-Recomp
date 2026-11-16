@@ -811,7 +811,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      free(staged_row);
  #endif
      if (seq == 1)
-@@ -994,8 +1020,44 @@
+@@ -994,8 +1020,60 @@
      }
  }
 
@@ -833,12 +833,28 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +    }
 +}
 +
++/* The guest supplies these levels consecutively; no smaller-than-1x1
++ * levels exist. Linear images have one level regardless of filter state. */
++static uint32_t texture_mip_levels(int stage,const Texture *texture) {
++    if(!tex_size_from_format(texture->color))return 1;
++    uint32_t levels=(s_tex_reg[(0x1B04u+64u*(uint32_t)stage-NV_TEX_FIRST)/4]>>16)&15u;
++    uint32_t maximum=1,big=texture->width>texture->height?texture->width:texture->height;
++    while(big>1){maximum++;big>>=1;}
++    if(!levels)levels=1;
++    return levels<maximum?levels:maximum;
++}
++static uint64_t texture_mip_bytes(uint32_t format,uint32_t w,uint32_t h) {
++    uint32_t block=d3d8_format_dxt_block_bytes(format);
++    if(block)return (uint64_t)((w+3)/4)*((h+3)/4)*block;
++    uint64_t texels=d3d8_format_is_swizzled(format)?(uint64_t)swizzle_offset(w-1,h-1,w,h)+1:(uint64_t)w*h;
++    return texels*gpu_fmt_bpp(format);
++}
++
 +/* Offset from one cube face to the next: the face's whole mip chain, rounded
 + * up to NV2A_CUBEMAP_FACE_ALIGNMENT (128), as xemu's pgraph texture length. */
 +static uint32_t gpu_cube_face_bytes(int st, const Texture *t)
 +{
-+    uint32_t fmtreg = s_tex_reg[(0x1B04 + 0x40u * (uint32_t)st - NV_TEX_FIRST) / 4];
-+    uint32_t levels = (fmtreg >> 16) & 0xF, w = t->width, h = t->height, l;
++    uint32_t levels = texture_mip_levels(st,t), w = t->width, h = t->height, l;
 +    uint64_t len = 0;
 +    uint32_t block = d3d8_format_dxt_block_bytes(t->color);
 +    if (!levels) levels = 1;
@@ -857,10 +873,17 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  typedef struct {
      uint8_t *pixels;
      size_t bytes; /* of pixels: the texture's footprint in guest RAM */
-@@ -1052,6 +1114,11 @@
+@@ -1052,6 +1130,18 @@
              bytes = ((uint64_t) texture->height - 1) * texture->pitch + texture->width * bpp;
          }
      }
++    if(tex_size_from_format(texture->color)) {
++        uint32_t w=texture->width,h=texture->height,levels=texture_mip_levels(stage,texture);bytes=0;
++        for(uint32_t level=0;level<levels;level++) {
++            bytes+=texture_mip_bytes(texture->color,w,h);
++            w=w>1?w/2:1;h=h>1?h/2:1;
++        }
++    }
 +    if (gpu_stage_is_cube(stage)) {
 +        uint32_t face_bytes = gpu_cube_face_bytes(stage, texture);
 +        if (!face_bytes) return;
@@ -869,7 +892,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!bytes || bytes > SIZE_MAX || bytes > UINT64_C(0x100000000) - texture->offset) return;
      uintptr_t base = (uintptr_t) xbox_GetMemoryOffset();
      if (texture->color == 0x0B &&
-@@ -1098,7 +1165,7 @@
+@@ -1098,7 +1188,7 @@
  #endif
 
  static int sample_texture(uint32_t u, uint32_t v, uint32_t *argb) {
@@ -878,7 +901,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
  #endif
      const uint8_t *p;
-@@ -1106,7 +1173,7 @@
+@@ -1106,7 +1196,7 @@
 
      if (!s_gpu.tex.valid)
          return 0;
@@ -887,7 +910,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_texture_snapshot[s_sampler_stage].ready) return 0;
      const uint8_t *image = s_texture_snapshot[s_sampler_stage].pixels;
  #else
-@@ -1127,7 +1194,7 @@
+@@ -1127,7 +1217,7 @@
          if (!s_gpu.tex.palette)
              return 0;
          idx = image[swizzle_offset(u, v, s_gpu.tex.width, s_gpu.tex.height)];
@@ -896,7 +919,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          *argb = s_texture_snapshot[s_sampler_stage].palette[idx];
  #else
          *argb = *(const uint32_t *) (mem + s_gpu.tex.palette + (size_t) idx * 4u);
-@@ -1256,7 +1323,7 @@
+@@ -1256,7 +1346,7 @@
 
      if (!prefix || !w || !h || w > 4096 || h > 4096)
          return;
@@ -905,7 +928,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      snapshot_texture(0, &s_gpu.tex);
      s_sampler_stage = 0;
      if (!s_texture_snapshot[0].ready) return;
-@@ -1318,7 +1385,7 @@
+@@ -1318,7 +1408,7 @@
   * This is not a micro-optimisation for its own sake: the loader's video
   * paces on frames actually presented, so the rasteriser's throughput is the
   * playback rate. */
@@ -914,7 +937,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  static uint32_t *s_surface_first, *s_surface_end;
  static uint32_t s_surface_base, s_surface_rows, s_surface_pitch, s_surface_bpp;
  /* Linux: the staged surface is guest RAM itself (readable and writable,
-@@ -1328,7 +1395,7 @@
+@@ -1328,7 +1418,7 @@
  #endif
 
  static void surface_stage_reset(void) {
@@ -923,7 +946,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface_direct)
          free(s_surface);
      s_surface_direct = 0;
-@@ -1342,7 +1409,7 @@
+@@ -1342,7 +1432,7 @@
 
  static int surface_stage_begin(const uint8_t *mem) {
      uint32_t base = dma_resolve(s_gpu.color_offset);
@@ -932,7 +955,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint64_t right = (uint64_t) s_gpu.clip_x + s_gpu.clip_w;
      uint64_t bottom = (uint64_t) s_gpu.clip_y + s_gpu.clip_h;
      uint32_t bpp = surface_bpp();
-@@ -1398,7 +1465,7 @@
+@@ -1398,7 +1488,7 @@
  }
 
  static void surface_stage_dirty(uint32_t y, uint32_t first, uint32_t end) {
@@ -941,7 +964,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface || s_surface_direct || y >= s_surface_rows || first >= end) return;
      if (first < s_surface_first[y]) s_surface_first[y] = first;
      if (end > s_surface_end[y]) s_surface_end[y] = end;
-@@ -1408,7 +1475,7 @@
+@@ -1408,7 +1498,7 @@
  }
 
  static int surface_stage_flush(const uint8_t *mem) {
@@ -950,7 +973,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t y;
      if (!s_surface || s_surface_direct) return 1; /* drawn in place */
      for (y = 0; y < s_surface_rows; y++)
-@@ -1480,6 +1547,21 @@
+@@ -1480,6 +1570,21 @@
      }
  }
 
@@ -972,7 +995,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Write one fragment through alpha test and blending.
   *
   * The rasteriser used to store the texel as-is, so every translucent quad
-@@ -1490,30 +1572,7 @@
+@@ -1490,30 +1595,7 @@
  static void shade_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t src) {
      uint32_t a = src >> 24;
 
@@ -1004,7 +1027,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (s_gpu.blend && bpp == 4
          && x >= (int) s_gpu.clip_x && x < (int) (s_gpu.clip_x + s_gpu.clip_w)
          && y >= (int) s_gpu.clip_y && y < (int) (s_gpu.clip_y + s_gpu.clip_h)) {
-@@ -1638,6 +1697,7 @@
+@@ -1638,6 +1720,7 @@
                  if (su < 0.0f) su = 0.0f;
                  if (sv < 0.0f) sv = 0.0f;
                  if (sample_texture((uint32_t) su, (uint32_t) sv, &texel)) {
@@ -1012,7 +1035,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      shade_pixel(mem, bpp, x, y, modulate(texel, argb));
                      continue;
                  }
-@@ -1985,12 +2045,12 @@
+@@ -1985,12 +2068,12 @@
          return sample_texture(u, v, argb);
      saved = s_gpu.tex;
      s_gpu.tex = s_stage[st];
@@ -1027,7 +1050,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_sampler_stage = saved_stage;
  #endif
      s_gpu.tex = saved;
-@@ -2027,11 +2087,12 @@
+@@ -2027,11 +2110,12 @@
  #define NV097_SET_COMBINER_COLOR_OCW        0x1E40   /* +i*4, 8 */
  #define NV097_SET_COMBINER_CONTROL          0x1E60
  #define NV097_SET_SHADER_STAGE_PROGRAM      0x1E70
@@ -1041,7 +1064,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int set;
  } s_comb;
 
-@@ -2075,6 +2136,8 @@
+@@ -2075,6 +2159,8 @@
              s_comb.set = 1;
              return 1;
          case NV097_SET_SHADER_STAGE_PROGRAM: s_comb.stage_prog = param;
@@ -1050,7 +1073,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              return 1;
          /* NV_PGRAPH_SHADERCTL: dot mappings (bits 0-11) and each stage's input
           * stage (bits 16-27), for the dot-product texture modes (xemu). */
-@@ -2540,10 +2603,60 @@
+@@ -2540,10 +2626,60 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
@@ -1112,7 +1135,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                     float R[13][4], float O[16][4], const float V[16][4], int a0,
                     int scalar, float out[4]) {
      const float *s;
-@@ -2553,11 +2666,11 @@
+@@ -2553,11 +2689,11 @@
      switch (mux) {
          case 1: s = reg == 12 ? O[0] : R[reg < 13 ? reg : 0];
              break;
@@ -1127,7 +1150,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2736,19 @@
+@@ -2623,7 +2759,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -1148,7 +1171,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +2759,54 @@
+@@ -2634,68 +2782,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1239,7 +1262,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +2839,12 @@
+@@ -2728,20 +2862,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1262,7 +1285,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +2877,13 @@
+@@ -2774,13 +2900,13 @@
                  break;
              }
              case 7: {
@@ -1280,7 +1303,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +2926,18 @@
+@@ -2823,11 +2949,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1304,7 +1327,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +2957,29 @@
+@@ -2847,7 +2980,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1334,7 +1357,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +2996,9 @@
+@@ -2864,8 +3019,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1346,7 +1369,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3145,162 @@
+@@ -3012,6 +3168,162 @@
      }
  }
 
@@ -1509,7 +1532,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3019,6 +3308,17 @@
+@@ -3019,6 +3331,17 @@
      float area, iwa, iwb, iwc;
      int minx, maxx, miny, maxy, x, y;
      int textured = s_gpu.tex.valid && s_gpu.tex.enabled;
@@ -1527,7 +1550,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3357,15 @@
+@@ -3057,26 +3380,15 @@
          }
          return;
      }
@@ -1557,7 +1580,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3123,31 +3412,11 @@
+@@ -3123,31 +3435,11 @@
              lb = w2 / area;
              lc = w0 / area;
              z = la * a->z + lb * b->z + lc * c->z;
@@ -1594,7 +1617,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3426,11 @@
+@@ -3157,6 +3449,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -1606,7 +1629,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3442,12 @@
+@@ -3168,9 +3465,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1620,7 +1643,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3455,54 @@
+@@ -3178,26 +3478,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -1679,7 +1702,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,6 +3537,10 @@
+@@ -3232,6 +3560,10 @@
                      }
                  }
              }
@@ -1690,7 +1713,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              shade_pixel(mem, bpp, x, y, argb);
          }
      }
-@@ -3253,7 +3562,7 @@
+@@ -3253,7 +3585,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1699,7 +1722,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3571,34 @@
+@@ -3262,32 +3594,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1746,7 +1769,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,27 +3645,41 @@
+@@ -3334,27 +3668,41 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -1801,7 +1824,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* The triangles of the current vertex-program batch, after the vertex
-@@ -3605,7 +3930,7 @@
+@@ -3605,7 +3953,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -1810,7 +1833,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4168,7 @@
+@@ -3843,7 +4191,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -1819,7 +1842,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4191,7 @@
+@@ -3866,7 +4214,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -1828,7 +1851,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4630,7 @@
+@@ -4305,7 +4653,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -1837,7 +1860,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5081,7 @@
+@@ -4756,7 +5104,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -1846,7 +1869,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5199,7 @@
+@@ -4874,7 +5222,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1855,7 +1878,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5207,7 @@
+@@ -4882,7 +5230,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -1864,7 +1887,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5259,7 @@
+@@ -4934,7 +5282,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1873,7 +1896,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5267,7 @@
+@@ -4942,7 +5290,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -1942,7 +1965,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      SDL_GPUTexture *tex;
      uint32_t w, h;
      uint32_t offset; /* into the queue's texture data */
-+    uint32_t layers;
++    uint32_t layers,levels;
  } SgQueuedUpload;
 
  typedef struct {
@@ -1959,7 +1982,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    uint32_t texture_decodes, texture_downloads, texture_gpu_copies;
 +    uint32_t vp_affine, vp_program_pending, vp_pipeline_failed;
 +    uint32_t stage_batches, texture_modes[4][32];
-+    uint32_t texture_kill[4], texture_key[4], texture_volume[4], texture_cube[4];
++    uint32_t texture_kill[4], texture_key[4], texture_volume[4], texture_cube[4], texture_mips[4];
      uint32_t why[SG_FB_COUNT];
      uint64_t since_ms;
  } s_sg_stats;
@@ -2006,8 +2029,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +            fprintf(stderr," | s%u",st);
 +            for(unsigned mode=0;mode<32;mode++)if(s_sg_stats.texture_modes[st][mode])
 +                fprintf(stderr," %02X:%u",mode,s_sg_stats.texture_modes[st][mode]);
-+            fprintf(stderr," kill:%u key:%u volume:%u cube:%u",s_sg_stats.texture_kill[st],
-+                s_sg_stats.texture_key[st],s_sg_stats.texture_volume[st],s_sg_stats.texture_cube[st]);
++            fprintf(stderr," kill:%u key:%u volume:%u cube:%u mips:%u",s_sg_stats.texture_kill[st],
++                s_sg_stats.texture_key[st],s_sg_stats.texture_volume[st],s_sg_stats.texture_cube[st],s_sg_stats.texture_mips[st]);
 +        }
 +        fprintf(stderr,"\n");
 +    }
@@ -2196,10 +2219,32 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          fprintf(stderr, "  [SDLGPU] drawing unavailable: %s\n", SDL_GetError());
          return 0;
      }
-@@ -154,11 +170,40 @@
+@@ -146,45 +162,93 @@
+     if (need <= *cap)
+         return p;
+     n = *cap ? *cap : 64;
+-    while (n < need)
+-        n *= 2;
++    while(n<need) {if(n>UINT32_MAX/2u){n=need;break;}n*=2;}
++    if(elem && n>SIZE_MAX/elem)return NULL;
+     grown = realloc(p, (size_t) n * elem);
+     if (grown)
+         *cap = n;
      return grown;
  }
 
++/* Decoded data is level-major, then face-major within each level. */
++static uint32_t sg_texture_upload_bytes(const SgTextureUse *t) {
++    uint32_t levels=t->levels?t->levels:1,layers=t->layers?t->layers:1,w=t->w,h=t->h;uint64_t bytes=0;
++    if(!w || !h || w>4096 || h>4096 || (layers!=1 && layers!=6) || levels>13)return 0;
++    for(uint32_t level=0;level<levels;level++) {
++        bytes+=(uint64_t)w*h*4*layers;if(bytes>UINT32_MAX)return 0;
++        if(level+1<levels && w==1 && h==1)return 0;
++        w=w>1?w/2:1;h=h>1?h/2:1;
++    }
++    return (uint32_t)bytes;
++}
++
 +/* Adjacent triangles with identical state can share one draw. Vertex/index
 + * uploads remain ordered; rebasing the appended indices preserves every
 + * original triangle, including order-dependent blending and stencil. */
@@ -2239,12 +2284,22 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      uint32_t i, tex_bytes = 0, ibytes = d->index_count * 4u;
      SgQueuedDraw *qd;
      void *g;
-@@ -171,20 +216,24 @@
 
-     for (i = 0; i < (uint32_t) d->tex_count; i++)
-         if (d->tex[i].upload)
++    for(i=0;i<(uint32_t)d->tex_count;i++)if(d->tex[i].upload) {
++        uint32_t bytes=sg_texture_upload_bytes(&d->tex[i]);if(!bytes || bytes>UINT32_MAX-tex_bytes)return 0;
++        tex_bytes+=bytes;
++    }
++    if(tex_bytes>UINT32_MAX-q->tbytes)sg_queue_flush();
+     if (q->surface && q->surface != d->surface)
+         sg_queue_flush(); /* one target per queue */
+     if (q->count == SG_QUEUE_MAX_DRAWS || q->vbytes + d->vertex_bytes > (64u << 20) ||
+             q->ubytes > (32u << 20))
+                 sg_queue_flush();
+
+-    for (i = 0; i < (uint32_t) d->tex_count; i++)
+-        if (d->tex[i].upload)
 -            tex_bytes += d->tex[i].w * d->tex[i].h * 4;
-+            tex_bytes += d->tex[i].w * d->tex[i].h * 4 * (d->tex[i].layers ? d->tex[i].layers : 1);
++
 
 
      if (!(g = sg_grow(q->draws, &q->cap, q->count + 1, sizeof *q->draws))) return 0;
@@ -2253,11 +2308,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      q->vdata = (uint8_t *) g;
 -    if (!(g = sg_grow(q->tdata, &q->tcap, q->tbytes + tex_bytes, 1))) return 0;
 -    q->tdata = (uint8_t *) g;
+-    if (!(g = sg_grow(q->uploads, &q->upload_cap, q->upload_count + 4, sizeof *q->uploads))) return 0;
 +    if (tex_bytes) {
 +        if (!(g = sg_grow(q->tdata, &q->tcap, q->tbytes + tex_bytes, 1))) return 0;
 +        q->tdata = (uint8_t *) g;
 +    }
-     if (!(g = sg_grow(q->uploads, &q->upload_cap, q->upload_count + 4, sizeof *q->uploads))) return 0;
++    if (!(g = sg_grow(q->uploads, &q->upload_cap, q->upload_count + (uint32_t)d->tex_count, sizeof *q->uploads))) return 0;
      q->uploads = (SgQueuedUpload *) g;
 
 -    if (!(g = sg_grow(q->idata, &q->icap, q->ibytes + ibytes, 1))) return 0;
@@ -2269,7 +2325,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (!(g = sg_grow(q->udata, &q->ucap, q->ubytes + d->vs_uniform_size, 1))) return 0;
      q->udata = (uint8_t *)g;
 
-@@ -197,8 +246,10 @@
+@@ -197,8 +261,10 @@
      qd->pipe = d->pipe;
      qd->vertex_offset = q->vbytes;
      qd->vertex_count = d->vertex_count;
@@ -2280,7 +2336,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      qd->index_offset = q->ibytes;
      qd->index_count = d->index_count;
-@@ -222,18 +273,22 @@
+@@ -222,18 +288,22 @@
      qd->tex_count = d->tex_count;
      for (i = 0; i < (uint32_t) d->tex_count; i++) {
          SgTextureUse *t = &d->tex[i];
@@ -2290,10 +2346,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          if (t->upload) {
 -            uint32_t bytes = t->w * t->h * 4;
 +            uint32_t layers = t->layers ? t->layers : 1;
-+            uint32_t bytes = t->w * t->h * 4 * layers;
++            uint32_t bytes = sg_texture_upload_bytes(t);
              memcpy(q->tdata + q->tbytes, t->upload, bytes);
 -            q->uploads[q->upload_count++] = (SgQueuedUpload){t->tex, t->w, t->h, q->tbytes};
-+            q->uploads[q->upload_count++] = (SgQueuedUpload){t->tex, t->w, t->h, q->tbytes, layers};
++            q->uploads[q->upload_count++] = (SgQueuedUpload){t->tex, t->w, t->h, q->tbytes, layers,t->levels?t->levels:1};
              q->tbytes += bytes;
              sg_texture_commit(t); /* uploaded before any queued draw runs */
          }
@@ -2306,7 +2362,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      qd->blend_constant = (SDL_FColor){
          (float) ((s_gpu.blend_color >> 16) & 0xFF) / 255.0f, (float) ((s_gpu.blend_color >> 8) & 0xFF) / 255.0f,
          (float) (s_gpu.blend_color & 0xFF) / 255.0f, (float) (s_gpu.blend_color >> 24) / 255.0f,
-@@ -243,7 +298,13 @@
+@@ -243,7 +313,13 @@
      qd->fs_size = d->fs_uniform_size;
     // memcpy(qd->vs, d->vs_uniform, d->vs_uniform_size);
      memcpy(qd->fs, d->fs_uniform, d->fs_uniform_size);
@@ -2321,15 +2377,21 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      /* The GPU copy will be the newer one. Anything that reads the surface on
       * the CPU flushes the queue first (sg_cpu_access, sg_flip). */
-@@ -265,6 +326,7 @@
+@@ -265,9 +341,12 @@
          q->upload_surface = 0;
          return 1;
      }
 +    uint64_t profile_start = sg_profile_now();
 
      sbytes = q->upload_surface ? s->w * s->h * 4 : 0;
-     total = q->vbytes + q->ibytes + sbytes + q->tbytes;
-@@ -278,10 +340,12 @@
+-    total = q->vbytes + q->ibytes + sbytes + q->tbytes;
++    uint64_t required=(uint64_t)q->vbytes+q->ibytes+sbytes+q->tbytes;
++    if(required>UINT32_MAX)goto failed;
++    total=(uint32_t)required;
+     if (sg_vertex_buffer_reserve(q->vbytes) && sg_index_buffer_reserve(q->ibytes) && sg_upload_reserve(total)) {
+         SDL_GPUCommandBuffer *cmd;
+         uint8_t *stage = (uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.upload, true);
+@@ -278,10 +357,12 @@
          }
          /* Transfer layout: vertices | indices | surface | textures */
          memcpy(stage, q->vdata, q->vbytes);
@@ -2344,7 +2406,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
 
-@@ -310,11 +374,14 @@
+@@ -310,16 +391,18 @@
              }
              for (i = 0; i < q->upload_count; i++) {
                  const SgQueuedUpload *u = &q->uploads[i];
@@ -2353,18 +2415,25 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 -                };
 -                SDL_GPUTextureRegion dst = {.texture = u->tex, .w = u->w, .h = u->h, .d = 1};
 -                SDL_UploadToGPUTexture(copy, &src, &dst, false);
-+                for (uint32_t layer = 0; layer < u->layers; layer++) {
-+                    SDL_GPUTextureTransferInfo src = {
-+                        .transfer_buffer = s_sg.upload,
-+                        .offset = q->vbytes + q->ibytes + sbytes + u->offset + layer * u->w * u->h * 4
-+                    };
-+                    SDL_GPUTextureRegion dst = {.texture = u->tex, .layer = layer, .w = u->w, .h = u->h, .d = 1};
-+                    SDL_UploadToGPUTexture(copy, &src, &dst, false);
++                uint32_t offset=u->offset,w=u->w,h=u->h;
++                for(uint32_t level=0;level<u->levels;level++) {
++                    for(uint32_t layer=0;layer<u->layers;layer++) {
++                        SDL_GPUTextureTransferInfo src={.transfer_buffer=s_sg.upload,
++                            .offset=q->vbytes+q->ibytes+sbytes+offset+layer*w*h*4};
++                        SDL_GPUTextureRegion dst={.texture=u->tex,.mip_level=level,.layer=layer,.w=w,.h=h,.d=1};
++                        SDL_UploadToGPUTexture(copy,&src,&dst,false);
++                    }
++                    offset+=w*h*4*u->layers;w=w>1?w/2:1;h=h>1?h/2:1;
 +                }
              }
              SDL_EndGPUCopyPass(copy);
-             for (i = 0; i < q->upload_count; i++)
-@@ -329,14 +396,22 @@
+-            for (i = 0; i < q->upload_count; i++)
+-                if (q->uploads[i].w > 1 || q->uploads[i].h > 1)    /* 1x1: one level, nothing to generate */
+-                    SDL_GenerateMipmapsForGPUTexture(cmd, q->uploads[i].tex);
+         }
+         {
+             SDL_GPUColorTargetInfo target = {
+@@ -329,14 +412,22 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
@@ -2388,7 +2457,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,9 +425,14 @@
+@@ -350,9 +441,14 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -2406,7 +2475,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
-@@ -360,19 +440,27 @@
+@@ -360,19 +456,27 @@
                  if (qd->index_count) {
                      SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
                      SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -2439,7 +2508,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          static int told;
          if (!told++)
              fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
-@@ -385,6 +473,7 @@
+@@ -385,6 +489,7 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -2447,7 +2516,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +545,8 @@
+@@ -456,7 +561,8 @@
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},
@@ -2672,15 +2741,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  typedef struct {
      uint64_t        key;        /* sg_texture_key(); 0 = empty or not yet uploaded */
 -    uint32_t        w, h;
-+    uint32_t        w, h, layers;
++    uint32_t        w, h, layers, levels;
      SDL_GPUTexture *tex;
      uint32_t        last_use;
      uint32_t        epoch_used; /* s_sg_queue.epoch when last used: in flight
-@@ -29,10 +29,33 @@
+@@ -29,10 +29,34 @@
      SgCachedTexture *pending;   /* cache slot to mark valid once the upload is issued */
      uint64_t         pending_key;
      SDL_GPUSampler *sampler;
 +    uint32_t layers;             /* six for a cube, one (or zero) for 2D */
++    uint32_t levels;             /* authored mip count; zero means one level */
  } SgTextureUse;
 
  static SgCachedTexture s_sg_textures[SG_MAX_TEXTURES];
@@ -2710,7 +2780,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
 
 
-@@ -41,7 +64,7 @@
+@@ -41,12 +65,12 @@
   * from guest RAM are remembered (a malloc'd snapshot copy can reuse an
   * address). Limitation: a texture the title rewrites in place after using
   * it in the same frame reaches the GPU one frame late. */
@@ -2719,7 +2789,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  typedef struct {
      const uint8_t *pixels;
-@@ -65,12 +88,11 @@
+     size_t         bytes;
+-    uint32_t       shape[4];
++    uint32_t       shape[5];
+     uint32_t       frame;
+     uint64_t       hash;
+ } SgHashMemo;
+@@ -65,12 +89,11 @@
  }
 
  /* ── Samplers, from the title's own per-stage settings (as the D3D11 path):
@@ -2731,13 +2807,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -#define SG_SAMPLER_KEYS 128                 /* 1 bit filter, 3 bits u, 3 bits v */
 + * SET_TEXTURE_FILTER selects minification, magnification and mip filtering
 + * independently. LOD0 modes and linear images (including intro RTTs) must
-+ * not sample the generated mip chain. */
++ * stay at level zero. Other modes sample the guest-authored mip chain. */
 +
 +#define SG_SAMPLER_KEYS 1024 /* mag, min, mip filter, mip enable, 3 bits u/v */
  static SDL_GPUSampler *s_sg_samplers[SG_SAMPLER_KEYS];
 
  static SDL_GPUSamplerAddressMode sg_address_mode(uint32_t m)
-@@ -82,23 +104,36 @@
+@@ -82,23 +105,36 @@
      }
  }
 
@@ -2781,7 +2857,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          s_sg_samplers[key] = SDL_CreateGPUSampler(s_sg.dev, &info);
          if (!s_sg_samplers[key])
-@@ -130,7 +165,7 @@
+@@ -130,17 +166,33 @@
 
  /* Everything that decides the decoded texels: raw bytes, palette, format,
   * size, row pitch. Wrap and clamp are shader state, not part of the key. */
@@ -2790,7 +2866,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  {
      const TextureSnapshot *snap = &s_texture_snapshot[st];
      const Texture *tx = sg_stage_texture(st);
-@@ -138,9 +173,25 @@
+-    uint32_t shape[4] = { tx->width, tx->height, tx->color, tx->pitch };
++    uint32_t shape[5] = { tx->width, tx->height, tx->color, tx->pitch, texture_mip_levels(st,tx) };
      uint64_t h;
 
      if (!snap->owned) {
@@ -2819,7 +2896,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
              memcmp(m->shape, shape, sizeof shape) != 0) {
              m->pixels = snap->pixels;
              m->bytes = snap->bytes;
-@@ -148,22 +199,95 @@
+@@ -148,39 +200,124 @@
              m->frame = s_sg_frame;
              m->hash = sg_hash(snap->pixels, snap->bytes,
                                sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
@@ -2837,6 +2914,27 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      return h ? h : 1;
  }
 
+-/* Decode a stage into s_sg_decode[st]. 0 if the software path cannot read it. */
+-static int sg_texture_decode(int st, uint32_t w, uint32_t h)
+-{
+-    size_t n = (size_t)w * h;
+-    uint32_t x, y, argb;
+-
+-    if (n > s_sg_decode_texels[st]) {
+-        uint32_t *grown = (uint32_t *)realloc(s_sg_decode[st], n * 4);
+-        if (!grown)
+-            return 0;
+-        s_sg_decode[st] = grown;
+-        s_sg_decode_texels[st] = n;
+-    }
+-    for (y = 0; y < h; y++)
+-        for (x = 0; x < w; x++) {
+-            if (!sg_stage_sample(st, x, y, &argb))
+-                return 0;
+-            /* ARGB -> R,G,B,A bytes in memory */
+-            s_sg_decode[st][(size_t)y * w + x] = ((argb >> 16) & 0xFFu) | (argb & 0xFF00u)
+-                                               | ((argb & 0xFFu) << 16) | (argb & 0xFF000000u);
+-        }
 +/* Decode each DXT block once when uploading an entire image. The scalar
 + * sampler intentionally decodes one texel at a time; using it for a full
 + * texture recomputes the same colour/alpha palettes sixteen times. */
@@ -2888,7 +2986,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +        for (unsigned y = 0; y < height; y++)
 +            memcpy(dst + (size_t)(by+y)*w + bx, pixels + y*4, width*4u);
 +    }
-+    return 1;
+     return 1;
 +}
 +
 +static int sg_decode_linear32(const uint8_t *src, size_t bytes, uint32_t fmt,
@@ -2905,67 +3003,52 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +    return 1;
 +}
 +
- /* Decode a stage into s_sg_decode[st]. 0 if the software path cannot read it. */
--static int sg_texture_decode(int st, uint32_t w, uint32_t h)
--{
--    size_t n = (size_t)w * h;
-+static int sg_texture_decode(int st, uint32_t w, uint32_t h, uint32_t layers)
++/* Decode all authored levels into level-major RGBA storage. Restore each
++ * temporary sampler/snapshot view on both successful and failed decodes. */
++static int sg_texture_decode(int st,uint32_t w,uint32_t h,uint32_t layers,uint32_t levels)
 +{
-+    size_t n = (size_t)w * h * layers;
-     uint32_t x, y, argb;
-+    TextureSnapshot *snapshot = &s_texture_snapshot[st];
-+    uint8_t *pixels = snapshot->pixels;
-+    uint32_t face_bytes = layers == 6 ? gpu_cube_face_bytes(st, sg_stage_texture(st)) : 0;
-
-     if (n > s_sg_decode_texels[st]) {
-         uint32_t *grown = (uint32_t *)realloc(s_sg_decode[st], n * 4);
-@@ -172,14 +296,33 @@
-         s_sg_decode[st] = grown;
-         s_sg_decode_texels[st] = n;
-     }
--    for (y = 0; y < h; y++)
--        for (x = 0; x < w; x++) {
--            if (!sg_stage_sample(st, x, y, &argb))
--                return 0;
--            /* ARGB -> R,G,B,A bytes in memory */
--            s_sg_decode[st][(size_t)y * w + x] = ((argb >> 16) & 0xFFu) | (argb & 0xFF00u)
--                                               | ((argb & 0xFFu) << 16) | (argb & 0xFF000000u);
--        }
-+    for (uint32_t face = 0; face < layers; face++) {
-+        const Texture *tx = sg_stage_texture(st);
-+        if (tx->color == 0x12 || tx->color == 0x1E) {
-+            size_t offset = (size_t)face * face_bytes;
-+            if (offset > snapshot->bytes || !sg_decode_linear32(pixels+offset, snapshot->bytes-offset,
-+                    tx->color, w, h, tx->pitch, s_sg_decode[st]+(size_t)face*w*h)) return 0;
-+            continue;
-+        }
-+        if (d3d8_format_dxt_block_bytes(sg_stage_texture(st)->color)) {
-+            size_t offset = (size_t)face * face_bytes;
-+            if (offset > snapshot->bytes || !sg_decode_dxt_image(pixels + offset, snapshot->bytes-offset,
-+                    sg_stage_texture(st)->color, w, h, s_sg_decode[st] + (size_t)face*w*h)) return 0;
-+            continue;
-+        }
-+        snapshot->pixels = pixels + (size_t) face * face_bytes;
-+        for (y = 0; y < h; y++)
-+            for (x = 0; x < w; x++) {
-+                if (!sg_stage_sample(st, x, y, &argb)) {
-+                    snapshot->pixels = pixels;
-+                    return 0;
-+                }
-+                /* ARGB -> R,G,B,A bytes in memory */
-+                s_sg_decode[st][((size_t)face * h + y) * w + x] = ((argb >> 16) & 0xFFu) | (argb & 0xFF00u)
-+                                                   | ((argb & 0xFFu) << 16) | (argb & 0xFF000000u);
-+            }
++    Texture *texture=st?&s_stage[st]:&s_gpu.tex,saved=*texture;
++    TextureSnapshot *snapshot=&s_texture_snapshot[st];uint8_t *pixels=snapshot->pixels;size_t bytes=snapshot->bytes;
++    uint32_t face_bytes=layers==6?gpu_cube_face_bytes(st,&saved):0;
++    uint64_t texels=0;uint32_t lw=w,lh=h;
++    for(uint32_t level=0;level<levels;level++){texels+=(uint64_t)lw*lh*layers;lw=lw>1?lw/2:1;lh=lh>1?lh/2:1;}
++    if(texels>SIZE_MAX/4 || texels>UINT32_MAX/4)return 0;
++    if(texels>s_sg_decode_texels[st]) {
++        uint32_t *grown=realloc(s_sg_decode[st],(size_t)texels*4);if(!grown)return 0;
++        s_sg_decode[st]=grown;s_sg_decode_texels[st]=(size_t)texels;
 +    }
-+    snapshot->pixels = pixels;
-     return 1;
++    uint64_t level_offset=0;size_t decoded_offset=0;int ok=1;lw=w;lh=h;
++    for(uint32_t level=0;level<levels && ok;level++) {
++        uint64_t level_bytes=tex_size_from_format(saved.color)?texture_mip_bytes(saved.color,lw,lh):bytes;
++        texture->width=lw;texture->height=lh;
++        for(uint32_t face=0;face<layers && ok;face++) {
++            uint64_t offset=(uint64_t)face*face_bytes+level_offset;
++            if(offset>bytes || level_bytes>bytes-offset){ok=0;break;}
++            snapshot->pixels=pixels+(size_t)offset;snapshot->bytes=(size_t)level_bytes;
++            uint32_t *dst=s_sg_decode[st]+decoded_offset+(size_t)face*lw*lh;
++            if(saved.color==0x12 || saved.color==0x1E)
++                ok=sg_decode_linear32(snapshot->pixels,snapshot->bytes,saved.color,lw,lh,saved.pitch,dst);
++            else if(d3d8_format_dxt_block_bytes(saved.color))
++                ok=sg_decode_dxt_image(snapshot->pixels,snapshot->bytes,saved.color,lw,lh,dst);
++            else for(uint32_t y=0;y<lh && ok;y++)for(uint32_t x=0;x<lw;x++) {
++                uint32_t argb;if(!sg_stage_sample(st,x,y,&argb)){ok=0;break;}
++                dst[(size_t)y*lw+x]=((argb>>16)&255u)|(argb&0xFF00u)|((argb&255u)<<16)|(argb&0xFF000000u);
++            }
++        }
++        decoded_offset+=(size_t)lw*lh*layers;level_offset+=level_bytes;
++        lw=lw>1?lw/2:1;lh=lh>1?lh/2:1;
++    }
++    *texture=saved;snapshot->pixels=pixels;snapshot->bytes=bytes;
++    return ok;
  }
 
-@@ -188,11 +331,13 @@
+ /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
+@@ -188,11 +325,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
 +    uint32_t layers = gpu_stage_is_cube(st) ? 6u : 1u;
++    uint32_t levels=texture_mip_levels(st,tx);
      SgCachedTexture *slot = &s_sg_textures[0];
      uint64_t key;
      int i;
@@ -2977,7 +3060,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +353,35 @@
+@@ -208,23 +348,35 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -3017,55 +3100,58 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +    if (cached) {
 +        cached->last_use = s_sg_texture_tick;
 +        cached->epoch_used = s_sg_queue.epoch;
-+        *use = (SgTextureUse){ cached->tex, NULL, w, h, NULL, 0, sg_sampler_for_stage(st), layers };
++        *use = (SgTextureUse){ cached->tex, NULL, w, h, NULL, 0, sg_sampler_for_stage(st), layers, levels };
 +        return 1;
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,18 +402,20 @@
+@@ -245,18 +397,18 @@
                  slot = &s_sg_textures[i];
      }
 
 -    if (!sg_texture_decode(st, w, h))
 +    uint64_t decode_start = sg_profile_now();
-+    if (!sg_texture_decode(st, w, h, layers))
++    if (!sg_texture_decode(st, w, h, layers, levels))
          return 0;
 -    if (!slot->tex || slot->w != w || slot->h != h) {
+-        /* A full mip chain, generated on the GPU after each upload */
+-        uint32_t levels = 1, big = w > h ? w : h;
+-        while (big > 1) { big >>= 1; levels++; }
 +    if (decode_start) s_sg_stats.texture_decode_ticks += sg_profile_now() - decode_start;
 +    s_sg_stats.texture_decodes++;
-+    if (!slot->tex || slot->w != w || slot->h != h || slot->layers != layers) {
-         /* A full mip chain, generated on the GPU after each upload */
-         uint32_t levels = 1, big = w > h ? w : h;
-         while (big > 1) { big >>= 1; levels++; }
++    if (!slot->tex || slot->w != w || slot->h != h || slot->layers != layers || slot->levels != levels) {
++        /* Allocate precisely the guest's authored levels. */
          SDL_GPUTextureCreateInfo info = {
 -            .type = SDL_GPU_TEXTURETYPE_2D,
 +            .type = layers == 6 ? SDL_GPU_TEXTURETYPE_CUBE : SDL_GPU_TEXTURETYPE_2D,
              .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-             .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+-            .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
 -            .width = w, .height = h, .layer_count_or_depth = 1, .num_levels = levels,
 -            .num_levels = levels
++            .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
 +            .width = w, .height = h, .layer_count_or_depth = layers, .num_levels = levels,
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +425,7 @@
+@@ -266,6 +418,8 @@
              return 0;
          slot->w = w;
          slot->h = h;
 +        slot->layers = layers;
++        slot->levels = levels;
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +433,7 @@
+@@ -273,7 +427,7 @@
      slot->key = 0;
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
 -    *use = (SgTextureUse){ slot->tex, s_sg_decode[st], w, h, slot, key, sg_sampler_for_stage(st)
-+    *use = (SgTextureUse){ slot->tex, s_sg_decode[st], w, h, slot, key, sg_sampler_for_stage(st), layers
++    *use = (SgTextureUse){ slot->tex, s_sg_decode[st], w, h, slot, key, sg_sampler_for_stage(st), layers, levels
      };
 
      return 1;
-@@ -291,4 +451,4 @@
+@@ -291,4 +445,4 @@
      if (use->pending)
          use->pending->key = use->pending_key;
      use->pending = NULL;
@@ -4336,7 +4422,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,615 @@
+@@ -231,34 +220,703 @@
      return bad == 0;
  }
 
@@ -4380,7 +4466,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_tex_reg[(0x1B14 - NV_TEX_FIRST)/4] = (1u << 24) | (2u << 16);
 +    s_tex_reg[(0x1B24 - NV_TEX_FIRST)/4] = 0x80402010u;
 +    sg_xf_shade_fill(&shade, 1);
-+    CHECK(shade.rect[0] == (1u | 2u | 0x200u) && shade.border[0] == 0x80402010u,
++    CHECK(shade.rect[0] == (1u | 2u | 0x200u | (1u<<16)) && shade.border[0] == 0x80402010u,
 +        "intro sampler border/filter state did not reach fragment uniforms");
 +    memset(&s_gpu.tex, 0, sizeof s_gpu.tex);
 +    s_tex_reg[(0x1B14 - NV_TEX_FIRST)/4] = s_tex_reg[(0x1B24 - NV_TEX_FIRST)/4] = 0;
@@ -4548,7 +4634,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_gpu.alpha_test=old_alpha;s_gpu.alpha_func=old_func;s_gpu.alpha_ref=old_ref;s_gpu.tex=old_texture;
 +}
 +
-+static uint32_t draw_native_fragment_sample(const SgXfShade *shade,unsigned sampled,const SgXfVertex *input)
++static uint32_t draw_native_fragment_capture(const SgXfShade *shade,unsigned sampled,const SgXfVertex *input,SgTextureUse *captured)
 +{
 +    unsigned depth=s_vp.depth_test,stencil=s_vp.stencil_test,mask=g_color_mask;
 +    s_vp.depth_test=s_vp.stencil_test=0;
@@ -4559,6 +4645,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        unsigned binding=st+(gpu_stage_is_cube((int)st)?4:0);
 +        CHECK(sg_texture_for_stage(st,&textures[binding]),"native fragment texture upload failed");
 +    }
++    if(captured)memcpy(captured,textures,sizeof textures);
 +    SgSurface *surface=sg_surface_current();surface->owner=SG_OWNER_GUEST;
 +    SgDraw draw={.surface=surface,.pipe=sg_pipeline_current(1,0),.vertices=input?input:v,.vertex_bytes=sizeof v,.vertex_count=3,
 +        .tex=textures,.tex_count=8,.vs_uniform=&view,.vs_uniform_size=sizeof view,.fs_uniform=shade,.fs_uniform_size=sizeof *shade};
@@ -4566,6 +4653,11 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_vp.depth_test=depth;s_vp.stencil_test=stencil;
 +    g_color_mask=mask;
 +    uint32_t pixel;memcpy(&pixel,g_ram+0x200000+2*64+2*4,4);return pixel;
++}
++
++static uint32_t draw_native_fragment_sample(const SgXfShade *shade,unsigned sampled,const SgXfVertex *input)
++{
++    return draw_native_fragment_capture(shade,sampled,input,NULL);
 +}
 +
 +static uint32_t draw_native_alpha_sample(const SgXfShade *shade,unsigned sampled)
@@ -4847,6 +4939,87 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    CHECK(snapshot_textures(),"restoring direction texture snapshots failed");
 +}
 +
++static void check_authored_mip(SDL_GPUTexture *texture,unsigned level,unsigned face,unsigned w,unsigned h,uint32_t expected,unsigned id)
++{
++    SDL_GPUTransferBufferCreateInfo info={.usage=SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,.size=w*h*4};
++    SDL_GPUTransferBuffer *buffer=SDL_CreateGPUTransferBuffer(s_sg.dev,&info);
++    SDL_GPUCommandBuffer *cmd=SDL_AcquireGPUCommandBuffer(s_sg.dev);SDL_GPUCopyPass *copy=SDL_BeginGPUCopyPass(cmd);
++    SDL_GPUTextureRegion from={.texture=texture,.mip_level=level,.layer=face,.w=w,.h=h,.d=1};SDL_GPUTextureTransferInfo to={.transfer_buffer=buffer};
++    SDL_DownloadFromGPUTexture(copy,&from,&to);SDL_EndGPUCopyPass(copy);
++    SDL_GPUFence *f=SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);CHECK(f && SDL_WaitForGPUFences(s_sg.dev,true,&f,1),"authored mip readback wait failed");SDL_ReleaseGPUFence(s_sg.dev,f);
++    uint32_t *pixels=SDL_MapGPUTransferBuffer(s_sg.dev,buffer,false);int same=pixels!=NULL;
++    if(pixels)for(unsigned i=0;i<w*h;i++)if(pixels[i]!=expected)same=0;
++    CHECK(same,"authored mip case %u level %u face %u: %08X expected %08X",id,level,face,pixels?pixels[0]:0,expected);
++    SDL_UnmapGPUTransferBuffer(s_sg.dev,buffer);SDL_ReleaseGPUTransferBuffer(s_sg.dev,buffer);
++}
++
++static void test_authored_mip_chains(void)
++{
++    unsigned char saved_vp[sizeof s_vp],saved_comb[sizeof s_comb];memcpy(saved_vp,&s_vp,sizeof s_vp);memcpy(saved_comb,&s_comb,sizeof s_comb);
++    Texture saved_tex=s_gpu.tex,saved_stages[4];memcpy(saved_stages,s_stage,sizeof s_stage);
++    uint32_t saved_regs[sizeof s_tex_reg/4];uint8_t saved_set[sizeof s_tex_set];memcpy(saved_regs,s_tex_reg,sizeof s_tex_reg);memcpy(saved_set,s_tex_set,sizeof s_tex_set);
++    unsigned alpha=s_gpu.alpha_test;s_gpu.alpha_test=0;s_vp.depth_test=s_vp.stencil_test=0;s_vp.color_mask=0x01010101u;target(0x200000,16,16,64);
++    const unsigned formats[]={6,7,2,3,4,5,0,0x19,0x0B,0x0C,0x0E,0x0F};
++    unsigned id=0;
++    for(unsigned fi=0;fi<sizeof formats/sizeof formats[0];fi++)for(unsigned big=0;big<3;big++)for(unsigned cube=0;cube<2;cube++)for(unsigned stage=0;stage<4;stage++) {
++        if(big==2 && cube)continue;
++        unsigned fmt=formats[fi],w=big?8:4,h=big==2?2:w,levels=big?4:3,layers=cube?6:1;
++        unsigned block=fmt==0x0C?8:(fmt==0x0E||fmt==0x0F)?16:0;
++        unsigned bpp=fmt==6||fmt==7?4:fmt==0||fmt==0x19||fmt==0x0B?1:2;
++        unsigned face_bytes=0;
++        for(unsigned l=0,lw=w,lh=h;l<levels;l++,lw=lw>1?lw/2:1,lh=lh>1?lh/2:1)face_bytes+=block?((lw+3)/4)*((lh+3)/4)*block:lw*lh*bpp;
++        if(cube)face_bytes=(face_bytes+127)&~127u;
++        uint32_t expected[6][4];memset(g_ram+0x320000,0x5A,4096);memset(g_ram+0x330000,0,1024);
++        for(unsigned face=0;face<layers;face++)for(unsigned l=0,lw=w,lh=h,offset=0;l<levels;l++,lw=lw>1?lw/2:1,lh=lh>1?lh/2:1) {
++            unsigned c=face+1,r=(l==0||l==3)?c:0,g=(l==1||l==3)?c:0,b=(l==2||l==3)?c:0;
++            uint32_t color=0xFF000000u|((r*32)<<16)|((g*32)<<8)|(b*32);uint16_t value=0;
++            if(fmt==2||fmt==3) {value=(r<<10)|(g<<5)|b|(fmt==2?0x8000:0);color=0xFF000000u|(expand(r,5)<<16)|(expand(g,5)<<8)|expand(b,5);}
++            if(fmt==4) {value=0xF000|(r<<8)|(g<<4)|b;color=0xFF000000u|(r*17<<16)|(g*17<<8)|(b*17);}
++            if(fmt==5||block) {value=(r<<11)|(g*2<<5)|b;color=0xFF000000u|(expand(r,5)<<16)|(expand(g*2,6)<<8)|expand(b,5);}
++            uint8_t byte=(uint8_t)(32+face*16+l*48);
++            if(fmt==0)color=0xFF000000u|(byte<<16)|(byte<<8)|byte;
++            if(fmt==0x19)color=((uint32_t)byte<<24)|0xFFFFFFu;
++            uint8_t *dst=g_ram+0x320000+face*face_bytes+offset;
++            unsigned bytes=block?((lw+3)/4)*((lh+3)/4)*block:lw*lh*bpp;
++            if(block)for(unsigned n=0;n<bytes;n+=block) {
++                memset(dst+n,0,block);if(fmt==0x0E)memset(dst+n,255,8);if(fmt==0x0F)dst[n]=255;
++                memcpy(dst+n+(block==8?0:8),&value,2);
++            } else for(unsigned n=0;n<bytes;n+=bpp) {
++                if(bpp==4){uint32_t raw=fmt==7?color&0xFFFFFFu:color;memcpy(dst+n,&raw,4);}
++                else if(bpp==2)memcpy(dst+n,&value,2);
++                else dst[n]=fmt==0x0B?(uint8_t)(face*4+l+1):byte;
++            }
++            if(fmt==0x0B)memcpy(g_ram+0x330000+(face*4+l+1)*4,&color,4);
++            expected[face][l]=((color>>16)&255u)|(color&0xFF00FF00u)|((color&255u)<<16);offset+=bytes;
++        }
++        memset(&s_comb,0,sizeof s_comb);s_comb.set=s_comb.control=1;s_comb.stage_prog=(cube?3u:1u)<<(stage*5);
++        s_comb.factor0[0]=0xFFFF0000u;s_comb.color_icw[0]=0x01200000u;s_comb.alpha_icw[0]=0x11200000u;s_comb.color_ocw[0]=s_comb.alpha_ocw[0]=0xC0u;
++        s_gpu.tex=(Texture){0};memset(s_stage,0,sizeof s_stage);
++        Texture image={.offset=0x320000,.width=w,.height=h,.pitch=w*4,.color=fmt,.enabled=1,.valid=1,.palette=0x330000};
++        if(stage)s_stage[stage]=image;else s_gpu.tex=image;
++        for(unsigned st=0;st<4;st++){record_tex_reg(0x1B04+st*64,st==stage?(levels<<16)|(fmt<<8)|0x20u|(cube?4u:0):0);record_tex_reg(0x1B0C+st*64,0x4003FFC0u);record_tex_reg(0x1B14+st*64,0x01030000u);}
++        CHECK(snapshot_textures(),"authored mip snapshot failed");s_sg_frame++;
++        SgXfShade shade;sg_xf_shade_fill(&shade,1u<<stage);SgTextureUse captured[8];
++        draw_native_fragment_capture(&shade,1u<<stage,NULL,captured);SDL_GPUTexture *texture=captured[stage+(cube?4:0)].tex;
++        for(unsigned face=0;face<layers;face++)for(unsigned l=0,lw=w,lh=h;l<levels;l++,lw=lw>1?lw/2:1,lh=lh>1?lh/2:1)
++            check_authored_mip(texture,l,face,lw,lh,expected[face][l],id);
++        if(fmt==6 && !cube && !big && stage==0) {
++            uint64_t before=sg_texture_key(0,1);uint32_t yellow=0xFFFFFF00u;
++            for(unsigned i=0;i<4;i++)memcpy(g_ram+0x320000+64+i*4,&yellow,4);
++            CHECK(snapshot_textures(),"lower mip mutation snapshot failed");s_sg_frame++;
++            CHECK(sg_texture_key(0,1)!=before,"changing only an authored lower mip did not invalidate the cache key");
++            fail_next_submit=1;draw_native_fragment_capture(&shade,1u<<stage,NULL,captured);
++            CHECK(!fail_next_submit,"mip upload submit failure was not injected");
++            draw_native_fragment_capture(&shade,1u<<stage,NULL,captured);check_authored_mip(captured[stage].tex,1,0,2,2,0xFF00FFFFu,id);
++            record_tex_reg(0x1B04,(15u<<16)|(fmt<<8)|0x20u);
++            CHECK(texture_mip_levels(0,&s_gpu.tex)==3,"authored level count was not clamped to a 1x1 tail");
++        }
++        id++;
++    }
++    memcpy(&s_vp,saved_vp,sizeof s_vp);memcpy(&s_comb,saved_comb,sizeof s_comb);s_gpu.tex=saved_tex;memcpy(s_stage,saved_stages,sizeof s_stage);
++    memcpy(s_tex_reg,saved_regs,sizeof s_tex_reg);memcpy(s_tex_set,saved_set,sizeof s_tex_set);s_gpu.alpha_test=alpha;CHECK(snapshot_textures(),"restoring authored mip snapshots failed");
++}
++
 +static void test_software_presentation(void)
 +{
 +    SDL_Surface *output=SDL_CreateSurface(1280,900,SDL_PIXELFORMAT_ARGB8888);
@@ -4944,6 +5117,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    test_texture_clip_plane();
 +    test_bump_environment();
 +    test_direction_texture_stages();
++    test_authored_mip_chains();
 +    test_software_presentation();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
@@ -4956,7 +5130,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +837,8 @@
+@@ -267,8 +925,8 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -4967,7 +5141,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
      run_scene("textured, wrapped, modulated, negative u clamps", 0);
 
-@@ -308,7 +878,10 @@
+@@ -308,7 +966,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -4979,7 +5153,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +895,32 @@
+@@ -322,6 +983,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -20296,7 +20470,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t fog[4];
      uint32_t mode[4]; /* texture-shader mode per stage (sg_stage_mode) */
 -    uint32_t rect[4]; /* stage coordinates in texels (linear texture) */
-+    uint32_t rect[4]; /* bit 0 texel coordinates; 1/2 border U/V; 8..11 filter flags */
++    uint32_t rect[4]; /* bit 0 texels; 1/2 border; 8..11 filters; 16..19 authored levels */
      uint32_t depth[4];
 +    float depth_offset[4];
 +    uint32_t border[4]; /* ARGB border colour per texture stage */
@@ -20349,7 +20523,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      fprintf(stderr, "  [PROBE]   C0 %08X C1 %08X specfog %08X/%08X | stage1 %ux%u fmt %02X\n",
              s_comb.factor0[0], s_comb.factor1[0], s_comb.specfog[0], s_comb.specfog[1],
              s_stage[1].width, s_stage[1].height, s_stage[1].color);
-@@ -160,7 +183,26 @@
+@@ -160,7 +183,27 @@
      uint32_t m = sg_stage_mode(st);
      if (st > 0 && !comb_active())
          return 0;
@@ -20373,11 +20547,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +        s_sg_stats.texture_key[st]+=(control&3u)!=0;
 +        s_sg_stats.texture_volume[st]+=((format>>4)&15u)==3u;
 +        s_sg_stats.texture_cube[st]+=gpu_stage_is_cube((int)st)!=0;
++        s_sg_stats.texture_mips[st]+=texture_mip_levels((int)st,sg_stage_texture((int)st))>1;
 +    }
  }
 
  /* batch_triangles_xf() callback: one transformed triangle. */
-@@ -171,18 +213,14 @@
+@@ -171,18 +214,14 @@
 
      if (!a->ok || !b->ok || !c->ok)
          return;
@@ -20401,7 +20576,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              int front = (s_vp.front_face == 0x0900) ? cw : !cw;
              if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front) ||
                  s_vp.cull_face == 0x0408)
-@@ -197,7 +235,9 @@
+@@ -197,7 +236,9 @@
          float w0 = (b->x - a->x) * (py - a->y) - (b->y - a->y) * (px - a->x);
          float w1 = (c->x - b->x) * (py - b->y) - (c->y - b->y) * (px - b->x);
          float w2 = (a->x - c->x) * (py - c->y) - (a->y - c->y) * (px - c->x);
@@ -20412,7 +20587,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              s_probe.hit = 1;
              s_probe.v[0] = *a;
              s_probe.v[1] = *b;
-@@ -211,7 +251,7 @@
+@@ -211,7 +252,7 @@
       * triangles use w = 1: plain screen-space interpolation, which equals the
       * software result whenever the three w agree (the pie-chart case). */
      for (k = 0; k < 3; k++)
@@ -20421,7 +20596,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              affine = 1;
      /* RECOMP_SDLGPU_UVTRACE=1: describe large triangles (the field, the
  * stands) once per texture -- what the vertex program hands over, to
-@@ -292,20 +332,27 @@
+@@ -292,20 +333,27 @@
      sh->misc[0] = s_comb.specfog[0];
      sh->misc[1] = s_comb.specfog[1];
      sh->misc[2] = sampled;
@@ -20453,7 +20628,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
      memcpy(sh->factor0, s_comb.factor0, sizeof sh->factor0);
      memcpy(sh->factor1, s_comb.factor1, sizeof sh->factor1);
-@@ -316,7 +363,11 @@
+@@ -316,7 +364,11 @@
      sh->fog[0] = s_fog.color;
      for (st = 0; st < 4; st++) {
          sh->mode[st] = sg_stage_mode(st);
@@ -20461,12 +20636,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +        const Texture *tx = sg_stage_texture(st);
 +        sh->rect[st] = !tex_size_from_format(tx->color)
 +            | (tx->addr_u == 4 ? 2u : 0u) | (tx->addr_v == 4 ? 4u : 0u)
-+            | (sg_filter_flags(st) << 8);
++            | (sg_filter_flags(st) << 8) | (texture_mip_levels(st,tx)<<16);
 +        sh->border[st] = s_tex_reg[(0x1B24u + 0x40u * (uint32_t)st - NV_TEX_FIRST) / 4];
      }
 
      {
-@@ -330,6 +381,10 @@
+@@ -330,6 +382,10 @@
          memcpy(&sh->depth[2], &cmin, sizeof cmin);
          memcpy(&sh->depth[3], &cmax, sizeof cmax);
      }
@@ -20477,7 +20652,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  }
 
  /* ── 3D batches with the vertex program on the GPU ──────────────────────
-@@ -339,13 +394,79 @@
+@@ -339,13 +395,79 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -20559,7 +20734,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -359,17 +480,15 @@
+@@ -359,17 +481,15 @@
  static uint32_t sg_vp_vertex(uint32_t index) {
      uint32_t a, k;
      index &= 0xFFFF;
@@ -20583,7 +20758,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -379,7 +498,7 @@
+@@ -379,7 +499,7 @@
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
   * CPU path instead: program still compiling or not translatable, points or
   * lines, or out of memory. */
@@ -20592,7 +20767,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
      SDL_GPUGraphicsPipeline *pipe;
-@@ -397,18 +516,42 @@
+@@ -397,18 +517,42 @@
          default:
              return 0; /* points and lines: not on the GPU yet */
      }
@@ -20641,7 +20816,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +564,15 @@
+@@ -421,7 +565,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -20658,7 +20833,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +620,10 @@
+@@ -469,10 +621,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -20671,7 +20846,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +645,8 @@
+@@ -494,7 +646,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -20681,7 +20856,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,7 +660,7 @@
+@@ -508,7 +661,7 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -20690,7 +20865,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t sampled = 0;
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
-@@ -532,31 +684,42 @@
+@@ -532,31 +685,42 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -20738,7 +20913,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,15 +732,15 @@
+@@ -569,15 +733,15 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,
@@ -20787,7 +20962,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      uvec4 fog;            // x: fog color, low byte red
      uvec4 mode;           // per stage: texture-shader mode (stage program, 5 bits each)
 -    uvec4 rect;           // per stage: 1 = coordinates in texels (linear texture), 0 = normalised
-+    uvec4 rect;           // bit 0 texel coordinates; bits 1/2 border U/V; bits 8..11 filter flags
++    uvec4 rect;           // bit 0 texel coordinates; 1/2 border; 8..11 filters; 16..19 authored levels
      uvec4 depth;
 +    vec4 depth_offset;    // x: constant bias, y: slope factor, in guest depth units
 +    uvec4 border;         // ARGB border colour per stage
@@ -20796,7 +20971,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
  } sh;
 
  // Same nudge as flat2d.frag: exact texel boundaries land on the same texel
-@@ -93,28 +101,67 @@
+@@ -93,28 +101,69 @@
 
  // Normalised coordinates -> the point-sampled texel, wrapped or clamped as
  // the software path does (raster_triangle_xf + wrap_coord).
@@ -20827,8 +21002,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +        vec2 dx = dFdx(nuv) * size, dy = dFdy(nuv) * size;
 +        float rho2 = max(dot(dx, dx), dot(dy, dy));
 +        bool linear_filter = (flags & (rho2 <= 1.0 ? 0x100u : 0x200u)) != 0u;
++        uint levels=(flags>>16)&15u;
++        float max_lod=levels!=0u?float(levels-1u):floor(log2(max(size.x,size.y)));
 +        float lod = (flags & 0x800u) != 0u
-+            ? clamp(0.5 * log2(max(rho2, 1e-20)), 0.0, floor(log2(max(size.x, size.y)))) : 0.0;
++            ? clamp(0.5 * log2(max(rho2, 1e-20)), 0.0, max_lod) : 0.0;
 +        bool mip_linear = (flags & 0x400u) != 0u;
 +        float level = mip_linear ? floor(lod) : floor(lod + 0.5);
 +        vec2 coverage = border_coverage(nuv, max(floor(size / exp2(level)), vec2(1.0)), linear_filter);
@@ -20872,7 +21049,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      vec3 a = max(abs(d), vec3(1e-8));
      vec2 uv;
      if (a.x > a.y && a.x > a.z)      uv = (d.x > 0.0 ? vec2(-d.z, d.y) : vec2(d.z, d.y)) / a.x;
-@@ -123,27 +170,80 @@
+@@ -123,27 +172,80 @@
      return tex2d(s, uv * 0.5 + 0.5);
  }
 
@@ -20966,7 +21143,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 
  // One mapped input byte: register (bits 0-3), alpha channel (bit 4),
  // mapping (bits 5-7). For alpha inputs every component holds the value.
-@@ -155,41 +255,40 @@
+@@ -155,41 +257,40 @@
      vec3 x = is_alpha ? vec3(chan_alpha ? r.a : r.b)
                        : (chan_alpha ? vec3(r.a) : r.rgb);
      vec3 p = max(x, 0.0);
@@ -21035,7 +21212,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
  {
      uint flags = ocw >> 12, mapping = flags & 0x38u;
      uint ab_dst = (ocw >> 4) & 0xFu, cd_dst = ocw & 0xFu, ms_dst = (ocw >> 8) & 0xFu;
-@@ -211,15 +310,21 @@
+@@ -211,15 +312,21 @@
      cd = comb_map3(cd, mapping);
      ms = comb_map3(ms, mapping);
 
@@ -21063,7 +21240,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      }
  }
 
-@@ -248,10 +353,10 @@
+@@ -248,10 +355,10 @@
          int c1 = (control & 0x10000u) != 0u ? s : 0;   // UNIQUE_C1
          src_r[1] = unpack_argb(value8(sh.factor0, c0));
          src_r[2] = unpack_argb(value8(sh.factor1, c1));
@@ -21078,7 +21255,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      }
 
      vec4 result;
-@@ -302,16 +407,47 @@
+@@ -302,16 +409,47 @@
 
  void main()
  {
@@ -21130,7 +21307,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
          c8 = to8(comb_eval(t0, v_col, v_spec, tn));
      } else if (sampled0) {
          // modulate(texel, argb): (t * c + 127) / 255 per channel, in integers.
-@@ -323,10 +459,14 @@
+@@ -323,10 +461,14 @@
      if (sh.alpha.x != 0u && !alpha_pass(c8.a))
          discard;
      out_color = vec4(c8) / 255.0;
@@ -23038,10 +23215,10 @@ index 0000000..f1e7f28
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..a9021ea
+index 0000000..61042f8
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,2153 @@
+@@ -0,0 +1,2168 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -23588,15 +23765,18 @@ index 0000000..a9021ea
 +    "    var rho2_: f32;\n"
 +    "    var local_2: u32;\n"
 +    "    var linear_filter_2: bool;\n"
++    "    var levels: u32;\n"
 +    "    var local_3: f32;\n"
++    "    var max_lod: f32;\n"
++    "    var local_4: f32;\n"
 +    "    var lod: f32;\n"
 +    "    var mip_linear: bool;\n"
-+    "    var local_4: f32;\n"
++    "    var local_5: f32;\n"
 +    "    var level: f32;\n"
 +    "    var coverage: vec2<f32>;\n"
 +    "    var next: vec2<f32>;\n"
-+    "    var local_5: f32;\n"
 +    "    var local_6: f32;\n"
++    "    var local_7: f32;\n"
 +    "    var inside: f32;\n"
 +    "\n"
 +    "    s_5 = s_4;\n"
@@ -23662,76 +23842,88 @@ index 0000000..a9021ea
 +    "            let _e144 = local_2;\n"
 +    "            linear_filter_2 = ((_e137 & _e144) != 0u);\n"
 +    "            let _e149 = flags;\n"
-+    "            if ((_e149 & 2048u) != 0u) {\n"
-+    "                let _e155 = rho2_;\n"
-+    "                let _e161 = size_6;\n"
-+    "                let _e163 = size_6;\n"
-+    "                local_3 = clamp((0.5f * log2(max(_e155, 0.00000000000000000001f))), 0f, floor(log2(max(_e161.x, _e163.y))));\n"
++    "            levels = ((_e149 >> 16u) & 15u);\n"
++    "            let _e156 = levels;\n"
++    "            if (_e156 != 0u) {\n"
++    "                let _e159 = levels;\n"
++    "                local_3 = f32((_e159 - 1u));\n"
 +    "            } else {\n"
-+    "                local_3 = 0f;\n"
++    "                let _e163 = size_6;\n"
++    "                let _e165 = size_6;\n"
++    "                local_3 = floor(log2(max(_e163.x, _e165.y)));\n"
 +    "            }\n"
 +    "            let _e171 = local_3;\n"
-+    "            lod = _e171;\n"
++    "            max_lod = _e171;\n"
 +    "            let _e173 = flags;\n"
-+    "            mip_linear = ((_e173 & 1024u) != 0u);\n"
-+    "            let _e179 = mip_linear;\n"
-+    "            if _e179 {\n"
-+    "                let _e180 = lod;\n"
-+    "                local_4 = floor(_e180);\n"
++    "            if ((_e173 & 2048u) != 0u) {\n"
++    "                let _e179 = rho2_;\n"
++    "                let _e185 = max_lod;\n"
++    "                local_4 = clamp((0.5f * log2(max(_e179, 0.00000000000000000001f))), 0f, _e185);\n"
 +    "            } else {\n"
-+    "                let _e182 = lod;\n"
-+    "                local_4 = floor((_e182 + 0.5f));\n"
++    "                local_4 = 0f;\n"
 +    "            }\n"
-+    "            let _e187 = local_4;\n"
-+    "            level = _e187;\n"
-+    "            let _e189 = nuv_1;\n"
-+    "            let _e190 = size_6;\n"
-+    "            let _e191 = level;\n"
-+    "            let _e199 = linear_filter_2;\n"
-+    "            let _e200 = border_coverage(_e189, max(floor((_e190 / vec2(exp2(_e191)))), vec2(1f)), _e199);\n"
-+    "            coverage = _e200;\n"
-+    "            let _e202 = mip_linear;\n"
-+    "            if _e202 {\n"
++    "            let _e189 = local_4;\n"
++    "            lod = _e189;\n"
++    "            let _e191 = flags;\n"
++    "            mip_linear = ((_e191 & 1024u) != 0u);\n"
++    "            let _e197 = mip_linear;\n"
++    "            if _e197 {\n"
++    "                let _e198 = lod;\n"
++    "                local_5 = floor(_e198);\n"
++    "            } else {\n"
++    "                let _e200 = lod;\n"
++    "                local_5 = floor((_e200 + 0.5f));\n"
++    "            }\n"
++    "            let _e205 = local_5;\n"
++    "            level = _e205;\n"
++    "            let _e207 = nuv_1;\n"
++    "            let _e208 = size_6;\n"
++    "            let _e209 = level;\n"
++    "            let _e217 = linear_filter_2;\n"
++    "            let _e218 = border_coverage(_e207, max(floor((_e208 / vec2(exp2(_e209)))), vec2(1f)), _e217);\n"
++    "            coverage = _e218;\n"
++    "            let _e220 = mip_linear;\n"
++    "            if _e220 {\n"
 +    "                {\n"
-+    "                    let _e203 = nuv_1;\n"
-+    "                    let _e204 = size_6;\n"
-+    "                    let _e205 = level;\n"
-+    "                    let _e215 = linear_filter_2;\n"
-+    "                    let _e216 = border_coverage(_e203, max(floor((_e204 / vec2(exp2((_e205 + 1f))))), vec2(1f)), _e215);\n"
-+    "                    next = _e216;\n"
-+    "                    let _e218 = coverage;\n"
-+    "                    let _e219 = next;\n"
-+    "                    let _e220 = lod;\n"
-+    "                    coverage = mix(_e218, _e219, vec2(fract(_e220)));\n"
++    "                    let _e221 = nuv_1;\n"
++    "                    let _e222 = size_6;\n"
++    "                    let _e223 = level;\n"
++    "                    let _e233 = linear_filter_2;\n"
++    "                    let _e234 = border_coverage(_e221, max(floor((_e222 / vec2(exp2((_e223 + 1f))))), vec2(1f)), _e233);\n"
++    "                    next = _e234;\n"
++    "                    let _e236 = coverage;\n"
++    "                    let _e237 = next;\n"
++    "                    let _e238 = lod;\n"
++    "                    coverage = mix(_e236, _e237, vec2(fract(_e238)));\n"
 +    "                }\n"
 +    "            }\n"
-+    "            let _e224 = flags;\n"
-+    "            if ((_e224 & 2u) != 0u) {\n"
-+    "                let _e229 = coverage;\n"
-+    "                local_5 = _e229.x;\n"
-+    "            } else {\n"
-+    "                local_5 = 1f;\n"
-+    "            }\n"
-+    "            let _e233 = local_5;\n"
-+    "            let _e234 = flags;\n"
-+    "            if ((_e234 & 4u) != 0u) {\n"
-+    "                let _e239 = coverage;\n"
-+    "                local_6 = _e239.y;\n"
++    "            let _e242 = flags;\n"
++    "            if ((_e242 & 2u) != 0u) {\n"
++    "                let _e247 = coverage;\n"
++    "                local_6 = _e247.x;\n"
 +    "            } else {\n"
 +    "                local_6 = 1f;\n"
 +    "            }\n"
-+    "            let _e243 = local_6;\n"
-+    "            inside = (_e233 * _e243);\n"
-+    "            let _e246 = s_5;\n"
-+    "            let _e249 = sh.border[_e246];\n"
-+    "            let _e250 = unpack_argb(_e249);\n"
-+    "            let _e251 = c_6;\n"
-+    "            let _e252 = inside;\n"
-+    "            c_6 = mix(_e250, _e251, vec4(_e252));\n"
++    "            let _e251 = local_6;\n"
++    "            let _e252 = flags;\n"
++    "            if ((_e252 & 4u) != 0u) {\n"
++    "                let _e257 = coverage;\n"
++    "                local_7 = _e257.y;\n"
++    "            } else {\n"
++    "                local_7 = 1f;\n"
++    "            }\n"
++    "            let _e261 = local_7;\n"
++    "            inside = (_e251 * _e261);\n"
++    "            let _e264 = s_5;\n"
++    "            let _e267 = sh.border[_e264];\n"
++    "            let _e268 = unpack_argb(_e267);\n"
++    "            let _e269 = c_6;\n"
++    "            let _e270 = inside;\n"
++    "            c_6 = mix(_e268, _e269, vec4(_e270));\n"
 +    "        }\n"
 +    "    }\n"
-+    "    let _e255 = c_6;\n"
-+    "    return _e255;\n"
++    "    let _e273 = c_6;\n"
++    "    return _e273;\n"
 +    "}\n"
 +    "\n"
 +    "fn tex2dc(s_6: i32, uv_2: vec2<f32>) -> vec4<f32> {\n"
@@ -23788,9 +23980,9 @@ index 0000000..a9021ea
 +    "    var d_1: vec3<f32>;\n"
 +    "    var a: vec3<f32>;\n"
 +    "    var uv_4: vec2<f32>;\n"
-+    "    var local_7: vec2<f32>;\n"
 +    "    var local_8: vec2<f32>;\n"
 +    "    var local_9: vec2<f32>;\n"
++    "    var local_10: vec2<f32>;\n"
 +    "\n"
 +    "    s_11 = s_10;\n"
 +    "    d_1 = d;\n"
@@ -23813,13 +24005,13 @@ index 0000000..a9021ea
 +    "        if (_e98.x > 0f) {\n"
 +    "            let _e102 = d_1;\n"
 +    "            let _e105 = d_1;\n"
-+    "            local_7 = vec2<f32>(-(_e102.z), _e105.y);\n"
++    "            local_8 = vec2<f32>(-(_e102.z), _e105.y);\n"
 +    "        } else {\n"
 +    "            let _e108 = d_1;\n"
 +    "            let _e110 = d_1;\n"
-+    "            local_7 = vec2<f32>(_e108.z, _e110.y);\n"
++    "            local_8 = vec2<f32>(_e108.z, _e110.y);\n"
 +    "        }\n"
-+    "        let _e114 = local_7;\n"
++    "        let _e114 = local_8;\n"
 +    "        let _e115 = a;\n"
 +    "        uv_4 = (_e114 / vec2(_e115.x));\n"
 +    "    } else {\n"
@@ -23832,13 +24024,13 @@ index 0000000..a9021ea
 +    "            if (_e130.y > 0f) {\n"
 +    "                let _e134 = d_1;\n"
 +    "                let _e136 = d_1;\n"
-+    "                local_8 = vec2<f32>(_e134.x, -(_e136.z));\n"
++    "                local_9 = vec2<f32>(_e134.x, -(_e136.z));\n"
 +    "            } else {\n"
 +    "                let _e140 = d_1;\n"
 +    "                let _e142 = d_1;\n"
-+    "                local_8 = vec2<f32>(_e140.x, _e142.z);\n"
++    "                local_9 = vec2<f32>(_e140.x, _e142.z);\n"
 +    "            }\n"
-+    "            let _e146 = local_8;\n"
++    "            let _e146 = local_9;\n"
 +    "            let _e147 = a;\n"
 +    "            uv_4 = (_e146 / vec2(_e147.y));\n"
 +    "        } else {\n"
@@ -23846,13 +24038,13 @@ index 0000000..a9021ea
 +    "            if (_e151.z > 0f) {\n"
 +    "                let _e155 = d_1;\n"
 +    "                let _e157 = d_1;\n"
-+    "                local_9 = vec2<f32>(_e155.x, _e157.y);\n"
++    "                local_10 = vec2<f32>(_e155.x, _e157.y);\n"
 +    "            } else {\n"
 +    "                let _e160 = d_1;\n"
 +    "                let _e163 = d_1;\n"
-+    "                local_9 = vec2<f32>(-(_e160.x), _e163.y);\n"
++    "                local_10 = vec2<f32>(-(_e160.x), _e163.y);\n"
 +    "            }\n"
-+    "            let _e167 = local_9;\n"
++    "            let _e167 = local_10;\n"
 +    "            let _e168 = a;\n"
 +    "            uv_4 = (_e167 / vec2(_e168.z));\n"
 +    "        }\n"
@@ -23905,7 +24097,7 @@ index 0000000..a9021ea
 +    "    var m_1: u32;\n"
 +    "    var on_1: bool;\n"
 +    "    var previous: vec4<f32>;\n"
-+    "    var local_10: f32;\n"
++    "    var local_11: f32;\n"
 +    "    var w: f32;\n"
 +    "    var encoded: vec2<f32>;\n"
 +    "    var delta: vec2<f32>;\n"
@@ -23970,11 +24162,11 @@ index 0000000..a9021ea
 +    "            let _e151 = pt_1;\n"
 +    "            if (((_e144 == 1u) || (_e147 == 2u)) && (_e151.w != 0f)) {\n"
 +    "                let _e156 = pt_1;\n"
-+    "                local_10 = _e156.w;\n"
++    "                local_11 = _e156.w;\n"
 +    "            } else {\n"
-+    "                local_10 = 1f;\n"
++    "                local_11 = 1f;\n"
 +    "            }\n"
-+    "            let _e160 = local_10;\n"
++    "            let _e160 = local_11;\n"
 +    "            w = _e160;\n"
 +    "            let _e162 = s_15;\n"
 +    "            let _e163 = pt_1;\n"
@@ -24145,9 +24337,9 @@ index 0000000..a9021ea
 +    "    var r: vec4<f32>;\n"
 +    "    var chan_alpha: bool;\n"
 +    "    var mapping_1: u32;\n"
-+    "    var local_11: f32;\n"
-+    "    var local_12: vec3<f32>;\n"
++    "    var local_12: f32;\n"
 +    "    var local_13: vec3<f32>;\n"
++    "    var local_14: vec3<f32>;\n"
 +    "    var x: vec3<f32>;\n"
 +    "    var p: vec3<f32>;\n"
 +    "    var result: vec3<f32>;\n"
@@ -24166,26 +24358,26 @@ index 0000000..a9021ea
 +    "        let _e88 = chan_alpha;\n"
 +    "        if _e88 {\n"
 +    "            let _e89 = r;\n"
-+    "            local_11 = _e89.w;\n"
++    "            local_12 = _e89.w;\n"
 +    "        } else {\n"
 +    "            let _e91 = r;\n"
-+    "            local_11 = _e91.z;\n"
++    "            local_12 = _e91.z;\n"
 +    "        }\n"
-+    "        let _e94 = local_11;\n"
-+    "        local_13 = vec3(_e94);\n"
++    "        let _e94 = local_12;\n"
++    "        local_14 = vec3(_e94);\n"
 +    "    } else {\n"
 +    "        let _e96 = chan_alpha;\n"
 +    "        if _e96 {\n"
 +    "            let _e97 = r;\n"
-+    "            local_12 = vec3(_e97.w);\n"
++    "            local_13 = vec3(_e97.w);\n"
 +    "        } else {\n"
 +    "            let _e100 = r;\n"
-+    "            local_12 = _e100.xyz;\n"
++    "            local_13 = _e100.xyz;\n"
 +    "        }\n"
-+    "        let _e103 = local_12;\n"
-+    "        local_13 = _e103;\n"
++    "        let _e103 = local_13;\n"
++    "        local_14 = _e103;\n"
 +    "    }\n"
-+    "    let _e105 = local_13;\n"
++    "    let _e105 = local_14;\n"
 +    "    x = _e105;\n"
 +    "    let _e107 = x;\n"
 +    "    p = max(_e107, vec3(0f));\n"
@@ -24265,14 +24457,14 @@ index 0000000..a9021ea
 +    "    var B: vec3<f32>;\n"
 +    "    var C: vec3<f32>;\n"
 +    "    var D: vec3<f32>;\n"
-+    "    var local_14: vec3<f32>;\n"
-+    "    var ab: vec3<f32>;\n"
 +    "    var local_15: vec3<f32>;\n"
++    "    var ab: vec3<f32>;\n"
++    "    var local_16: vec3<f32>;\n"
 +    "    var cd: vec3<f32>;\n"
-+    "    var local_16: bool;\n"
++    "    var local_17: bool;\n"
 +    "    var mux_cd: bool;\n"
-+    "    var local_17: vec3<f32>;\n"
 +    "    var local_18: vec3<f32>;\n"
++    "    var local_19: vec3<f32>;\n"
 +    "    var ms: vec3<f32>;\n"
 +    "\n"
 +    "    icw_1 = icw;\n"
@@ -24313,13 +24505,13 @@ index 0000000..a9021ea
 +    "        let _e148 = B;\n"
 +    "        let _e152 = A;\n"
 +    "        let _e154 = B;\n"
-+    "        local_14 = vec3((((_e141.x * _e143.x) + (_e146.y * _e148.y)) + (_e152.z * _e154.z)));\n"
++    "        local_15 = vec3((((_e141.x * _e143.x) + (_e146.y * _e148.y)) + (_e152.z * _e154.z)));\n"
 +    "    } else {\n"
 +    "        let _e159 = A;\n"
 +    "        let _e160 = B;\n"
-+    "        local_14 = (_e159 * _e160);\n"
++    "        local_15 = (_e159 * _e160);\n"
 +    "    }\n"
-+    "    let _e163 = local_14;\n"
++    "    let _e163 = local_15;\n"
 +    "    ab = _e163;\n"
 +    "    let _e165 = is_alpha_3;\n"
 +    "    let _e167 = flags_1;\n"
@@ -24330,42 +24522,42 @@ index 0000000..a9021ea
 +    "        let _e180 = D;\n"
 +    "        let _e184 = C;\n"
 +    "        let _e186 = D;\n"
-+    "        local_15 = vec3((((_e173.x * _e175.x) + (_e178.y * _e180.y)) + (_e184.z * _e186.z)));\n"
++    "        local_16 = vec3((((_e173.x * _e175.x) + (_e178.y * _e180.y)) + (_e184.z * _e186.z)));\n"
 +    "    } else {\n"
 +    "        let _e191 = C;\n"
 +    "        let _e192 = D;\n"
-+    "        local_15 = (_e191 * _e192);\n"
++    "        local_16 = (_e191 * _e192);\n"
 +    "    }\n"
-+    "    let _e195 = local_15;\n"
++    "    let _e195 = local_16;\n"
 +    "    cd = _e195;\n"
 +    "    let _e197 = sh;\n"
 +    "    if ((_e197.prog.x & 256u) != 0u) {\n"
 +    "        let _e206 = src_r[12];\n"
-+    "        local_16 = (_e206.w >= 0.5f);\n"
++    "        local_17 = (_e206.w >= 0.5f);\n"
 +    "    } else {\n"
 +    "        let _e212 = src_r[12];\n"
-+    "        local_16 = ((u32(((_e212.w * 255f) + 0.5f)) & 1u) != 0u);\n"
++    "        local_17 = ((u32(((_e212.w * 255f) + 0.5f)) & 1u) != 0u);\n"
 +    "    }\n"
-+    "    let _e224 = local_16;\n"
++    "    let _e224 = local_17;\n"
 +    "    mux_cd = _e224;\n"
 +    "    let _e226 = flags_1;\n"
 +    "    if ((_e226 & 4u) != 0u) {\n"
 +    "        let _e231 = mux_cd;\n"
 +    "        if _e231 {\n"
 +    "            let _e232 = cd;\n"
-+    "            local_17 = _e232;\n"
++    "            local_18 = _e232;\n"
 +    "        } else {\n"
 +    "            let _e233 = ab;\n"
-+    "            local_17 = _e233;\n"
++    "            local_18 = _e233;\n"
 +    "        }\n"
-+    "        let _e235 = local_17;\n"
-+    "        local_18 = _e235;\n"
++    "        let _e235 = local_18;\n"
++    "        local_19 = _e235;\n"
 +    "    } else {\n"
 +    "        let _e236 = ab;\n"
 +    "        let _e237 = cd;\n"
-+    "        local_18 = (_e236 + _e237);\n"
++    "        local_19 = (_e236 + _e237);\n"
 +    "    }\n"
-+    "    let _e240 = local_18;\n"
++    "    let _e240 = local_19;\n"
 +    "    ms = _e240;\n"
 +    "    let _e242 = ab;\n"
 +    "    let _e243 = mapping_4;\n"
@@ -24493,11 +24685,11 @@ index 0000000..a9021ea
 +    "    var stages: i32;\n"
 +    "    var i: i32 = 0i;\n"
 +    "    var s_16: i32 = 1i;\n"
-+    "    var local_19: f32;\n"
++    "    var local_20: f32;\n"
 +    "    var s_17: i32 = 0i;\n"
-+    "    var local_20: i32;\n"
-+    "    var c0_: i32;\n"
 +    "    var local_21: i32;\n"
++    "    var c0_: i32;\n"
++    "    var local_22: i32;\n"
 +    "    var c1_: i32;\n"
 +    "    var rgb: CombStageResult;\n"
 +    "    var alpha: CombStageResult;\n"
@@ -24505,9 +24697,9 @@ index 0000000..a9021ea
 +    "    var fl: u32;\n"
 +    "    var E: vec3<f32>;\n"
 +    "    var F: vec3<f32>;\n"
-+    "    var local_22: vec3<f32>;\n"
-+    "    var v1c: vec3<f32>;\n"
 +    "    var local_23: vec3<f32>;\n"
++    "    var v1c: vec3<f32>;\n"
++    "    var local_24: vec3<f32>;\n"
 +    "    var r0c: vec3<f32>;\n"
 +    "    var sum: vec3<f32>;\n"
 +    "    var A_1: vec3<f32>;\n"
@@ -24575,11 +24767,11 @@ index 0000000..a9021ea
 +    "    let _e189 = stage_prog;\n"
 +    "    if ((_e189 & 31u) != 0u) {\n"
 +    "        let _e194 = t0_1;\n"
-+    "        local_19 = _e194.w;\n"
++    "        local_20 = _e194.w;\n"
 +    "    } else {\n"
-+    "        local_19 = 1f;\n"
++    "        local_20 = 1f;\n"
 +    "    }\n"
-+    "    let _e198 = local_19;\n"
++    "    let _e198 = local_20;\n"
 +    "    src_r[12i].w = _e198;\n"
 +    "    loop {\n"
 +    "        let _e201 = s_17;\n"
@@ -24591,20 +24783,20 @@ index 0000000..a9021ea
 +    "            let _e208 = control;\n"
 +    "            if ((_e208 & 4096u) != 0u) {\n"
 +    "                let _e213 = s_17;\n"
-+    "                local_20 = _e213;\n"
++    "                local_21 = _e213;\n"
 +    "            } else {\n"
-+    "                local_20 = 0i;\n"
++    "                local_21 = 0i;\n"
 +    "            }\n"
-+    "            let _e216 = local_20;\n"
++    "            let _e216 = local_21;\n"
 +    "            c0_ = _e216;\n"
 +    "            let _e218 = control;\n"
 +    "            if ((_e218 & 65536u) != 0u) {\n"
 +    "                let _e223 = s_17;\n"
-+    "                local_21 = _e223;\n"
++    "                local_22 = _e223;\n"
 +    "            } else {\n"
-+    "                local_21 = 0i;\n"
++    "                local_22 = 0i;\n"
 +    "            }\n"
-+    "            let _e226 = local_21;\n"
++    "            let _e226 = local_22;\n"
 +    "            c1_ = _e226;\n"
 +    "            let _e230 = sh;\n"
 +    "            let _e232 = c0_;\n"
@@ -24663,22 +24855,22 @@ index 0000000..a9021ea
 +    "            let _e310 = fl;\n"
 +    "            if ((_e310 & 64u) != 0u) {\n"
 +    "                let _e318 = src_r[5];\n"
-+    "                local_22 = (vec3(1f) - _e318.xyz);\n"
++    "                local_23 = (vec3(1f) - _e318.xyz);\n"
 +    "            } else {\n"
 +    "                let _e324 = src_r[5];\n"
-+    "                local_22 = _e324.xyz;\n"
++    "                local_23 = _e324.xyz;\n"
 +    "            }\n"
-+    "            let _e327 = local_22;\n"
++    "            let _e327 = local_23;\n"
 +    "            v1c = _e327;\n"
 +    "            let _e329 = fl;\n"
 +    "            if ((_e329 & 32u) != 0u) {\n"
 +    "                let _e337 = src_r[12];\n"
-+    "                local_23 = (vec3(1f) - _e337.xyz);\n"
++    "                local_24 = (vec3(1f) - _e337.xyz);\n"
 +    "            } else {\n"
 +    "                let _e343 = src_r[12];\n"
-+    "                local_23 = _e343.xyz;\n"
++    "                local_24 = _e343.xyz;\n"
 +    "            }\n"
-+    "            let _e346 = local_23;\n"
++    "            let _e346 = local_24;\n"
 +    "            r0c = _e346;\n"
 +    "            let _e348 = v1c;\n"
 +    "            let _e349 = r0c;\n"
@@ -24802,9 +24994,9 @@ index 0000000..a9021ea
 +    "    var t0_2: vec4<f32>;\n"
 +    "    var c8_: vec4<u32>;\n"
 +    "    var tn_2: array<vec4<f32>, 3>;\n"
-+    "    var local_24: f32;\n"
-+    "    var zd: f32;\n"
 +    "    var local_25: f32;\n"
++    "    var zd: f32;\n"
++    "    var local_26: f32;\n"
 +    "    var slope: f32;\n"
 +    "    var cmin: f32;\n"
 +    "    var cmax: f32;\n"
@@ -24973,13 +25165,13 @@ index 0000000..a9021ea
 +    "    let _e348 = w_buffer;\n"
 +    "    if _e348 {\n"
 +    "        let _e349 = v_w_1;\n"
-+    "        local_24 = _e349;\n"
++    "        local_25 = _e349;\n"
 +    "    } else {\n"
 +    "        let _e350 = gl_FragCoord_1;\n"
 +    "        let _e352 = zmax;\n"
-+    "        local_24 = (_e350.z * _e352);\n"
++    "        local_25 = (_e350.z * _e352);\n"
 +    "    }\n"
-+    "    let _e355 = local_24;\n"
++    "    let _e355 = local_25;\n"
 +    "    zd = _e355;\n"
 +    "    let _e357 = sh;\n"
 +    "    if (_e357.depth_offset.y != 0f) {\n"
@@ -24989,12 +25181,12 @@ index 0000000..a9021ea
 +    "                let _e363 = slope_inv_w;\n"
 +    "                let _e364 = zd;\n"
 +    "                let _e366 = zd;\n"
-+    "                local_25 = ((_e363 * _e364) * _e366);\n"
++    "                local_26 = ((_e363 * _e364) * _e366);\n"
 +    "            } else {\n"
 +    "                let _e368 = slope_z;\n"
-+    "                local_25 = _e368;\n"
++    "                local_26 = _e368;\n"
 +    "            }\n"
-+    "            let _e370 = local_25;\n"
++    "            let _e370 = local_26;\n"
 +    "            slope = _e370;\n"
 +    "            let _e372 = zd;\n"
 +    "            let _e373 = sh;\n"
@@ -26294,10 +26486,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..ca68367
+index 0000000..f2afdcc
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1524 @@
+@@ -0,0 +1,1538 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -26394,7 +26586,7 @@ index 0000000..ca68367
 +}
 +
 +/* Upload `bytes` into a texture region through a transfer buffer. */
-+static void upload(SDL_GPUTexture *t, const void *bytes, uint32_t w, uint32_t h)
++static void upload_level(SDL_GPUTexture *t, const void *bytes, uint32_t w, uint32_t h,uint32_t level)
 +{
 +    SDL_GPUTransferBufferCreateInfo ti = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = w * h * 4 };
 +    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
@@ -26403,12 +26595,14 @@ index 0000000..ca68367
 +    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
 +    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
 +    SDL_GPUTextureTransferInfo src = { .transfer_buffer = tb };
-+    SDL_GPUTextureRegion dst = { .texture = t, .w = w, .h = h, .d = 1 };
++    SDL_GPUTextureRegion dst = { .texture = t, .mip_level=level, .w = w, .h = h, .d = 1 };
 +    SDL_UploadToGPUTexture(cp, &src, &dst, false);
 +    SDL_EndGPUCopyPass(cp);
 +    SDL_SubmitGPUCommandBuffer(c);
 +    SDL_ReleaseGPUTransferBuffer(dev, tb);
 +}
++
++static void upload(SDL_GPUTexture *t,const void *bytes,uint32_t w,uint32_t h) {upload_level(t,bytes,w,h,0);}
 +
 +/* Download a level of a texture as the renderer's sg_download does. */
 +static void download_layer(SDL_GPUTexture *t, uint32_t level, uint32_t layer, uint32_t w, uint32_t h, void *out)
@@ -27229,6 +27423,18 @@ index 0000000..ca68367
 +                }
 +                draw(&d); download(color, 0, W, H, img);
 +                CHECK(px(img,25,25) == 0xFFFFFFFFu, "border mode does not affect the other clamp-to-edge axis");
++                /* Mip-border coverage must stop at the authored chain's last
++                 * level even when derivatives would select a smaller image. */
++                uint32_t white_pixels[64];for(unsigned p=0;p<64;p++)white_pixels[p]=0xFFFFFFFFu;
++                for(unsigned levels=1;levels<=2;levels++) {
++                    SDL_GPUTexture *partial=make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,SDL_GPU_TEXTUREUSAGE_SAMPLER,8,8,levels);
++                    upload(partial,white_pixels,8,8);if(levels==2)upload_level(partial,white_pixels,4,4,1);
++                    d.tex=partial;shade.tex[0][0]=shade.tex[0][1]=8;shade.rect[0]=2u|0xB00u|(levels<<16);shade.border[0]=0;
++                    for(unsigned vi=0;vi<3;vi++){tri[vi][12]=tri[vi][0]-25.5f-1.0f/32.0f;tri[vi][13]=0.5f;}
++                    draw(&d);download(color,0,W,H,img);
++                    CHECK(px(img,25,25)==(levels==1?0x40404040u:0x60606060u),"border filtering clamps to %u authored levels: %08X",levels,px(img,25,25));
++                    SDL_ReleaseGPUTexture(dev,partial);
++                }
 +                memcpy(&shade, saved_shade, sizeof shade);
 +                memcpy(tri, saved_tri, sizeof tri);
 +                d = saved_draw;

@@ -30,7 +30,7 @@ typedef struct { uint32_t x[8],y[8],exclusive; } SgWindowClip;
 typedef struct { int owner; } SgSurface;
 enum { SG_OWNER_GUEST, SG_OWNER_GPU, SG_QUEUE_MAX_DRAWS=8192 };
 typedef struct { SDL_GPUTexture *tex; SDL_GPUSampler *sampler;
-    void *upload; uint32_t w,h,layers; } SgTextureUse;
+    void *upload; uint32_t w,h,layers,levels; } SgTextureUse;
 /* TYPES */
 static SgQueue s_sg_queue;
 static struct { uint32_t clip_x,clip_y,clip_w,clip_h,window_clip_x[8],window_clip_y[8];
@@ -67,6 +67,23 @@ int main(void) {
     assert(!sg_queue_draw(&d));
     assert(s_sg_queue.count==old_count && s_sg_queue.vbytes==old_bytes);
     puts("ok: oversized fragment uniforms are rejected before queue mutation");
+    d.fs_uniform_size=sizeof first;d.tex_count=1;
+    textures[0]=(SgTextureUse){.upload=(void*)1,.w=UINT32_MAX,.h=UINT32_MAX,.layers=6,.levels=13};
+    assert(!sg_queue_draw(&d) && s_sg_queue.count==old_count && s_sg_queue.vbytes==old_bytes);
+    textures[0]=(SgTextureUse){.upload=(void*)1,.w=1,.h=1,.layers=1,.levels=2};
+    assert(!sg_queue_draw(&d) && s_sg_queue.count==old_count);
+    textures[0]=(SgTextureUse){.upload=(void*)1,.w=4,.h=4,.layers=5,.levels=3};
+    assert(!sg_queue_draw(&d) && s_sg_queue.count==old_count);
+    puts("ok: invalid mip dimensions/counts/layers are rejected before copying texture data");
+    s_sg_queue.draws=NULL;s_sg_queue.cap=s_sg_queue.count=0;s_sg_queue.surface=NULL;
+    uint32_t chain[126];for(unsigned i=0;i<126;i++)chain[i]=0x12340000u+i;
+    textures[0]=(SgTextureUse){.upload=chain,.w=4,.h=4,.layers=6,.levels=3};
+    assert(sg_queue_draw(&d));
+    assert(s_sg_queue.tbytes==504 && s_sg_queue.upload_count==1);
+    assert(s_sg_queue.uploads[0].layers==6 && s_sg_queue.uploads[0].levels==3);
+    assert(!memcmp(s_sg_queue.tdata,chain,504));
+    puts("ok: queued cube upload retains all 504 authored RGBA bytes across three mip levels");
+    free(s_sg_queue.draws);free(s_sg_queue.tdata);
     free(s_sg_queue.vdata);free(s_sg_queue.udata);free(s_sg_queue.uploads);
 }
 '''.replace('/* TYPES */', types + draw_type + shade).replace('/* FUNCTIONS */', functions)
