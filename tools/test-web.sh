@@ -36,6 +36,7 @@ python3 -I "$ROOT/tests/web/test_gpu_fence_wait.py"
 python3 -I "$ROOT/tests/web/test_gameplay_flag_joins.py"
 python3 -I "$ROOT/tests/web/test_apu_lock_handoff.py"
 node "$ROOT/tests/web/test_audit_diagnostics.cjs"
+node "$ROOT/tests/web/test_audio_worklet.cjs"
 
 emcc -O2 -I"$ROOT/src/platform/web" "$ROOT/tests/web/test_recomp_web_dev.c" -o "$OUT/test_recomp_web_dev.js"
 node "$OUT/test_recomp_web_dev.js"

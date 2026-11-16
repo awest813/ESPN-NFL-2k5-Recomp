@@ -43,9 +43,11 @@ class NFL2K5Output extends AudioWorkletProcessor {
     const w = Atomics.load(hdr, 0);
     let r = Atomics.load(hdr, 1);
     let dry = false;
-    // Interpolation reads frames r and r + 1, so one frame always waits.
+    // Interpolation reads r and r + 1. Downsampling can consume more than
+    // two source frames per output; wait for that whole advance as well.
     for (let i = 0; i < n; i++) {
-      if (((w - r) >>> 0) < 2) {
+      const phase = this.frac + this.step, advance = Math.floor(phase);
+      if (((w - r) >>> 0) < Math.max(2, advance)) {
         L[i] = R[i] = 0;
         dry = true;
         continue;
@@ -55,8 +57,9 @@ class NFL2K5Output extends AudioWorkletProcessor {
       const rr = f ? data[a + 1] + (data[b + 1] - data[a + 1]) * f : data[a + 1];
       L[i] = l / 32768;
       R[i] = rr / 32768;
-      this.frac += this.step;
-      while (this.frac >= 1) { this.frac -= 1; r = (r + 1) >>> 0; this.played++; }
+      this.frac = phase - advance;
+      r = (r + advance) >>> 0;
+      this.played += advance;
       this.started = true;
       const v = L[i], av = v < 0 ? -v : v;
       if (av > this.peak) this.peak = av;

@@ -245,3 +245,32 @@ polygons, but do not match the earlier coach shot. Launcher/OPFS and
 audio/video/controller integration checks pass against the rebuilt runtime.
 Audio drops and sub-30 FPS samples remain; this is not a full fidelity or
 performance pass.
+
+## Browser audio resampling bounds
+
+An independent audio correctness check reproduced a ring-buffer fault at an
+8 kHz AudioContext rate. The producer writes 48 kHz frames, so the worklet
+advances six source frames for each output frame. It previously checked only
+that two frames were available for interpolation. A short producer chunk could
+therefore advance the read cursor past the write cursor, wrapping unsigned
+occupancy to billions of frames and allowing stale samples to play.
+
+The worklet now waits for both interpolation samples and the complete next
+source advance. Starvation preserves its position and fractional phase. The
+production-worklet regression fails before the fix at 8 kHz
+(`build-web-tests/audio-worklet-before.log`) and passes afterward at 8, 11.025,
+16, 22.05, 24, 44.1, 48 and 96 kHz, including counter wrap and chunked refill.
+Exact ramp checks cover downsampling and interpolation across render blocks.
+The regular browser integration test also checks actual AudioWorklet pitch,
+level and continuous playback at 8, 44.1, 48 and 96 kHz.
+
+Windows hardware Chrome and Linux CI Chromium pass those audio checks
+(`audio-resampler-hardware.log`, `audio-resampler-linux-checked.log`). The first
+Linux run passed audio but failed the controller reconnect assertion. Its
+gamepad test double could reuse a rounded timestamp for an immediate connect
+and press; SDL ignores unchanged timestamps. Simulated updates now advance
+monotonically, and failures retain reconnect state/logs. The checked Linux run
+passes the full integration suite, including reconnect.
+
+This fixes a demonstrated resampling fault. It does not establish the cause
+of the retail queue drops at 48 kHz or original-Xbox audio/gameplay parity.

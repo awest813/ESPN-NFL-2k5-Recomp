@@ -7,8 +7,8 @@
 //   2. the AudioContext the page created in the click is running, and the
 //      APU output's 440 Hz tone plays through the AudioWorklet
 //      (web/audio-worklet.js): right pitch and level, no underruns once
-//      started, SDL's audio not used; at 44.1 kHz it is resampled to the same
-//      pitch; with RECOMP_WEB_SDL_AUDIO=1 it falls back to SDL's output;
+//      started, SDL's audio not used; at 8, 44.1 and 96 kHz it is resampled
+//      to the same pitch; with RECOMP_WEB_SDL_AUDIO=1 it falls back to SDL;
 //   3. keys go to the game while the canvas has focus, and not otherwise;
 //   4. a controller that appears after startup (Gamepad API connect event)
 //      is seen and its buttons read;
@@ -49,7 +49,9 @@ const PAD_STUB = () => {
   window.__pressPad = (i, down, index = 0) => {
     const pad = window.__pads[index];
     pad.buttons[i] = { pressed: down, touched: down, value: down ? 1 : 0 };
-    pad.timestamp = performance.now();
+    // SDL skips unchanged timestamps. Browser clock rounding can give a
+    // connect and an immediate press the same time; model a new device update.
+    pad.timestamp = Math.max(performance.now(), pad.timestamp + 1);
   };
 };
 
@@ -167,14 +169,20 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       });
       check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=0 buttons=0 A=0 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'unplugging clears held buttons and sticks');
       await page.evaluate(() => { smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 1:')); __connectPad(1); __pressPad(0,true,1); });
-      check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'controller reconnects and resumes input on the second port');
+      const reconnected = await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000);
+      if (!reconnected) console.log('reconnect diagnostics:', await page.evaluate(() => ({
+        pads: __pads, logs: smokeLog.filter(l => /controls|gamepads/.test(l))
+      })));
+      check(!!reconnected, 'controller reconnects and resumes input on the second port');
       await page.close();
     }
     {
       const page = await (await browser.newContext()).newPage();
-      await page.goto('http://127.0.0.1:18767/smoke.html?rate=44100');
-      await page.click('#start');
-      await checkWorklet(page, 44100, 'sound at 44.1 kHz');
+      for (const rate of [44100, 8000, 96000]) {
+        await page.goto(`http://127.0.0.1:18767/smoke.html?rate=${rate}`);
+        await page.click('#start');
+        await checkWorklet(page, rate, `sound at ${rate} Hz`);
+      }
       await page.close();
     }
     {
