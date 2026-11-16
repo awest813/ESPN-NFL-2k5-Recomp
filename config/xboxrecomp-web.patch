@@ -579,12 +579,21 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  #include "platform/guest_memory.h"
  #endif
  #include <float.h>
-@@ -351,7 +351,11 @@
+@@ -342,6 +342,7 @@
+     /* Fixed-function output merge: alpha test and blend, GL enums as the
+      * NV2A takes them. Defaults are GL's (blend ONE/ZERO/ADD, test ALWAYS). */
+     uint32_t alpha_test, alpha_func, alpha_ref;
++    uint32_t shade_mode; /* SET_SHADE_MODE: 0x1D00 flat, 0x1D01 smooth */
+     uint32_t blend, blend_sf, blend_df, blend_eq, blend_color;
+     uint32_t clears, unhandled_total;
+     uint32_t flip_read, flip_write, flip_modulo, flips;
+@@ -351,7 +352,12 @@
       * texture coordinates, or it did and the stage was not usable. */
      uint32_t batches_textured, batches_no_uv, batches_no_tex;
      Texture tex;
 -} s_gpu;
 +} s_gpu = {
++    .shade_mode = 0x1D00,
 +    /* Leave the rasterizer open until the guest programs window clipping. */
 +    .window_clip_x = {0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000},
 +    .window_clip_y = {0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000, 0xfff0000},
@@ -592,7 +601,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
  /* What each vertex attribute reads when the batch does not supply it as an
   * array: the last SET_VERTEX_DATA* value, or the last element of the last
-@@ -385,12 +389,29 @@
+@@ -385,12 +391,29 @@
  static uint32_t s_tex_reg[(NV_TEX_LAST - NV_TEX_FIRST) / 4 + 1];
  static uint8_t s_tex_set[(NV_TEX_LAST - NV_TEX_FIRST) / 4 + 1];
 
@@ -622,7 +631,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void record_tex_reg(uint32_t method, uint32_t param) {
-@@ -488,62 +509,20 @@
+@@ -488,62 +511,20 @@
  /* Read attribute `a` of vertex `index` as floats. Only the float and the
   * normalised-byte types appear in practice; anything else returns 0 so a
   * caller sees a degenerate vertex rather than reading past the array. */
@@ -694,7 +703,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      switch (a->type) {
          case 0: /* D3DCOLOR */
              /* A DWORD 0xAARRGGBB, so little-endian bytes are B,G,R,A -- not the
-@@ -601,6 +580,53 @@
+@@ -601,6 +582,53 @@
      }
  }
 
@@ -748,7 +757,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  static uint32_t surface_bpp(void) {
      /* The pitch and the clip width together give the pixel size, which is more
       * reliable than decoding the format field: the format's colour code is
-@@ -622,7 +648,7 @@
+@@ -622,7 +650,7 @@
   * format every viewer reads and it is 30 lines; PNG would need a dependency.
   */
  static int pb_diagnostic_read(uint64_t address, void *output, size_t bytes) {
@@ -757,7 +766,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      return xbox_guest_memory_read((uintptr_t) xbox_GetMemoryOffset(), address, output, bytes);
  #else
      memcpy(output, (const uint8_t *) xbox_GetMemoryOffset() + address, bytes);
-@@ -640,7 +666,7 @@
+@@ -640,7 +668,7 @@
      uint32_t row_bytes, pad, filesz;
      uint8_t hdr[54];
      FILE *f;
@@ -766,7 +775,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint8_t *staged_row;
      if ((uint64_t) w * 3 > UINT32_MAX - 3 ||
          (uint64_t) 54 + (((uint64_t) w * 3 + 3) & ~UINT64_C(3)) * h > UINT32_MAX)
-@@ -658,7 +684,7 @@
+@@ -658,7 +686,7 @@
      f = fopen(path, "wb");
      if (!f)
          return;
@@ -775,7 +784,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      staged_row = (uint8_t *) malloc((size_t) w * bpp);
      if (!staged_row) {
          fclose(f);
-@@ -681,7 +707,7 @@
+@@ -681,7 +709,7 @@
 
      /* BMP rows run bottom-up. */
      for (y = h; y-- > 0;) {
@@ -784,7 +793,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          uint64_t row_index = (uint64_t) s_gpu.clip_y + y;
          uint64_t row_offset = (row_index <= UINT32_MAX ? row_index : 0) * s_gpu.pitch;
          uint64_t address = dma_resolve(s_gpu.drawn_offset ? s_gpu.drawn_offset : s_gpu.color_offset)
-@@ -705,7 +731,7 @@
+@@ -705,7 +733,7 @@
              uint8_t bgr[3];
              if (bpp == 4) {
                  uint32_t v = ((const uint32_t *) row)[
@@ -793,7 +802,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      x
  #else
                      s_gpu.clip_x + x
-@@ -716,7 +742,7 @@
+@@ -716,7 +744,7 @@
                  bgr[2] = (uint8_t) (v >> 16);
              } else {
                  uint16_t v = ((const uint16_t *) row)[
@@ -802,7 +811,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      x
  #else
                      s_gpu.clip_x + x
-@@ -734,7 +760,7 @@
+@@ -734,7 +762,7 @@
          }
      }
      fclose(f);
@@ -811,7 +820,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      free(staged_row);
  #endif
      if (seq == 1)
-@@ -994,8 +1020,60 @@
+@@ -994,8 +1022,60 @@
      }
  }
 
@@ -873,7 +882,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  typedef struct {
      uint8_t *pixels;
      size_t bytes; /* of pixels: the texture's footprint in guest RAM */
-@@ -1052,6 +1130,18 @@
+@@ -1052,6 +1132,18 @@
              bytes = ((uint64_t) texture->height - 1) * texture->pitch + texture->width * bpp;
          }
      }
@@ -892,7 +901,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!bytes || bytes > SIZE_MAX || bytes > UINT64_C(0x100000000) - texture->offset) return;
      uintptr_t base = (uintptr_t) xbox_GetMemoryOffset();
      if (texture->color == 0x0B &&
-@@ -1098,7 +1188,7 @@
+@@ -1098,7 +1190,7 @@
  #endif
 
  static int sample_texture(uint32_t u, uint32_t v, uint32_t *argb) {
@@ -901,7 +910,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
  #endif
      const uint8_t *p;
-@@ -1106,7 +1196,7 @@
+@@ -1106,7 +1198,7 @@
 
      if (!s_gpu.tex.valid)
          return 0;
@@ -910,7 +919,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_texture_snapshot[s_sampler_stage].ready) return 0;
      const uint8_t *image = s_texture_snapshot[s_sampler_stage].pixels;
  #else
-@@ -1127,7 +1217,7 @@
+@@ -1127,7 +1219,7 @@
          if (!s_gpu.tex.palette)
              return 0;
          idx = image[swizzle_offset(u, v, s_gpu.tex.width, s_gpu.tex.height)];
@@ -919,7 +928,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          *argb = s_texture_snapshot[s_sampler_stage].palette[idx];
  #else
          *argb = *(const uint32_t *) (mem + s_gpu.tex.palette + (size_t) idx * 4u);
-@@ -1256,7 +1346,7 @@
+@@ -1256,7 +1348,7 @@
 
      if (!prefix || !w || !h || w > 4096 || h > 4096)
          return;
@@ -928,7 +937,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      snapshot_texture(0, &s_gpu.tex);
      s_sampler_stage = 0;
      if (!s_texture_snapshot[0].ready) return;
-@@ -1318,7 +1408,7 @@
+@@ -1318,7 +1410,7 @@
   * This is not a micro-optimisation for its own sake: the loader's video
   * paces on frames actually presented, so the rasteriser's throughput is the
   * playback rate. */
@@ -937,7 +946,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  static uint32_t *s_surface_first, *s_surface_end;
  static uint32_t s_surface_base, s_surface_rows, s_surface_pitch, s_surface_bpp;
  /* Linux: the staged surface is guest RAM itself (readable and writable,
-@@ -1328,7 +1418,7 @@
+@@ -1328,7 +1420,7 @@
  #endif
 
  static void surface_stage_reset(void) {
@@ -946,7 +955,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface_direct)
          free(s_surface);
      s_surface_direct = 0;
-@@ -1342,7 +1432,7 @@
+@@ -1342,7 +1434,7 @@
 
  static int surface_stage_begin(const uint8_t *mem) {
      uint32_t base = dma_resolve(s_gpu.color_offset);
@@ -955,7 +964,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint64_t right = (uint64_t) s_gpu.clip_x + s_gpu.clip_w;
      uint64_t bottom = (uint64_t) s_gpu.clip_y + s_gpu.clip_h;
      uint32_t bpp = surface_bpp();
-@@ -1398,7 +1488,7 @@
+@@ -1398,7 +1490,7 @@
  }
 
  static void surface_stage_dirty(uint32_t y, uint32_t first, uint32_t end) {
@@ -964,7 +973,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface || s_surface_direct || y >= s_surface_rows || first >= end) return;
      if (first < s_surface_first[y]) s_surface_first[y] = first;
      if (end > s_surface_end[y]) s_surface_end[y] = end;
-@@ -1408,7 +1498,7 @@
+@@ -1408,7 +1500,7 @@
  }
 
  static int surface_stage_flush(const uint8_t *mem) {
@@ -973,7 +982,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t y;
      if (!s_surface || s_surface_direct) return 1; /* drawn in place */
      for (y = 0; y < s_surface_rows; y++)
-@@ -1480,6 +1570,21 @@
+@@ -1480,6 +1572,21 @@
      }
  }
 
@@ -995,7 +1004,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Write one fragment through alpha test and blending.
   *
   * The rasteriser used to store the texel as-is, so every translucent quad
-@@ -1490,30 +1595,7 @@
+@@ -1490,30 +1597,7 @@
  static void shade_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t src) {
      uint32_t a = src >> 24;
 
@@ -1027,15 +1036,103 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (s_gpu.blend && bpp == 4
          && x >= (int) s_gpu.clip_x && x < (int) (s_gpu.clip_x + s_gpu.clip_w)
          && y >= (int) s_gpu.clip_y && y < (int) (s_gpu.clip_y + s_gpu.clip_h)) {
-@@ -1638,6 +1720,7 @@
+@@ -1579,9 +1663,9 @@
+ /* Half-space fill. Barycentric edge functions rather than scanline slopes:
+  * the same test decides both windings, so a title that emits clockwise
+  * triangles does not silently render nothing. */
+-static void raster_triangle(const float a[2], const float b[2],
++static void raster_triangle_colors(const float a[2], const float b[2],
+                             const float c[2], uint32_t argb,
+-                            const float uv[3][2]) {
++                            const float uv[3][2], const float colors[3][4]) {
+     uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
+     uint32_t bpp = surface_bpp();
+     float area;
+@@ -1624,6 +1708,17 @@
+             if (!((w0 >= 0 && w1 >= 0 && w2 >= 0)
+                   || (w0 <= 0 && w1 <= 0 && w2 <= 0)))
+                 continue;
++            uint32_t pixel_color = argb;
++            if (colors) {
++                pixel_color = 0;
++                for (unsigned channel = 0; channel < 4; channel++) {
++                    float value = (w1 * colors[0][channel] + w2 * colors[1][channel] + w0 * colors[2][channel]) / area;
++                    if (!(value > 0.0f)) value = 0.0f;
++                    if (value > 1.0f) value = 1.0f;
++                    unsigned shift = channel == 3 ? 24 : 16 - channel * 8;
++                    pixel_color |= (uint32_t)floorf(value * 255.0f + 0.5f) << shift;
++                }
++            }
+             if (textured) {
+                 /* Barycentric, straight from the edge functions already
+                  * computed: w1 is the area opposite a, w2 opposite b, w0
+@@ -1638,15 +1733,21 @@
                  if (su < 0.0f) su = 0.0f;
                  if (sv < 0.0f) sv = 0.0f;
                  if (sample_texture((uint32_t) su, (uint32_t) sv, &texel)) {
+-                    shade_pixel(mem, bpp, x, y, modulate(texel, argb));
 +                    if (s_gpu.tex.enabled && texture_alpha_kill(0) && (texel >> 24) == 0) continue;
-                     shade_pixel(mem, bpp, x, y, modulate(texel, argb));
++                    shade_pixel(mem, bpp, x, y, modulate(texel, pixel_color));
                      continue;
                  }
-@@ -1985,12 +2068,12 @@
+             }
+-            shade_pixel(mem, bpp, x, y, argb);
++            shade_pixel(mem, bpp, x, y, pixel_color);
+         }
+     }
+     s_gpu.tris_drawn++;
+     s_gpu.drawn_offset = s_gpu.color_offset;
++}
++
++static void raster_triangle(const float a[2], const float b[2],
++                            const float c[2], uint32_t argb, const float uv[3][2]) {
++    raster_triangle_colors(a, b, c, argb, uv, NULL);
+ }
+
+ /* Attribute 3 is diffuse colour in every NV2A layout that sets one. Absent it,
+@@ -1729,9 +1830,13 @@
+
+ static uint32_t vertex_color(uint32_t index) {
+     float c[4];
+-
+-    if (!fetch_attr(color_attr(), index, c))
++    const VertexAttr *attr = color_attr();
++    if (!fetch_attr(attr, index, c) && attr->size)
+         return 0xFFFFFFFFu;
++    for (unsigned channel = 0; channel < 4; channel++) {
++        if (!(c[channel] > 0.0f)) c[channel] = 0.0f;
++        if (c[channel] > 1.0f) c[channel] = 1.0f;
++    }
+     return ((uint32_t) (c[3] * 255.0f) << 24)
+            | ((uint32_t) (c[0] * 255.0f) << 16)
+            | ((uint32_t) (c[1] * 255.0f) << 8)
+@@ -1820,6 +1925,8 @@
+  */
+ static void raster_indexed(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb) {
+     float p[3][4], uv[3][2];
++    float colors[3][4];
++    int smooth = s_gpu.shade_mode == 0x1D01;
+     int textured;
+
+     if (!fetch_attr(&s_gpu.attr[0], i0, p[0])
+@@ -1831,8 +1938,14 @@
+                && fetch_texcoord(i1, uv[1])
+                && fetch_texcoord(i2, uv[2]);
+
+-    raster_triangle(p[0], p[1], p[2], argb,
+-                    textured ? (const float (*)[2]) uv : NULL);
++    if (smooth) {
++        const uint32_t indices[3] = {i0, i1, i2};
++        for (unsigned k = 0; k < 3; k++)
++            fetch_attr(color_attr(), indices[k], colors[k]); /* Missing arrays retain the inline value. */
++    }
++    raster_triangle_colors(p[0], p[1], p[2], argb,
++                    textured ? (const float (*)[2]) uv : NULL,
++                    smooth ? (const float (*)[4]) colors : NULL);
+ }
+
+ /* The triangles of the current batch, in draw order, each with the colour
+@@ -1985,12 +2098,12 @@
          return sample_texture(u, v, argb);
      saved = s_gpu.tex;
      s_gpu.tex = s_stage[st];
@@ -1050,7 +1147,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_sampler_stage = saved_stage;
  #endif
      s_gpu.tex = saved;
-@@ -2027,11 +2110,12 @@
+@@ -2027,11 +2140,12 @@
  #define NV097_SET_COMBINER_COLOR_OCW        0x1E40   /* +i*4, 8 */
  #define NV097_SET_COMBINER_CONTROL          0x1E60
  #define NV097_SET_SHADER_STAGE_PROGRAM      0x1E70
@@ -1064,7 +1161,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int set;
  } s_comb;
 
-@@ -2075,6 +2159,8 @@
+@@ -2075,6 +2189,8 @@
              s_comb.set = 1;
              return 1;
          case NV097_SET_SHADER_STAGE_PROGRAM: s_comb.stage_prog = param;
@@ -1073,7 +1170,16 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              return 1;
          /* NV_PGRAPH_SHADERCTL: dot mappings (bits 0-11) and each stage's input
           * stage (bits 16-27), for the dot-product texture modes (xemu). */
-@@ -2540,10 +2626,60 @@
+@@ -2449,6 +2565,8 @@
+         return 1;
+     }
+     switch (method) {
++        case 0x037C: s_gpu.shade_mode = param;
++            return 1;
+         case NV097_SET_TRANSFORM_EXECUTION_MODE: s_vp.mode = param & 3;
+             return 1;
+         case NV097_SET_TRANSFORM_PROGRAM_LOAD: s_vp.prog_load = param;
+@@ -2540,10 +2658,60 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
@@ -1135,7 +1241,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                     float R[13][4], float O[16][4], const float V[16][4], int a0,
                     int scalar, float out[4]) {
      const float *s;
-@@ -2553,11 +2689,11 @@
+@@ -2553,11 +2721,11 @@
      switch (mux) {
          case 1: s = reg == 12 ? O[0] : R[reg < 13 ? reg : 0];
              break;
@@ -1150,7 +1256,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2759,19 @@
+@@ -2623,7 +2791,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -1171,7 +1277,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +2782,54 @@
+@@ -2634,68 +2814,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1262,7 +1368,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +2862,12 @@
+@@ -2728,20 +2894,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1285,7 +1391,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +2900,13 @@
+@@ -2774,13 +2932,13 @@
                  break;
              }
              case 7: {
@@ -1303,7 +1409,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +2949,18 @@
+@@ -2823,11 +2981,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1327,7 +1433,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +2980,29 @@
+@@ -2847,7 +3012,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1357,7 +1463,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +3019,9 @@
+@@ -2864,8 +3051,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1369,7 +1475,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3168,162 @@
+@@ -3012,6 +3200,162 @@
      }
  }
 
@@ -1532,7 +1638,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3019,6 +3331,17 @@
+@@ -3019,6 +3363,17 @@
      float area, iwa, iwb, iwc;
      int minx, maxx, miny, maxy, x, y;
      int textured = s_gpu.tex.valid && s_gpu.tex.enabled;
@@ -1550,7 +1656,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3380,15 @@
+@@ -3057,26 +3412,15 @@
          }
          return;
      }
@@ -1580,7 +1686,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3123,31 +3435,11 @@
+@@ -3123,31 +3467,11 @@
              lb = w2 / area;
              lc = w0 / area;
              z = la * a->z + lb * b->z + lc * c->z;
@@ -1617,7 +1723,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3449,11 @@
+@@ -3157,6 +3481,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -1629,7 +1735,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3465,12 @@
+@@ -3168,9 +3497,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1643,7 +1749,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3478,54 @@
+@@ -3178,26 +3510,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -1702,7 +1808,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,6 +3560,10 @@
+@@ -3232,6 +3592,10 @@
                      }
                  }
              }
@@ -1713,7 +1819,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              shade_pixel(mem, bpp, x, y, argb);
          }
      }
-@@ -3253,7 +3585,7 @@
+@@ -3253,7 +3617,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1722,7 +1828,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3594,34 @@
+@@ -3262,32 +3626,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1769,7 +1875,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,27 +3668,41 @@
+@@ -3334,27 +3700,41 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -1824,7 +1930,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* The triangles of the current vertex-program batch, after the vertex
-@@ -3605,7 +3953,7 @@
+@@ -3605,7 +3985,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -1833,7 +1939,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4191,7 @@
+@@ -3843,7 +4223,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -1842,7 +1948,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4214,7 @@
+@@ -3866,7 +4246,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -1851,7 +1957,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4653,7 @@
+@@ -4305,7 +4685,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -1860,7 +1966,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5104,7 @@
+@@ -4756,7 +5136,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -1869,7 +1975,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5222,7 @@
+@@ -4874,7 +5254,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1878,7 +1984,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5230,7 @@
+@@ -4882,7 +5262,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -1887,7 +1993,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5282,7 @@
+@@ -4934,7 +5314,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1896,7 +2002,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5290,7 @@
+@@ -4942,7 +5322,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -2527,7 +2633,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -452,12 +558,19 @@
+@@ -418,6 +524,8 @@
+         o->color[1] = (float) ((argb >> 8) & 0xFF) / 255.0f;
+         o->color[2] = (float) (argb & 0xFF) / 255.0f;
+         o->color[3] = (float) (argb >> 24) / 255.0f;
++        if (s_gpu.shade_mode == 0x1D01)
++            fetch_attr(color_attr(), idx[k], o->color); /* Includes disabled-array inline colour. */
+         o->uv[0] = textured ? uv[k][0] : 0.0f;
+         o->uv[1] = textured ? uv[k][1] : 0.0f;
+         o->uv[2] = textured ? 1.0f : 0.0f;
+@@ -452,12 +560,19 @@
      {
          float surface_size[2] = {(float) s->w, (float) s->h};
          struct {
@@ -3687,13 +3802,18 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
 diff --git a/src/kernel/sdlgpu/shaders/flat2d.frag b/src/kernel/sdlgpu/shaders/flat2d.frag
 --- a/src/kernel/sdlgpu/shaders/flat2d.frag
 +++ b/src/kernel/sdlgpu/shaders/flat2d.frag
-@@ -1,6 +1,5 @@
+@@ -1,10 +1,9 @@
  #version 450
 -// Shading for pre-transformed NV2A triangles, bit-exact with the software
 -// path in nv2a_pb_exec.c: point-sampled texel MODULATE flat colour
-+// Shading for pre-transformed NV2A triangles: guest-filtered texel MODULATE flat colour
++// Pre-transformed NV2A triangles: guest-filtered texel MODULATE interpolated colour.
  // ((t * c + 127) / 255 per channel), then the alpha test. Blending and the
  // channel write mask are pipeline state.
+
+-layout(location = 0) flat in vec4 v_color;
++layout(location = 0) noperspective in vec4 v_color;
+ layout(location = 1) noperspective in vec3 v_uv;
+ layout(location = 0) out vec4 out_color;
 
 @@ -12,16 +11,14 @@
 
@@ -4590,7 +4710,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,834 @@
+@@ -231,34 +220,873 @@
      return bad == 0;
  }
 
@@ -5338,6 +5458,44 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +}
 +
 +#include "../sdlgpu_web/flat_filter_reference.h"
++#include "../sdlgpu_web/pretransform_color_reference.h"
++static void test_pretransform_colors(void)
++{
++    uint32_t old_mode=s_gpu.shade_mode,old_alpha=s_gpu.alpha_test,old_func=s_gpu.alpha_func,old_ref=s_gpu.alpha_ref;
++    Texture saved=s_gpu.tex;float inline_color[4];memcpy(inline_color,s_attr_inline[3],sizeof inline_color);
++    target(0x400000,64,64,256);
++    for(unsigned pattern=0;pattern<3;pattern++)for(int flat=0;flat<2;flat++)for(int textured=0;textured<2;textured++)for(int alpha=0;alpha<2;alpha++) {
++        CHECK(vp_method(0x037C,flat?0x1D00:0x1D01),"SET_SHADE_MODE not handled");
++        s_gpu.alpha_test=alpha;s_gpu.alpha_func=0x0204;s_gpu.alpha_ref=128;
++        s_gpu.tex=(Texture){.offset=0x700000,.width=1,.height=1,.pitch=4,.color=0x12,.addr_u=3,.addr_v=3,.valid=textured,.enabled=textured};
++        *(uint32_t *)(g_ram+0x700000)=0xC08040FFu;
++        g_ntris=1;g_tris[0]=(Tri){{{0,0},{64,0},{0,64}},{{0}},0xFFFFFFFFu,textured};
++        upload_scene();
++        for(unsigned k=0;k<3;k++)memcpy((float *)(g_ram+0x600000)+k*12+4,pretransform_colors[pattern][k],16);
++        if(pattern==2) {s_gpu.attr[3].size=0;memcpy(s_attr_inline[3],pretransform_colors[2][0],16);}
++        s_gpu.clear_color=0xFF112233u;CHECK(sg_clear(0xF0),"Gouraud clear");
++        CHECK(sg_draw_batch(1),"Gouraud pre-transformed draw");download_frame();
++        for(unsigned p=0;p<6;p++) {
++            int x=pretransform_probes[p][0],y=pretransform_probes[p][1];uint32_t pixel;
++            memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
++            uint32_t expected=pretransform_expected(pattern,flat,textured,alpha,x,y);int good=1;
++            for(unsigned c=0;c<32;c+=8)good&=abs((int)((pixel>>c)&255u)-(int)((expected>>c)&255u))<=1;
++            CHECK(good,"pre-transformed GPU pattern=%u flat=%d tex=%d alpha=%d pixel=%u: %08X expected %08X",pattern,flat,textured,alpha,p,pixel,expected);
++        }
++        for(unsigned p=0;p<64*64;p++)((uint32_t *)(g_ram+0x400000))[p]=0xFF112233u;
++        surface_stage_reset();raster_batch();CHECK(surface_stage_flush(g_ram),"Gouraud software flush");surface_stage_reset();
++        for(unsigned p=0;p<6;p++) {
++            int x=pretransform_probes[p][0],y=pretransform_probes[p][1];uint32_t pixel;
++            memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
++            uint32_t expected=pretransform_expected(pattern,flat,textured,alpha,x,y);int good=1;
++            for(unsigned c=0;c<32;c+=8)good&=abs((int)((pixel>>c)&255u)-(int)((expected>>c)&255u))<=1;
++            CHECK(good,"pre-transformed CPU pattern=%u flat=%d tex=%d alpha=%d pixel=%u: %08X expected %08X",pattern,flat,textured,alpha,p,pixel,expected);
++        }
++    }
++    s_gpu.shade_mode=old_mode;s_gpu.alpha_test=old_alpha;s_gpu.alpha_func=old_func;s_gpu.alpha_ref=old_ref;
++    s_gpu.tex=saved;memcpy(s_attr_inline[3],inline_color,sizeof inline_color);
++}
++
 +static void test_flat_filtering(void)
 +{
 +    Texture saved = s_gpu.tex;
@@ -5417,6 +5575,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    test_direction_texture_stages();
 +    test_authored_mip_chains();
 +    test_software_presentation();
++    test_pretransform_colors();
 +    test_flat_filtering();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
@@ -5429,7 +5588,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1056,11 @@
+@@ -267,10 +1095,11 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -5444,7 +5603,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,7 +1098,10 @@
+@@ -308,7 +1137,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -5456,7 +5615,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +1115,32 @@
+@@ -322,6 +1154,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -20631,6 +20790,51 @@ index 0000000..0de7277
 +        out |= (uint32_t)floorf(((a >> ch) & 255u) * (1-f) + ((b >> ch) & 255u) * f + 0.5f) << ch;
 +    return out;
 +}
+diff --git a/src/kernel/sdlgpu/shaders/flat2d.vert b/src/kernel/sdlgpu/shaders/flat2d.vert
+--- a/src/kernel/sdlgpu/shaders/flat2d.vert
++++ b/src/kernel/sdlgpu/shaders/flat2d.vert
+@@ -3,10 +3,10 @@
+ // space out. Matches nv2a_pb_exec.c's software 2D path (raster_triangle).
+
+ layout(location = 0) in vec2 in_pos;      // surface pixels
+-layout(location = 1) in vec4 in_color;    // the triangle's flat colour, 0..1 RGBA
++layout(location = 1) in vec4 in_color;    // raw per-vertex RGBA; replicated for flat shading
+ layout(location = 2) in vec3 in_uv;       // texels; z = 1 when the triangle is textured
+
+-layout(location = 0) flat out vec4 v_color;
++layout(location = 0) noperspective out vec4 v_color;
+ layout(location = 1) noperspective out vec3 v_uv;   // screen-linear, as the software path
+
+ layout(set = 1, binding = 0) uniform Viewport {
+diff --git a/tests/sdlgpu_web/pretransform_color_reference.h b/tests/sdlgpu_web/pretransform_color_reference.h
+new file mode 100644
+index 0000000..f6eec2d
+--- /dev/null
++++ b/tests/sdlgpu_web/pretransform_color_reference.h
+@@ -0,0 +1,23 @@
++/* Analytic reference for the triangle (0,0), (64,0), (0,64).
++ * No rasterizer or production vertex-colour helper is used here. */
++static const float pretransform_colors[3][3][4] = {
++    {{1,0,0,0.25f},{0,1,0,0.75f},{0,0,1,1}},
++    {{-1,2,0.25f,0.25f},{2,-1,0.75f,1},{0.25f,0.75f,2,0.5f}},
++    {{0.2f,0.4f,0.6f,0.8f},{0.2f,0.4f,0.6f,0.8f},{0.2f,0.4f,0.6f,0.8f}}
++};
++static const int pretransform_probes[6][2]={{3,5},{13,7},{27,3},{7,27},{21,21},{40,8}};
++static uint32_t pretransform_expected(unsigned pattern,int flat,int textured,int alpha_test,int x,int y)
++{
++    float green=(x+0.5f)/64.0f,blue=(y+0.5f)/64.0f,red=1-green-blue;
++    const unsigned texture[4]={128,64,255,192};
++    uint32_t result=0;
++    for(unsigned c=0;c<4;c++) {
++        float v=flat?pretransform_colors[pattern][0][c]
++            :red*pretransform_colors[pattern][0][c]+green*pretransform_colors[pattern][1][c]+blue*pretransform_colors[pattern][2][c];
++        if(v<0)v=0;if(v>1)v=1;
++        unsigned value=(unsigned)floorf(v*255+(flat?0:0.5f));
++        if(textured)value=(value*texture[c]+127)/255;
++        result|=value<<(c==3?24:16-c*8);
++    }
++    return alpha_test && (result>>24)<=128 ? 0xFF112233u:result;
++}
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -23778,7 +23982,7 @@ index 0000000..65e0c18
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..c7d1d6c
+index 0000000..3b8d203
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 @@ -0,0 +1,2354 @@
@@ -23791,7 +23995,7 @@ index 0000000..c7d1d6c
 +    "}\n"
 +    "\n"
 +    "struct VertexOutput {\n"
-+    "    @location(0) @interpolate(flat) v_color: vec4<f32>,\n"
++    "    @location(0) @interpolate(linear) v_color: vec4<f32>,\n"
 +    "    @location(1) @interpolate(linear) v_uv: vec3<f32>,\n"
 +    "    @builtin(position) gl_Position: vec4<f32>,\n"
 +    "}\n"
@@ -24145,7 +24349,7 @@ index 0000000..c7d1d6c
 +    "}\n"
 +    "\n"
 +    "@fragment \n"
-+    "fn main(@location(0) @interpolate(flat) v_color: vec4<f32>, @location(1) @interpolate(linear) v_uv: vec3<f32>) -> FragmentOutput {\n"
++    "fn main(@location(0) @interpolate(linear) v_color: vec4<f32>, @location(1) @interpolate(linear) v_uv: vec3<f32>) -> FragmentOutput {\n"
 +    "    v_color_1 = v_color;\n"
 +    "    v_uv_1 = v_uv;\n"
 +    "    main_1();\n"
@@ -27235,10 +27439,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..aaea721
+index 0000000..3e33e1f
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1760 @@
+@@ -0,0 +1,1784 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -27260,6 +27464,7 @@ index 0000000..aaea721
 +#include "kernel/sdlgpu/webgpu/sg_wgsl.h"
 +#include "kernel/sdlgpu/sdlgpu_clip.h"
 +#include "flat_filter_reference.h"
++#include "pretransform_color_reference.h"
 +
 +static int fails;
 +#define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } \
@@ -27807,6 +28012,29 @@ index 0000000..aaea721
 +            CHECK(px(img,20,20)==argb[selected[bi]],"flat authored mip bias %g: %08X expected %08X",biases[bi],px(img,20,20),argb[selected[bi]]);
 +        }
 +        SDL_ReleaseGPUSampler(dev,sampler);SDL_ReleaseGPUTexture(dev,mips);
++    }
++
++    /* Smooth screen-space RGBA, including unclamped vertex inputs. */
++    {
++        SDL_GPUTexture *tinted=make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,SDL_GPU_TEXTUREUSAGE_SAMPLER,1,1,1);
++        uint32_t pixel=0xC0FF4080u;upload(tinted,&pixel,1,1);
++        for(unsigned pattern=0;pattern<3;pattern++)for(int textured=0;textured<2;textured++)for(int alpha=0;alpha<2;alpha++) {
++            SgVertex triangle[3]={{.x=0,.y=0},{.x=64,.y=0},{.x=0,.y=64}};
++            for(unsigned k=0;k<3;k++) {
++                memcpy(triangle[k].color,pretransform_colors[pattern][k],16);
++                triangle[k].uv[0]=triangle[k].uv[1]=0.5f;triangle[k].uv[2]=(float)textured;
++            }
++            d=(Draw){.color=color,.depth=depth,.tex=tinted,.pipe=opaque,.v=triangle,.n=3,
++                .shade={.tex_size={1,1},.alpha_test=alpha,.alpha_func=0x0204,.alpha_ref=128},
++                .clear_color=1,.clear_argb=0xFF112233u,.clear_depth=1,.depth_value=1,.scissor={0,0,64,64}};
++            draw(&d);download(color,0,W,H,img);
++            for(unsigned p=0;p<6;p++) {
++                int x=pretransform_probes[p][0],y=pretransform_probes[p][1];
++                uint32_t expected=pretransform_expected(pattern,0,textured,alpha,x,y);
++                CHECK(near(px(img,x,y),expected,1),"smooth pre-transformed pattern=%u tex=%d alpha=%d pixel=%u: %08X expected %08X",pattern,textured,alpha,p,px(img,x,y),expected);
++            }
++        }
++        SDL_ReleaseGPUTexture(dev,tinted);
 +    }
 +
 +    /* 5. Alpha test: GREATER 0x80 against alpha 0x40 discards. */

@@ -1528,3 +1528,54 @@ The preceding `flat-filter-retail` run used the intermediate alpha-kill shader
 and overlapped compilation, so it is not final-code or performance evidence.
 Full stadium/staff-model fidelity, continuous audio and original-Xbox parity
 remain open.
+
+### Smooth colour in pre-transformed draws
+
+The preceding retail trace records `SET_SHADE_MODE` (`037C`) with `1D01`
+(smooth) as unhandled. Pre-transformed SDL draws also replicated one packed
+colour across each triangle and declared the varying flat, losing colour and
+alpha gradients. The software path likewise used one colour per triangle.
+The audit follows the distinction exercised by the primary
+[nxdk Xbox shade-model tests](https://github.com/abaire/nxdk_pgraph_tests/blob/main/src/tests/shade_model_tests.cpp);
+those tests are a reference for the feature, not a matched-scene Xbox result
+for this game.
+
+The runtime now records the guest's shade mode. Pre-transformed smooth draws
+retain floating per-vertex RGBA through collection and interpolate in screen
+space before saturation, eight-bit modulation and final alpha testing. The
+software rasterizer applies the same interpolation order. Flat draws retain
+their constant packed colour. Initial state remains flat until the guest
+programs another mode; the title explicitly selects smooth during startup.
+
+Disabled colour arrays now retain the inline attribute value already returned
+by the attribute fetcher. The packed-colour helper also bounds each component
+before float-to-integer conversion, avoiding invalid conversions on negative,
+oversized or non-finite inputs. Smooth vertex inputs are not prematurely
+clamped: an out-of-range endpoint can still contribute a valid interior value.
+
+Native checks compare 144 GPU pixels and 144 software pixels with an analytic
+triangle reference. They cover RGBA gradients, saturation after interpolation,
+inline colours, flat/smooth transitions, textured modulation and final alpha
+testing. Browser fixtures independently check 72 smooth pixels through the
+translated WGSL. The published flat shaders fail 33 of the native gradient
+checks; the corrected shader passes. Existing point/filtering, alpha-kill and
+3D renderer checks remain in the suites.
+
+Primitive-specific provoking-vertex selection, flat shading in the 3D path,
+full combiners in pre-transformed draws and non-unit-W fidelity remain open.
+This change does not establish those features or original-Xbox scene parity.
+
+The final native suite and address/undefined-behavior sanitizer run pass,
+with driver leak checks disabled. Hardware WebGPU and Linux SwiftShader pass
+the new smooth-colour checks and preceding rendering cases without a WebGPU
+validation error. The actual browser game builds, and a fresh pinned runtime
+reproduces all 88 patched files. The preceding HUD-filtering publication
+`d6d3a8e` passed both Build and Pages workflows.
+The final 246-second `gouraud-retail/report.json` run reaches Seattle at
+Houston live play. Intro player clothing, stadium crowd, sideline staff,
+field and HUD text remain visible, with no recorded browser/GPU/DSP fault.
+Five-second averages after 150 seconds range from 26.4 to 30.1 FPS; the audio
+worklet records 190 underrun blocks. Different scenes prevent a controlled
+performance comparison. The component tests establish the smooth-colour fix;
+this run establishes integrated stability, not a sustained 30 FPS floor,
+continuous audio or complete stadium/staff fidelity.
