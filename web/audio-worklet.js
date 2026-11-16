@@ -9,7 +9,8 @@
 //
 // When the AudioContext does not run at 48 kHz, frames are resampled
 // linearly. Stats go back to the page about twice a second:
-// { played, underruns, queued, peak, frequency } -- underruns counts render
+// { played, underruns, queued, peak, frequency } -- the terminal monitor also
+// reports rendered output frames. Underruns counts render
 // blocks that ran dry after sound first started; frequency is estimated from
 // zero crossings of the left channel (useful for tests and diagnostics).
 'use strict';
@@ -92,3 +93,31 @@ class NFL2K5Output extends AudioWorkletProcessor {
 }
 
 registerProcessor('nfl2k5-output', NFL2K5Output);
+
+// A terminal monitor keeps the graph continuously processed during silence.
+// Chromium can otherwise switch to its timer-driven silent sink after 30 s,
+// slowing the consumer clock relative to the APU and overflowing its queue.
+// This branch has no output and does not change or inject PCM samples.
+class NFL2K5AudioClock extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.rendered = 0;
+    this.windowFrames = 0;
+    this.stopped = false;
+    this.port.onmessage = (e) => { if (e.data === 'stop') this.stopped = true; };
+  }
+
+  process(inputs) {
+    if (this.stopped) return false;
+    const n = inputs[0]?.[0]?.length || 0;
+    this.rendered += n;
+    this.windowFrames += n;
+    if (this.windowFrames >= sampleRate / 2) {
+      this.port.postMessage({ rendered: this.rendered });
+      this.windowFrames = 0;
+    }
+    return true;
+  }
+}
+
+registerProcessor('nfl2k5-audio-clock', NFL2K5AudioClock);

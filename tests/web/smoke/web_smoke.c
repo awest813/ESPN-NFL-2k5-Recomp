@@ -141,11 +141,15 @@ static int SDLCALL audio_thread(void *arg)
     (void)arg;
     static int16_t block[1024][2];
     double phase = 0;
+    const char *silence_env = getenv("SMOKE_SILENCE_MS");
+    Uint64 silence_ms = silence_env ? (Uint64)strtoul(silence_env, NULL, 10) : 0;
     if (!xa2_init()) { printf("[SMOKE] audio init failed\n"); return 0; }
     printf("[SMOKE] audio open\n");
+    Uint64 started = SDL_GetTicks();
     for (;;) {
+        int silent = SDL_GetTicks() - started < silence_ms;
         for (int i = 0; i < 1024; i++) {
-            int16_t s = (int16_t)(sin(phase) * 12000);
+            int16_t s = silent ? 0 : (int16_t)(sin(phase) * 12000);
             phase += 2 * M_PI * 440.0 / 48000.0;
             block[i][0] = block[i][1] = s;
         }

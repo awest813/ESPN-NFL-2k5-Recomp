@@ -46,10 +46,10 @@ index 9a38a07..37e78bc 100644
 +}
 diff --git a/src/apu/apu_web_audio.c b/src/apu/apu_web_audio.c
 new file mode 100644
-index 0000000..8ee742d
+index 0000000..707b539
 --- /dev/null
 +++ b/src/apu/apu_web_audio.c
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,139 @@
 +/* WebAssembly audio output through an AudioWorklet. See apu_web_audio.h. */
 +#ifdef __EMSCRIPTEN__
 +#include "apu_web_audio.h"
@@ -99,18 +99,35 @@ index 0000000..8ee742d
 +        /* Parenthesised: a comma outside parentheses would split this
 +         * macro argument (braces do not protect it). */
 +        var stats = Module['nfl2k5Audio'] = ({ state: 'loading', contextRate: ctx.sampleRate,
-+                                                played: 0, underruns: 0, peak: 0, frequency: 0 });
++                                                played: 0, rendered: 0, underruns: 0, peak: 0, frequency: 0 });
 +        var url = Module['nfl2k5AudioWorklet'] || 'audio-worklet.js';
 +        ctx.audioWorklet.addModule(url).then(function() {
++            if (stats.state === 'closed' || Module['nfl2k5Audio'] !== stats) return;
 +            var node = new AudioWorkletNode(ctx, 'nfl2k5-output', {
 +                numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
 +                processorOptions: { memory: HEAPU8.buffer, ring: $0, rate: 48000 }
 +            });
-+            node.port.onmessage = function(e) { Object.assign(stats, e.data); };
-+            node.connect(ctx.destination);
 +            stats.node = node;
++            var clock = new AudioWorkletNode(ctx, 'nfl2k5-audio-clock', {
++                numberOfInputs: 1, numberOfOutputs: 0
++            });
++            stats.clockNode = clock;
++            node.port.onmessage = function(e) { Object.assign(stats, e.data); };
++            clock.port.onmessage = function(e) { Object.assign(stats, e.data); };
++            var processorError = function() {
++                if (stats.state === 'closed' || Module['nfl2k5Audio'] !== stats) return;
++                stats.state = 'failed';
++                err('[AUDIO] AudioWorklet processor failed');
++            };
++            node.onprocessorerror = clock.onprocessorerror = processorError;
++            node.connect(clock);
++            node.connect(ctx.destination);
 +            stats.state = 'running';
 +        }).catch(function(e) {
++            if (stats.state === 'closed' || Module['nfl2k5Audio'] !== stats) return;
++            for (var node of [stats.node, stats.clockNode]) {
++                if (node) { node.disconnect(); node.port.postMessage('stop'); }
++            }
 +            stats.state = 'failed';
 +            err('[AUDIO] AudioWorklet could not start (' + url + '): ' + e);
 +        });
@@ -132,8 +149,12 @@ index 0000000..8ee742d
 +        return;
 +    MAIN_THREAD_EM_ASM({
 +        var s = Module['nfl2k5Audio'];
-+        if (s && s.node) { s.node.disconnect(); s.node.port.postMessage('stop'); }
-+        if (s) s.state = 'closed';
++        if (s) {
++            s.state = 'closed';
++            for (var node of [s.node, s.clockNode]) {
++                if (node) { node.disconnect(); node.port.postMessage('stop'); }
++            }
++        }
 +    });
 +    /* The worklet may still hold the ring's address; leave it allocated. */
 +    s_ring = NULL;

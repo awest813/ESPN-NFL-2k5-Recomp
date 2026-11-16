@@ -8,6 +8,7 @@ function isAuditFailure(row) {
     || (!row.kind && /^\s*(?:PAGEERROR|BROWSER ERROR)\b/i.test(line))
     || /\[WebGPU\]\s+(?:device (?:error|lost)|no (?:device|adapter)|not available|cannot start|download\b|fence\b)/i.test(line)
     || /\[SDLGPU\].*queued draws dropped/i.test(line)
+    || /\[AUDIO\].*(?:could not start|processor failed|SDL_(?:InitSubSystem|OpenAudioDeviceStream).*failed)/i.test(line)
     || /\[CRASH\]|\bRuntimeError\b|\bCompileError\b|\babort(?:ed)?\s*\(|unresolved guest (?:call|function|address)/i.test(line)
     || /GPUValidationError|Error while (?:parsing WGSL|validating)/i.test(line);
 }

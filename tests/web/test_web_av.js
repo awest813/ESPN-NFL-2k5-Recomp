@@ -198,6 +198,11 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
         for (const v of b.getChannelData(0)) m = Math.max(m, Math.abs(v));
         return m > 0.2 ? m : null;
       }, 15000);
+      if (!peak) console.log('SDL fallback diagnostics:', await page.evaluate(() => ({
+        context: window.smokeAudio?.state,
+        playback: Object.keys(window.nfl2k5Module?.SDL3?.audio_playback || {}),
+        logs: window.smokeLog,
+      })));
       check(!!peak, `SDL fallback: the tone reaches Web Audio through SDL (peak ${peak && peak.toFixed(2)})`);
       await page.close();
     }

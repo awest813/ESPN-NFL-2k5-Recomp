@@ -133,7 +133,7 @@ async function act(c){
         const mod=window.nfl2k5Module,ctx=mod?.nfl2k5AudioContext,s=mod?.nfl2k5Audio;
         return {at:performance.now(),context:ctx?{state:ctx.state,rate:ctx.sampleRate,time:ctx.currentTime,
           baseLatency:ctx.baseLatency,outputLatency:ctx.outputLatency}:null,
-          output:s?{state:s.state,played:s.played,underruns:s.underruns,queued:s.queued,
+          output:s?{state:s.state,played:s.played,rendered:s.rendered,underruns:s.underruns,queued:s.queued,
             peak:s.peak,frequency:s.frequency}:null};
       });
       (report.audioSamples||=[]).push(sample);writeReport();result=sample;break;

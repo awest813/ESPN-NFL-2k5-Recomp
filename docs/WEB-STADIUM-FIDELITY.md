@@ -429,3 +429,52 @@ do not provide a controlled check of the earlier coach geometry fault.
 These arithmetic checks do not establish full NV2A conformance. Denormal and
 rounding behavior, original-Xbox scene/audio matching, all-mode gameplay
 coverage and a sustained 30 FPS floor remain open.
+
+## Silent audio clock drift
+
+The final comparison capture's worklet underruns rise from 2 to 201 between
+31 and 41 seconds while the sampled output remains silent. A separate
+wall-clock-driven PCM producer reproduces clock drift without the game or APU:
+after 30 seconds of zero PCM, Chrome's context advances about 0.65 seconds per
+wall second. Both the default muted launch and an unmuted launch drop 80
+1024-frame chunks before the tone restores steady consumption
+(`build-web-tests/audio-silence-muted.json`, `audio-silence-unmuted.json`).
+
+Chromium's [Web Audio device implementation](https://raw.githubusercontent.com/chromium/chromium/main/content/renderer/media/renderer_webaudiodevice_impl.cc)
+uses a 30-second silent-sink timeout. Its
+[destination handler](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/modules/webaudio/realtime_audio_destination_handler.cc)
+disables that transition for an interactive graph with automatically pulled
+nodes. A [terminal worklet](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/modules/webaudio/audio_worklet_handler.cc)
+with no connected output belongs to that pull list. This source behavior and
+the isolated timing experiment identify a browser clock problem independent
+of APU computation.
+
+The output now also feeds a terminal worklet monitor. It counts rendered frames
+and has no output, leaving the speaker PCM unchanged. The same standalone
+experiment keeps its clock steady and drops zero chunks with this branch.
+The real Wasm bridge regression passes on hardware Chrome and Linux Chromium:
+about 7.01 context seconds per 7.01 wall seconds across the silence boundary,
+followed by the expected 440 Hz tone and level, with zero worklet underruns in
+both runs (`audio-clock-monitor-hardware.log`, `audio-clock-monitor-linux.log`).
+
+Both processors stop on shutdown. Deferred module loads cannot recreate output
+after close or attach an old ring after replacement; bridge regressions exercise
+those cases and partial-construction cleanup. Worklet startup/processor failures
+now fail retail audits explicitly. These checks address a specific consumer-clock
+fault and do not establish full game audio parity.
+
+The retail capture (`build-web-tests/audio-clock-monitor-retail/report.json`)
+keeps the audio clock steady through more than 60 seconds of zero output and
+reports zero dropped submissions through the final runtime counter. It records
+11 worklet underrun blocks, including a later burst outside the silence
+transition; those stalls remain unresolved. The images show Indianapolis at
+St. Louis, the stadium roof/tiers/lights, sideline players/equipment and readable
+Mike Doss and Aeneas Williams overlays, without recorded browser/GPU/audio
+processor failures. Different attract scenes prevent a controlled visual or
+overall-underrun comparison with the preceding run.
+
+Normal audio/resampling/controller/WebGPU integration passes on a repeat. The
+first full run timed out on SDL fallback output, while an isolated fallback
+probe and the repeated full sequence render the expected tone. Failure
+diagnostics were added; an underlying SDL fallback fault has not been proven
+or fixed. Full fidelity and sustained frame-rate guarantees remain unverified.

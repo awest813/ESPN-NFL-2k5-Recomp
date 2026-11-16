@@ -24,6 +24,9 @@ for(const failure of [
   {line:'[WebGPU] download: mapped range unavailable'},
   {line:'[WebGPU] fence: work completion failed'},
   {line:'[SDLGPU] queued draws dropped: rejected command buffer'},
+  {line:'[AUDIO] AudioWorklet could not start (audio-worklet.js): network error'},
+  {line:'[AUDIO] AudioWorklet processor failed'},
+  {line:'[AUDIO] SDL_OpenAudioDeviceStream failed: no device'},
   {line:'PAGEERROR TypeError: worker is undefined'},
   {line:'Error while validating [RenderPipelineDescriptor]',kind:'browser-warning'},
   {line:'Failed to load resource',kind:'browser-error'},
@@ -40,4 +43,4 @@ for(const failure of [
 }
 assert.equal(caseDiagnostics('fail',benign).result,'fail');
 assert.equal(caseDiagnostics('pass',[]).result,'pass'); // previous case errors stay in their own case
-console.log('PASS retail diagnostics retain expected probes and reject browser/GPU false passes');
+console.log('PASS retail diagnostics retain expected probes and reject browser/GPU/audio false passes');

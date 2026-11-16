@@ -214,9 +214,11 @@ The game's own SDL code runs unchanged; on the web it runs on workers
     through `Atomics`, and no wasm runs in the worklet;
   - if the browser runs the context at another rate, the worklet resamples
     linearly;
-  - queue limits are unchanged from SDL's path: about 128 ms, with the
-    1024-frame underrun cushion;
-  - the worklet reports frames played, underruns, peak level and an
+  - the producer queue limit is about 128 ms. Playback primes with two
+    actual 1024-frame submissions, preserving their PCM;
+  - a terminal worklet monitor keeps the graph processed during silence,
+    avoiding Chromium's slower silent-sink clock without injecting samples;
+  - the worklets report frames played/rendered, underruns, peak level and an
     estimated frequency, kept as `Module.nfl2k5Audio`;
   - browsers without `AudioWorklet`, or `?env=RECOMP_WEB_SDL_AUDIO=1`, use
     SDL's output as before.
@@ -243,6 +245,12 @@ so CI runs it on every push. It checks:
   sticks, two independent ports, release, unplug and reconnect (a Gamepad API
   stand-in fires the browser's real connect event);
 - with no click, the prompt shows and a click turns sound on.
+
+`tests/web/test_audio_clock.js` also runs the real audio bridge through 35
+seconds of zero PCM followed by a tone. It checks the clock rate across the
+30-second silence boundary and the pitch/level once sound resumes. Deferred
+worklet loads, ring replacement and shutdown are covered by
+`tests/web/test_audio_bridge.cjs`.
 
 The last check emulates the autoplay block at the API, because Playwright's
 navigation itself counts as user activation, so a real block cannot be

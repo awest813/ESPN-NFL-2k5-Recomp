@@ -14,7 +14,7 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
   vm.runInNewContext(source, {
     AudioWorkletProcessor: class { constructor() { this.port = {postMessage() {}}; } },
     sampleRate: rate, Uint32Array, Int16Array, Atomics,
-    registerProcessor(name, type) { Processor = type; },
+    registerProcessor(name, type) { if (name === 'nfl2k5-output') Processor = type; },
   });
   const processor = new Processor({processorOptions: {memory, ring: 0, rate: 48000}});
   // Most cases exercise a running stream after its initial buffering.
@@ -38,6 +38,26 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
       return Array.from(left);
     },
   };
+}
+
+// The terminal clock monitor consumes no ring data and never writes PCM.
+{
+  let Monitor;
+  const messages = [];
+  vm.runInNewContext(source, {
+    AudioWorkletProcessor: class { constructor() { this.port = {postMessage: message => messages.push(message)}; } },
+    sampleRate: 48000,
+    registerProcessor(name, type) { if (name === 'nfl2k5-audio-clock') Monitor = type; },
+  });
+  const monitor = new Monitor();
+  const pcm = new Float32Array(128); pcm[10] = 0.25;
+  const original = Float32Array.from(pcm);
+  for (let i = 0; i < 188; i++) assert(monitor.process([[pcm]]));
+  assert.deepEqual(pcm, original);
+  assert.equal(messages[0].rendered, 24064);
+  monitor.port.onmessage({data: 'stop'});
+  assert.equal(monitor.process([[pcm]]), false);
+  console.log('ok: terminal monitor reports rendered frames without changing PCM and stops on shutdown');
 }
 
 // Buffer source audio at startup without consuming it or injecting samples.
