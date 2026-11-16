@@ -657,3 +657,35 @@ results are contaminated by host contention and do not establish a performance
 improvement, uninterrupted audio, original-Xbox parity or a sustained 30 FPS
 floor. The fractional-deadline correction is established independently by the
 deterministic regression.
+
+## Executable DSP core and DMA groundwork
+
+The runtime now compiles the standalone DSP56300 interpreter, processor wrapper
+and DMA engine from xemu revision
+`a34bb0f8c229a9aabda46ac69184285112f65841`. The imported files retain their
+upstream notices and GPL/LGPL license texts. Canonical core/DMA headers replace
+the APU's incomplete duplicate structures; QEMU host helpers and trace hooks
+are adapted for standalone Windows, Linux and Wasm builds.
+
+The first Wasm DMA test reproduces a null-buffer read: an unsigned transfer
+size compares against a signed `-1` capacity as an unsigned maximum on 32-bit
+hosts, skipping allocation. Transfer storage now uses a zero-initialized
+`size_t` capacity, checked growth, per-processor ownership and destruction.
+Interleaved size is calculated before allocation.
+
+`tests/web/test_dsp56300.c` uploads a real 24-bit sample-processing program
+(memory moves, clear, REP, arithmetic and output saturation), verifies 1,032
+signed vectors, then replaces an instruction and verifies decoded-code cache
+invalidation. It also exercises bootstrap high-byte masking, frame-interrupt
+acknowledgement, idle, scratch DMA, interleaved 16-bit FIFO output and circular
+wrap/offset writeback. Wasm undefined-behavior checks, Linux address/undefined-
+behavior sanitizers and native Windows/MSVC all pass this regression. The
+actual native APU library builds with the new shared structures.
+The complete browser game also links, and a fresh pinned-runtime application
+reproduces all 72 patched files exactly after line-ending normalization.
+
+This is executable processor groundwork for the missing effects path. Retail
+GP/EP MMIO, scratch/FIFO wiring, reset/bootstrap transitions and frame dispatch
+still use the previous bypass and need integration. These tests do not prove
+all DSP instructions, complete retail audio, original-Xbox parity or a minimum
+frame rate. No retail effects or performance improvement is claimed here.
