@@ -1355,3 +1355,76 @@ fault is recorded. Five-second frame averages after 150 seconds range from
 host contention prevent a performance comparison with the preceding run.
 The audit remains partial: full Xbox parity, all modes/stadiums, continuous
 audio and the 30 FPS floor are not established.
+
+## Fixed-point mip clamps and independent LOD0 filtering
+
+SDL GPU samplers now honor CONTROL0 minimum/maximum LOD as unsigned 4.8
+fixed point, including fractional limits. The units follow the primary
+[Envytools hardware reference, pages 277–278](https://envytools.readthedocs.io/_/downloads/en/latest/pdf/#page=281).
+The current xemu sampler extracts these fields as integer levels; that
+interpretation was rejected after the hardware-reference cross-check.
+Limits are bounded by the authored chain and an inverted range is normalized
+to its effective maximum. Direct Xbox confirmation of unusual/inverted
+inputs remains open.
+
+Clamps affect sampling, not physical storage: snapshots, hashes, uploads and
+cube face strides retain the complete authored chain. Border coverage uses
+the same fractional range. The fields fit unused high bits of the existing
+texture uniforms; dot-mapping/input-stage reads mask their independent low
+bits. The complete uniform block remains 512 bytes.
+
+Unrestricted and LOD0 samplers retain the existing direct cache. Restricted
+fractional ranges use a bounded 64-entry cache with canonical keys. Entries
+already assembled for other stages in the current draw stay pinned. Before
+evicting another entry, the queue flushes so recorded backend commands retain
+its sampler. This avoids an unbounded table over all 12-bit range pairs.
+Standalone checks cover 5,850 fractional range/filter combinations, authored
+tails, inverted/oversized bounds, cross-stage reuse, eviction beyond capacity,
+queued-handle flushes, stage pinning and recoverable allocation failure.
+
+Correctly encoded pixel fixtures against the unchanged `1eb711e` runtime
+reproduce 128 incorrect clamp results and 16 LOD0 filter failures. The final
+160 clamp cases cover all four stages, 2D/cube textures, forced min/max,
+fractional trilinear limits and oversized/inverted ranges. Every native clamp
+case also checks that the GPU texture object remains unchanged.
+
+The patterned filter cases expose why sampler max LOD cannot simply be zero:
+that forces the magnification filter even on minified images. LOD0 now uses a
+positive max below 0.5 and nearest-mip selection, retaining the separate
+min/mag choices while always selecting the base image. The 32 patterned
+checks cover normalized and linear/rect coordinates at every stage. Four
+browser border checks cover maximum LOD0, forced positive minimum,
+independent minification filtering and fractional trilinear coverage. The
+[Vulkan sampling rules](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/chapters/textures.adoc)
+describe the clamped-LOD filter decision.
+Additional diffuse/specular reflection pixels check that packed clamp
+metadata cannot change the dot mapping or selected input stage.
+
+
+All of these checks pass on Vulkan and hardware WebGPU. The native suite also
+passes address/undefined-behavior sanitizers with driver leak checks disabled.
+The actual native kernel and browser game build, and a fresh pinned runtime
+reproduces all 79 patched files. Full CPU software filtering, the native
+D3D11 texture path and original-Xbox scene/audio parity remain unfinished.
+
+Publication at `1eb711e` passed Windows/Linux builds and Pages, but the web
+suite hit its five-minute total deadline while SwiftShader continued passing
+CLIPPLANE cases roughly every half second. No pixel or GPU validation failure
+appears before the timeout. The 3D fixture now scissors shading to each
+assertion's neighbourhood, retaining the full viewport, geometry and 2x2
+derivative quad. PASSTHRU keeps its additional x=95/159 interpolation probes.
+All 1,374 preceding hardware checks remain; an explicit nonzero source also
+strengthens the independent texture-lifetime fixture. The five-minute total
+and 30-second inactivity watchdogs are unchanged. The final suite passes
+Linux Chromium 147 SwiftShader with the CI adapter flags in 11.46 seconds,
+
+with no WebGPU validation error. This verifies the fixture optimization;
+publication CI remains an additional gate.
+The final 246-second `lod-fraction-retail/report.json` run reaches Philadelphia
+at Miami live play with players, crowd, sideline staff, field, intro statistics
+and HUD text visible. No browser/GPU/DSP fault is recorded. No restricted mip
+range appears in these sampled-stage intervals, so the run verifies integrated
+stability and ordinary filtering rather than retail clamp usage. Five-second
+frame averages after 150 seconds range from 24.1 to 30.1 FPS, with 168 worklet
+underrun blocks. Full graphics/audio/gameplay parity and a sustained 30 FPS
+floor remain unproven.
