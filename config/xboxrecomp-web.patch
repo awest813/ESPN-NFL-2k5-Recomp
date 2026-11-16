@@ -848,7 +848,61 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t y;
      if (!s_surface || s_surface_direct) return 1; /* drawn in place */
      for (y = 0; y < s_surface_rows; y++)
-@@ -1985,12 +2035,12 @@
+@@ -1480,6 +1530,21 @@
+     }
+ }
+
++static int alpha_test_pass(uint32_t a) {
++    if (!s_gpu.alpha_test) return 1;
++    uint32_t r = s_gpu.alpha_ref;
++    switch (s_gpu.alpha_func) {
++        case 0x0200: return 0;       /* NEVER */
++        case 0x0201: return a < r;
++        case 0x0202: return a == r;
++        case 0x0203: return a <= r;
++        case 0x0204: return a > r;
++        case 0x0205: return a != r;
++        case 0x0206: return a >= r;
++        default: return 1;          /* ALWAYS */
++    }
++}
++
+ /* Write one fragment through alpha test and blending.
+  *
+  * The rasteriser used to store the texel as-is, so every translucent quad
+@@ -1490,30 +1555,7 @@
+ static void shade_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t src) {
+     uint32_t a = src >> 24;
+
+-    if (s_gpu.alpha_test) {
+-        uint32_t r = s_gpu.alpha_ref;
+-        int pass;
+-        switch (s_gpu.alpha_func) {
+-            case 0x0200: pass = 0;
+-                break; /* NEVER    */
+-            case 0x0201: pass = a < r;
+-                break; /* LESS     */
+-            case 0x0202: pass = a == r;
+-                break; /* EQUAL    */
+-            case 0x0203: pass = a <= r;
+-                break; /* LEQUAL   */
+-            case 0x0204: pass = a > r;
+-                break; /* GREATER  */
+-            case 0x0205: pass = a != r;
+-                break; /* NOTEQUAL */
+-            case 0x0206: pass = a >= r;
+-                break; /* GEQUAL   */
+-            default: pass = 1;
+-                break; /* ALWAYS   */
+-        }
+-        if (!pass)
+-            return;
+-    }
++    if (!alpha_test_pass(a)) return;
+     if (s_gpu.blend && bpp == 4
+         && x >= (int) s_gpu.clip_x && x < (int) (s_gpu.clip_x + s_gpu.clip_w)
+         && y >= (int) s_gpu.clip_y && y < (int) (s_gpu.clip_y + s_gpu.clip_h)) {
+@@ -1985,12 +2027,12 @@
          return sample_texture(u, v, argb);
      saved = s_gpu.tex;
      s_gpu.tex = s_stage[st];
@@ -863,7 +917,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_sampler_stage = saved_stage;
  #endif
      s_gpu.tex = saved;
-@@ -2540,10 +2590,60 @@
+@@ -2540,10 +2582,60 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
@@ -925,7 +979,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                     float R[13][4], float O[16][4], const float V[16][4], int a0,
                     int scalar, float out[4]) {
      const float *s;
-@@ -2553,11 +2653,11 @@
+@@ -2553,11 +2645,11 @@
      switch (mux) {
          case 1: s = reg == 12 ? O[0] : R[reg < 13 ? reg : 0];
              break;
@@ -940,7 +994,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2723,19 @@
+@@ -2623,7 +2715,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -961,7 +1015,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +2746,54 @@
+@@ -2634,68 +2738,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1052,7 +1106,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +2826,12 @@
+@@ -2728,20 +2818,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1075,7 +1129,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +2864,13 @@
+@@ -2774,13 +2856,13 @@
                  break;
              }
              case 7: {
@@ -1093,7 +1147,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +2913,18 @@
+@@ -2823,11 +2905,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1117,7 +1171,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +2944,29 @@
+@@ -2847,7 +2936,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1147,7 +1201,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +2983,9 @@
+@@ -2864,8 +2975,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1159,7 +1213,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3132,27 @@
+@@ -3012,6 +3124,47 @@
      }
  }
 
@@ -1172,6 +1226,26 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +        enabled = !value || strcmp(value, "0") != 0;
 +    }
 +    return enabled;
++}
++
++/* Commit stencil/depth operations only after any fragment rejection tests.
++ * Opaque draws can call this early; alpha-tested draws call it after shading. */
++static int vp_fragment_tests(int x,int y,float z) {
++    size_t zi=(size_t)y*ZB_W+(size_t)x;
++    float *zp=&s_zbuf[zi];
++    uint8_t *sp=&s_sbuf[zi];
++    if (s_vp.stencil_test &&
++        !stencil_cmp(s_vp.stencil_func,s_vp.stencil_ref & s_vp.stencil_fmask,*sp & s_vp.stencil_fmask)) {
++        stencil_apply(sp,s_vp.op_fail);
++        return 0;
++    }
++    if (s_vp.depth_test && !depth_pass(z,*zp)) {
++        if (s_vp.stencil_test) stencil_apply(sp,s_vp.op_zfail);
++        return 0;
++    }
++    if (s_vp.stencil_test) stencil_apply(sp,s_vp.op_zpass);
++    if (s_vp.depth_test && s_vp.depth_mask) *zp=z;
++    return 1;
 +}
 +
 +/* PASSTHRU consumes all four original coordinates, without a texture lookup.
@@ -1187,7 +1261,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3057,26 +3198,15 @@
+@@ -3057,26 +3210,15 @@
          }
          return;
      }
@@ -1217,7 +1291,44 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3170,7 +3300,7 @@
+@@ -3123,31 +3265,11 @@
+             lb = w2 / area;
+             lc = w0 / area;
+             z = la * a->z + lb * b->z + lc * c->z;
+-            {
+-                /* Stencil test, then depth test, then the matching stencil
+-                 * op -- the fixed order of the NV2A (and GL). */
+-                size_t zi = (size_t) y * ZB_W + (size_t) x;
+-                float *zp = &s_zbuf[zi];
+-                uint8_t *sp = &s_sbuf[zi];
+-                if (s_vp.stencil_test
+-                    && !stencil_cmp(s_vp.stencil_func, s_vp.stencil_ref & s_vp.stencil_fmask,
+-                                    *sp & s_vp.stencil_fmask)) {
+-                    stencil_apply(sp, s_vp.op_fail);
+-                    continue;
+-                }
+-                if (s_vp.depth_test && !depth_pass(z, *zp)) {
+-                    if (s_vp.stencil_test)
+-                        stencil_apply(sp, s_vp.op_zfail);
+-                    continue;
+-                }
+-                if (s_vp.stencil_test)
+-                    stencil_apply(sp, s_vp.op_zpass);
+-                if (s_vp.depth_test && s_vp.depth_mask)
+-                    *zp = z;
+-                /* Nothing to write when every colour channel is masked:
+-                 * a stencil- or depth-only pass. */
+-                if ((s_vp.color_mask & 0x01010101u) == 0)
+-                    continue;
++            /* Opaque fragments retain early rejection. Alpha-tested fragments
++             * must finish shading and pass alpha before depth/stencil writes. */
++            if (!s_gpu.alpha_test) {
++                if (!vp_fragment_tests(x,y,z)) continue;
++                if ((s_vp.color_mask & 0x01010101u) == 0) continue;
+             }
+             pa = la * iwa;
+             pb = lb * iwb;
+@@ -3170,7 +3292,7 @@
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
                  int sampled = 0;
                  uint32_t texel = 0;
@@ -1226,7 +1337,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3184,11 +3314,16 @@
+@@ -3184,11 +3306,16 @@
                  if (comb_active()) {
                      float tn[3][4];
                      int st;
@@ -1244,7 +1355,18 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t tex2;
                              float su2 = pa * a->uvn[st - 1][0] + pb * b->uvn[st - 1][0] + pc * c->uvn[st - 1][0];
                              float sv2 = pa * a->uvn[st - 1][1] + pb * b->uvn[st - 1][1] + pc * c->uvn[st - 1][1];
-@@ -3253,7 +3388,7 @@
+@@ -3232,6 +3359,10 @@
+                     }
+                 }
+             }
++            if (s_gpu.alpha_test) {
++                if (!alpha_test_pass(argb >> 24) || !vp_fragment_tests(x,y,z)) continue;
++                if ((s_vp.color_mask & 0x01010101u) == 0) continue;
++            }
+             shade_pixel(mem, bpp, x, y, argb);
+         }
+     }
+@@ -3253,7 +3384,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1253,7 +1375,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3397,34 @@
+@@ -3262,32 +3393,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1300,7 +1422,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,27 +3471,41 @@
+@@ -3334,27 +3467,41 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -1355,7 +1477,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* The triangles of the current vertex-program batch, after the vertex
-@@ -3605,7 +3756,7 @@
+@@ -3605,7 +3752,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -1364,7 +1486,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +3994,7 @@
+@@ -3843,7 +3990,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -1373,7 +1495,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4017,7 @@
+@@ -3866,7 +4013,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -1382,7 +1504,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4456,7 @@
+@@ -4305,7 +4452,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -1391,7 +1513,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +4907,7 @@
+@@ -4756,7 +4903,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -1400,7 +1522,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5025,7 @@
+@@ -4874,7 +5021,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1409,7 +1531,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5033,7 @@
+@@ -4882,7 +5029,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -1418,7 +1540,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5085,7 @@
+@@ -4934,7 +5081,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1427,7 +1549,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5093,7 @@
+@@ -4942,7 +5089,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -3825,7 +3947,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,181 @@
+@@ -231,34 +220,276 @@
      return bad == 0;
  }
 
@@ -3943,6 +4065,100 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    }
 +}
 +
++static void test_alpha_depth_order(void)
++{
++    unsigned char saved_vp[sizeof s_vp],saved_comb[sizeof s_comb];
++    memcpy(saved_vp,&s_vp,sizeof s_vp);memcpy(saved_comb,&s_comb,sizeof s_comb);
++    uint32_t old_alpha=s_gpu.alpha_test,old_func=s_gpu.alpha_func,old_ref=s_gpu.alpha_ref;
++    Texture old_texture=s_gpu.tex;s_gpu.tex.valid=0;memset(&s_comb,0,sizeof s_comb);
++    target(0x200000,16,16,64);
++    XfVert tri[3]={{.x=0,.y=0,.z=0.25f,.w=1,.ok=1},
++                   {.x=16,.y=0,.z=0.25f,.w=1,.ok=1},
++                   {.x=0,.y=16,.z=0.25f,.w=1,.ok=1}};
++    const unsigned alphas[]={0,127,128,255};
++    const unsigned pass_masks[]={0,3,4,7,8,11,12,15}; /* reference alpha 128 */
++    const size_t zi=2*ZB_W+2,offset=0x200000+2*64+2*4;
++    s_vp.depth_test=s_vp.depth_mask=s_vp.stencil_test=1;s_vp.depth_func=0x0201;
++    s_vp.stencil_func=0x0207;s_vp.stencil_ref=7;s_vp.stencil_fmask=s_vp.stencil_wmask=255;
++    s_vp.op_fail=s_vp.op_zfail=0x1E00;s_vp.op_zpass=0x1E01;s_vp.color_mask=0x01010101u;
++    s_gpu.alpha_test=1;s_gpu.alpha_ref=128;
++    for(unsigned func=0;func<8;func++)for(unsigned a=0;a<4;a++) {
++        uint32_t initial=0xFF0000FFu;memcpy(g_ram+offset,&initial,4);
++        s_zbuf[zi]=1;s_sbuf[zi]=9;s_gpu.alpha_func=0x0200+func;
++        for(unsigned v=0;v<3;v++){tri[v].col[0]=1;tri[v].col[3]=(float)alphas[a]/255;}
++        raster_triangle_xf(&tri[0],&tri[1],&tri[2]);
++        CHECK(surface_stage_flush(g_ram),"alpha-order software flush failed");surface_stage_reset();
++        uint32_t pixel;memcpy(&pixel,g_ram+offset,4);
++        int pass=(pass_masks[func]>>a)&1;
++        CHECK(pixel==(pass?((alphas[a]<<24)|0xFF0000u):initial) &&
++              s_zbuf[zi]==(pass?0.25f:1.0f) && s_sbuf[zi]==(pass?7:9),
++              "alpha func %u value %u: color %08X depth %g stencil %u",func,alphas[a],pixel,s_zbuf[zi],s_sbuf[zi]);
++    }
++    /* Rejected alpha must precede even stencil-fail/z-fail operations and
++     * must still be evaluated on a color-masked depth/stencil-only pass. */
++    for(unsigned test=0;test<6;test++) {
++        uint32_t initial=0xFF0000FFu;memcpy(g_ram+offset,&initial,4);
++        s_zbuf[zi]=1;s_sbuf[zi]=9;s_gpu.alpha_func=test<3?0x0200:0x0207;
++        s_vp.stencil_func=(test==0||test==4)?0x0200:0x0207;
++        s_vp.depth_func=(test==1||test==5)?0x0200:0x0201;
++        s_vp.op_fail=s_vp.op_zfail=0x1E02;s_vp.color_mask=(test==2||test==3)?0:0x01010101u;
++        raster_triangle_xf(&tri[0],&tri[1],&tri[2]);
++        CHECK(surface_stage_flush(g_ram),"masked alpha-order flush failed");surface_stage_reset();
++        uint32_t pixel;memcpy(&pixel,g_ram+offset,4);
++        CHECK(pixel==initial && s_zbuf[zi]==(test==3?0.25f:1.0f) &&
++              s_sbuf[zi]==(test<3?9:test==3?7:10),
++              "alpha/stencil/depth ordering case %u: color %08X depth %g stencil %u",test,pixel,s_zbuf[zi],s_sbuf[zi]);
++    }
++    /* Alpha uses the shaded result, including combiner output and texture
++     * modulation, even when that contradicts the incoming vertex alpha. */
++    s_vp.stencil_func=0x0207;s_vp.depth_func=0x0201;s_vp.color_mask=0x01010101u;
++    s_gpu.alpha_func=0x0204;
++    for(unsigned mode=0;mode<2;mode++)for(unsigned pass=0;pass<2;pass++) {
++        uint32_t initial=0xFF0000FFu;memcpy(g_ram+offset,&initial,4);s_zbuf[zi]=1;s_sbuf[zi]=9;
++        memset(&s_comb,0,sizeof s_comb);
++        for(unsigned v=0;v<3;v++)tri[v].col[3]=mode?1.0f:pass?0.0f:1.0f;
++        if(!mode) {
++            s_comb.set=1;s_comb.control=1;s_comb.color_icw[0]=0x04200000u;
++            s_comb.alpha_icw[0]=0x11200000u;s_comb.color_ocw[0]=s_comb.alpha_ocw[0]=0xC0u;
++            s_comb.factor0[0]=pass?0xFF000000u:0;
++        } else {
++            s_gpu.tex=(Texture){.offset=0x300000,.width=1,.height=1,.pitch=4,.color=0x12,.enabled=1,.valid=1};
++            uint32_t texel=pass?0xFFFFFFFFu:0x00FFFFFFu;memcpy(g_ram+0x300000,&texel,4);
++            CHECK(snapshot_textures(),"alpha-order texture snapshot failed");
++        }
++        raster_triangle_xf(&tri[0],&tri[1],&tri[2]);
++        CHECK(surface_stage_flush(g_ram),"shaded alpha flush failed");surface_stage_reset();
++        uint32_t pixel;memcpy(&pixel,g_ram+offset,4);
++        CHECK(pixel==(pass?0xFFFF0000u:initial) && s_zbuf[zi]==(pass?0.25f:1.0f) && s_sbuf[zi]==(pass?7:9),
++              "shaded alpha mode %u pass %u: color %08X depth %g stencil %u",mode,pass,pixel,s_zbuf[zi],s_sbuf[zi]);
++        s_gpu.tex.valid=0;
++    }
++    memset(&s_comb,0,sizeof s_comb);
++    /* Disabled alpha retains the opaque path regardless of alpha func/value. */
++    uint32_t opaque_initial=0xFF0000FFu;memcpy(g_ram+offset,&opaque_initial,4);s_zbuf[zi]=1;s_sbuf[zi]=9;
++    s_gpu.alpha_test=0;s_gpu.alpha_func=0x0200;
++    for(unsigned v=0;v<3;v++)tri[v].col[3]=0;
++    raster_triangle_xf(&tri[0],&tri[1],&tri[2]);
++    CHECK(surface_stage_flush(g_ram),"opaque order flush failed");surface_stage_reset();
++    uint32_t opaque_pixel;memcpy(&opaque_pixel,g_ram+offset,4);
++    CHECK(opaque_pixel==0x00FF0000u && s_zbuf[zi]==0.25f && s_sbuf[zi]==7,"opaque path lost color/depth/stencil writes");
++    s_gpu.alpha_test=1;
++    /* A discarded invisible foreground triangle must not occlude a visible
++     * triangle behind it. This checks the resulting scene, not just state. */
++    uint32_t initial=0xFF0000FFu;memcpy(g_ram+offset,&initial,4);s_zbuf[zi]=1;
++    s_vp.stencil_test=0;s_vp.depth_func=0x0201;s_vp.color_mask=0x01010101u;
++    s_gpu.alpha_func=0x0204;
++    for(unsigned v=0;v<3;v++){tri[v].z=0.25f;tri[v].col[0]=1;tri[v].col[3]=0;}
++    raster_triangle_xf(&tri[0],&tri[1],&tri[2]);
++    for(unsigned v=0;v<3;v++){tri[v].z=0.75f;tri[v].col[0]=0;tri[v].col[1]=tri[v].col[3]=1;}
++    raster_triangle_xf(&tri[0],&tri[1],&tri[2]);
++    CHECK(surface_stage_flush(g_ram),"cutout scene flush failed");surface_stage_reset();
++    uint32_t pixel;memcpy(&pixel,g_ram+offset,4);
++    CHECK(pixel==0xFF00FF00u && s_zbuf[zi]==0.75f,"invisible foreground occluded rear geometry: %08X depth %g",pixel,s_zbuf[zi]);
++    memcpy(&s_vp,saved_vp,sizeof s_vp);memcpy(&s_comb,saved_comb,sizeof s_comb);
++    s_gpu.alpha_test=old_alpha;s_gpu.alpha_func=old_func;s_gpu.alpha_ref=old_ref;s_gpu.tex=old_texture;
++}
++
 +static int test_match_view(void) { return 1; }
 +static void test_widescreen_camera(void)
 +{
@@ -4000,6 +4216,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_clear_rx = 0x0FFF0000u;
 
 +    test_passthru_clamp();
++    test_alpha_depth_order();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
      target(0x400000, 320, 240, 1536);              /* padded rows, like the title */
@@ -4011,7 +4228,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +403,8 @@
+@@ -267,8 +498,8 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -4022,7 +4239,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
      run_scene("textured, wrapped, modulated, negative u clamps", 0);
 
-@@ -308,7 +444,10 @@
+@@ -308,7 +539,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -4034,7 +4251,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +461,32 @@
+@@ -322,6 +556,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 

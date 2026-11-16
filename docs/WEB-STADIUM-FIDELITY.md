@@ -953,3 +953,37 @@ software-fallback correction; its sampled rendering logs report no software
 3D draws. An ESPN scene specifically exercising out-of-range PASSTHRU input
 has not been isolated, so this is shader conformance and stability evidence,
 not proof of a visible stadium correction or complete original-Xbox parity.
+
+## Software alpha rejection before depth and stencil
+
+The software 3D rasterizer previously updated depth and stencil before
+evaluating final alpha. A discarded transparent foreground triangle could
+therefore hide opaque geometry behind it; stencil-fail, depth-fail and pass
+operations could also run for a fragment that alpha testing should reject.
+The corrected order follows the alpha → stencil → depth sequence described
+in [NVIDIA's stencil pipeline documentation](https://developer.download.nvidia.com/assets/gamedev/docs/stencil.pdf).
+
+Alpha-tested draws now finish texture/combiner shading and reject on the final
+8-bit alpha before committing depth/stencil operations. Opaque draws retain
+early stencil/depth rejection. Color-masked depth/stencil-only passes still
+evaluate enabled alpha testing. The 2D writer and 3D path share one alpha
+comparison helper, preserving all eight compare modes and disabled-test
+behavior.
+
+The actual software-renderer regression reproduced 20 failures before the
+fix (`alpha-order-before.log`), including a blue background remaining visible
+because a discarded foreground triangle occluded a green rear triangle.
+The final 44 cases check every alpha comparison around reference 128,
+stencil-fail/depth-fail/pass writes, color masks, final alpha from textures
+and combiners, disabled alpha testing and the two-triangle cutout scene.
+The correct scene ends green with the rear triangle's depth. These cases
+and the existing native Vulkan/renderer recovery scenes pass both normally
+and with address/undefined-behavior sanitizers. Driver leak checking was
+disabled for the sanitizer run; invalid memory and undefined-behavior checks
+remained enabled.
+
+The complete browser game and actual native graphics runtime build, and
+the published patch reproduces all 76 files from a fresh pinned tree. This
+change is exercised directly through the software rasterizer; it establishes
+no retail FPS or audio improvement. Texture ALPHAKILL remains an open fidelity
+gap, alongside full original-Xbox scene matching and uninterrupted audio.
