@@ -7,6 +7,7 @@
 #include <stdlib.h>
 uint8_t *g_apu_ram_ptr;
 struct McpxApuDebug g_dbg,g_dbg_cache;
+volatile float g_apu_bed_gain=1.0f,g_apu_voice_gain=1.0f,g_apu_voice_level;
 uint32_t xbox_ContiguousAllocatedBytes(void) { return 0; }
 static MCPXAPUState *checked;
 static unsigned lock_depth,reads;
@@ -25,6 +26,7 @@ void mcpx_apu_write(void *d,hwaddr addr,uint64_t value,unsigned size) { (void)d;
 uint64_t mcpx_apu_vp_read(void *d,hwaddr addr,unsigned size) { (void)d;(void)addr;(void)size;return 19; }
 void mcpx_apu_vp_write(void *d,hwaddr addr,uint64_t value,unsigned size) { (void)d;(void)addr;(void)value;(void)size; }
 /* PRODUCTION_MMIO */
+/* PRODUCTION_LEVEL */
 static void wr(MCPXAPUState *d,uint32_t addr,uint32_t value) { mcpx_apu_mmio_write(d,addr,value,4); }
 static uint32_t rd(MCPXAPUState *d,uint32_t addr) { return (uint32_t)mcpx_apu_mmio_read(d,addr,4); }
 int main(void) {
@@ -62,6 +64,29 @@ int main(void) {
         unsigned off=(frame%8)*32;
         for(unsigned i=0;i<32;i++)assert(d.monitor.frame_buf[off+i][0]==16384 && d.monitor.frame_buf[off+i][1]==-8192);
     }
+    /* Controls act before firmware processing; the raw VP input is preserved. */
+    for(unsigned i=0;i<32;i++)bins[2][i]=0.0625f;
+    bins[10][0]=0.125f;
+    static float unchanged[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
+    memcpy(unchanged,bins,sizeof(bins));
+    xbox_AudioSetGameGain(0.5f);xbox_AudioSetCommentaryGain(0.0f);g_apu_voice_level=0;
+    d.ep_frame_div=0;mcpx_apu_dsp_real_frame(&d,bins);
+    assert(d.monitor.frame_buf[0][0]==8192 && d.monitor.frame_buf[0][1]==-4096);
+    assert(rd(&d,0x35100)==0 && rd(&d,0x35500)==0x080000);
+    assert(fabsf(xbox_AudioGameLevel()-0.01875f)<1e-7f);
+    assert(!memcmp(unchanged,bins,sizeof(bins)));
+    xbox_AudioSetGameGain(-1);xbox_AudioSetCommentaryGain(2);
+    assert(g_apu_bed_gain==0 && g_apu_voice_gain==1);
+    xbox_AudioSetCommentaryGain(0.5f);
+    mcpx_apu_dsp_real_frame(&d,bins);
+    assert(d.monitor.frame_buf[0][0]==0 && d.monitor.frame_buf[0][1]==0);
+    assert(rd(&d,0x35100)==0x040000 && rd(&d,0x35500)==0);
+    for(unsigned i=0;i<32;i++)bins[2][i]=0;
+    float before=g_apu_voice_level;mcpx_apu_dsp_real_frame(&d,bins);
+    assert(fabsf(g_apu_voice_level-before*0.996f)<1e-7f);
+    xbox_AudioSetGameGain(2);xbox_AudioSetCommentaryGain(-1);
+    assert(g_apu_bed_gain==1 && g_apu_voice_gain==0);
+    xbox_AudioSetCommentaryGain(1);
     /* Deasserted reset halts execution, without overwriting uploaded X memory. */
     wr(&d,0x3fffc,0);assert(d.gp.dsp->core.pc==0);
     /* EP firmware starts DMA to its stereo PCM FIFO, then idles. */
@@ -99,5 +124,5 @@ int main(void) {
 #ifdef _WIN32
     qemu_mutex_destroy(&d.lock);qemu_cond_destroy(&d.cond);
 #endif
-    puts("PASS GP/EP: real MMIO locking/windows, scattered bootstrap, uploaded stereo GP/EP programs, PCM FIFO, idle pacing and reset");
+    puts("PASS GP/EP: MMIO, firmware, PCM FIFO, gain controls, commentary meter, idle pacing and reset");
 }

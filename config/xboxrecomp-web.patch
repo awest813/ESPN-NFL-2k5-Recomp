@@ -3430,7 +3430,7 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
 
      struct {
          struct {
-@@ -513,10 +414,15 @@
+@@ -513,10 +414,17 @@
  void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
  void mcpx_apu_vp_reset(MCPXAPUState *d);
 
@@ -3440,6 +3440,8 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
  void mcpx_apu_update_dsp_preference(MCPXAPUState *d);
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
 +void mcpx_apu_dsp_real_init(MCPXAPUState *d);
++void mcpx_apu_dsp_update_level(float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
++extern volatile float g_apu_bed_gain, g_apu_voice_gain, g_apu_voice_level;
 +void mcpx_apu_dsp_reset(MCPXAPUState *d);
 +void mcpx_apu_dsp_real_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
 +uint32_t mcpx_apu_dsp_read(MCPXAPUState *d, bool gp, uint32_t addr, unsigned size);
@@ -4502,10 +4504,10 @@ index 0000000..8095135
 +Public License instead of this License.
 diff --git a/src/apu/dsp/README.md b/src/apu/dsp/README.md
 new file mode 100644
-index 0000000..e603136
+index 0000000..d5749a1
 --- /dev/null
 +++ b/src/apu/dsp/README.md
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,61 @@
 +# Standalone DSP56300 core
 +
 +Source: [xemu a34bb0f8c229a9aabda46ac69184285112f65841](https://github.com/xemu-project/xemu/tree/a34bb0f8c229a9aabda46ac69184285112f65841/hw/xbox/mcpx/apu/dsp),
@@ -4549,6 +4551,12 @@ index 0000000..e603136
 +It reuses the APU physical-window resolver, serializes DSP reads with the frame
 +thread, and releases processor storage at shutdown. Unused cycles expire when
 +a processor idles instead of accumulating credit across frames.
++
++The legacy controls use centre bin 2 for commentary and the remaining bins
++for the bed. The executable path applies these gains to GP input, preserving
++the raw VP mix and the guest's effects processing. Both paths share the raw
++commentary meter and its attack/release smoothing. Gain changes affect new
++input; existing effect tails retain the guest program's decay.
 +
 +`tests/web/test_gp_ep.py` also executes uploaded stereo GP and EP programs
 +through the production MMIO dispatcher and bridge, including scattered-page
@@ -18076,7 +18084,21 @@ diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
      /* Allocate minimal DSP state for GP and EP.
       * We need these to exist so reset doesn't crash,
       * but they won't actually run DSP programs. */
-@@ -158,6 +165,10 @@
+@@ -155,9 +162,24 @@
+ volatile float g_apu_voice_gain = 1.0f;   /* commentary (centre bin) */
+ volatile float g_apu_voice_level;
+
++void mcpx_apu_dsp_update_level(float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
++{
++    double e = 0;
++    float r, a;
++    for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++)
++        e += (double)mixbins[2][i] * mixbins[2][i];
++    r = (float)sqrt(e / NUM_SAMPLES_PER_FRAME);
++    a = r > g_apu_voice_level ? 0.3f : 0.004f;    /* fast attack, slow release */
++    g_apu_voice_level += (r - g_apu_voice_level) * a;
++}
++
  void mcpx_apu_dsp_frame(MCPXAPUState *d,
                           float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
@@ -18087,12 +18109,29 @@ diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
      /* Bypass DSP: take mixbin 0 (front-left) and mixbin 1 (front-right)
       * and write them directly to the monitor frame buffer as the final
       * EP output.
+@@ -176,15 +198,7 @@
+
+     dsp_ack_frame(d);
+
+-    {
+-        double e = 0;
+-        float r, a;
+-        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++)
+-            e += (double)mixbins[2][i] * mixbins[2][i];
+-        r = (float)sqrt(e / NUM_SAMPLES_PER_FRAME);
+-        a = r > g_apu_voice_level ? 0.3f : 0.004f;    /* fast attack, slow release */
+-        g_apu_voice_level += (r - g_apu_voice_level) * a;
+-    }
++    mcpx_apu_dsp_update_level(mixbins);
+
+     {
+         /* RECOMP_APU_BIN_LOG=1: RMS of each mixbin every 2 s, to see which
 diff --git a/src/apu/apu_gp_ep.c b/src/apu/apu_gp_ep.c
 new file mode 100644
-index 0000000..384d5b4
+index 0000000..efd7b84
 --- /dev/null
 +++ b/src/apu/apu_gp_ep.c
-@@ -0,0 +1,404 @@
+@@ -0,0 +1,409 @@
 +/*
 + * QEMU MCPX Audio Processing Unit implementation
 + *
@@ -18406,12 +18445,17 @@ index 0000000..384d5b4
 +void mcpx_apu_dsp_real_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
 +{
 +    d->profile.gp_instructions=d->profile.ep_instructions=0;
++    /* The legacy controls treat bin 2 as commentary. Apply their gains
++     * before firmware processing so its routing and effects stay in the path. */
++    mcpx_apu_dsp_update_level(mixbins);
++    const float bed_gain=g_apu_bed_gain, voice_gain=g_apu_voice_gain;
 +    /* Write VP results to the GP DSP MIXBUF */
 +    for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
 +        uint32_t base = GP_DSP_MIXBUF_BASE + mixbin * NUM_SAMPLES_PER_FRAME;
++        const float gain=mixbin == 2 ? voice_gain : bed_gain;
 +        for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
 +            dsp_write_memory(d->gp.dsp, 'X', base + sample,
-+                             float_to_24b(mixbins[mixbin][sample]));
++                             float_to_24b(mixbins[mixbin][sample] * gain));
 +        }
 +    }
 +

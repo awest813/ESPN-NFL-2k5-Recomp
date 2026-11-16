@@ -773,3 +773,34 @@ in 132 seconds. The preceding profiled capture recorded 4,445 blocks; attract
 scenes, host contention and profiling effects are uncontrolled, so that change
 is not a proven retail speedup. The executable DSP stays opt-in. This does not
 establish uninterrupted audio, full original-Xbox fidelity or a 30 FPS floor.
+
+## DSP mix controls and continuity without profiling
+
+The executable DSP path now reads the same bed/commentary gain controls as
+the legacy path. Bin 2 retains the existing commentary convention; the other
+mixbins use bed gain. Gains are applied to GP input, leaving the raw VP mix
+unchanged and retaining the guest program's routing/effects. Unity gains
+preserve the guest input. Gain changes affect incoming samples; existing DSP
+effect tails follow the program's decay.
+
+Both paths now use one raw commentary RMS meter with the existing fast-attack/
+slow-release smoothing. Previously the executable path returned before that
+meter was updated and never consumed either gain. The firmware regression
+fails on the old path when a half bed gain leaves the stereo PCM unchanged
+(`build-web-tests/dsp-gain-controls-before.log`). It now checks actual control
+setters/getter, clamping, independent bed/commentary gains, effect-send input,
+raw VP preservation, meter attack/release and unchanged unity-gain PCM. Wasm,
+native Linux address/undefined-behavior checks, native Windows/MSVC, the actual
+native APU build and the complete browser game build pass.
+
+The four-minute capture (`build-web-tests/dsp-unprofiled-gameplay/report.json`)
+uses executable DSP with no voice, stage-timing or worker CPU profiling. It
+reaches New York at Baltimore, the stadium introduction and active gameplay,
+with readable scoreboard text and rendered player models. The runtime has
+zero stage/voice log entries and no recorded browser/GPU/DSP faults, but still
+records 2,122 worklet underrun blocks and zero dropped producer submissions.
+A host snapshot during the capture finds three independent native runner
+processes each consuming more than one CPU core. This limits conclusions about
+scheduling cost; it does not erase the observed discontinuities. The DSP path
+remains opt-in, and full original-Xbox matching, smooth playback and a sustained
+30 FPS floor remain unfinished.
