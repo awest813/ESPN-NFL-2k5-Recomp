@@ -4490,10 +4490,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..6c96f39
+index 0000000..bb46ea5
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1627 @@
+@@ -0,0 +1,1716 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -4526,7 +4526,7 @@ index 0000000..6c96f39
 + * Each SDL handle is one of these, owned by the caller; the WebGPU handles in
 + * it are only touched on the server thread. */
 +struct SDL_GPUDevice { int unused; };
-+struct SDL_GPUTexture {
++typedef struct {
 +    atomic_uint refs;             /* application plus recorded commands */
 +    WGPUTexture tex;
 +    WGPUTextureView view;         /* all levels: sampling */
@@ -4534,8 +4534,10 @@ index 0000000..6c96f39
 +    WGPUTextureFormat format;
 +    uint32_t w, h, levels, layers;
 +    int swapchain;                /* the canvas's current texture, resolved at replay */
-+};
-+struct SDL_GPUBuffer { WGPUBuffer buf; uint32_t size; atomic_uint refs; };
++} WgTextureStorage;
++struct SDL_GPUTexture { WgTextureStorage *storage; SDL_GPUTextureCreateInfo info; };
++typedef struct { WGPUBuffer buf; uint32_t size; atomic_uint refs; } WgBufferStorage;
++struct SDL_GPUBuffer { WgBufferStorage *storage; SDL_GPUBufferCreateInfo info; };
 +typedef struct {
 +    uint8_t *mem;
 +    atomic_uint refs;             /* current mapping plus recorded operations */
@@ -4557,22 +4559,22 @@ index 0000000..6c96f39
 +typedef struct {
 +    OpKind kind;
 +    union {
-+        struct { WgTransferStorage *src; uint32_t src_off; SDL_GPUBuffer *dst; uint32_t dst_off, size; } ub;
-+        struct { WgTransferStorage *src; uint32_t src_off, row_px, rows; SDL_GPUTexture *dst;
++        struct { WgTransferStorage *src; uint32_t src_off; WgBufferStorage *dst; uint32_t dst_off, size; } ub;
++        struct { WgTransferStorage *src; uint32_t src_off, row_px, rows; WgTextureStorage *dst;
 +                 uint32_t level, x, y, w, h, layer; } ut;
-+        struct { SDL_GPUTexture *src; uint32_t level, x, y, w, h, layer; WgTransferStorage *dst;
++        struct { WgTextureStorage *src; uint32_t level, x, y, w, h, layer; WgTransferStorage *dst;
 +                 uint32_t dst_off, row_px; } dt;
-+        struct { SDL_GPUTexture *src, *dst; uint32_t sl, sx, sy, dl, dx, dy, w, h, src_layer, dst_layer; } ct;
-+        struct { SDL_GPUTexture *tex; } mip;
-+        struct { SDL_GPUBlitRegion src, dst; int linear, clear; SDL_FColor clear_color; } blit;
-+        struct { SDL_GPUColorTargetInfo color; int has_color; SDL_GPUDepthStencilTargetInfo depth; int has_depth; } pass;
++        struct { WgTextureStorage *src, *dst; uint32_t sl, sx, sy, dl, dx, dy, w, h, src_layer, dst_layer; } ct;
++        struct { WgTextureStorage *tex; } mip;
++        struct { SDL_GPUBlitRegion src, dst; WgTextureStorage *source, *destination; int linear, clear; SDL_FColor clear_color; } blit;
++        struct { SDL_GPUColorTargetInfo color; int has_color; SDL_GPUDepthStencilTargetInfo depth; int has_depth; WgTextureStorage *color_storage, *depth_storage; } pass;
 +        SDL_GPUViewport viewport;
 +        SDL_Rect scissor;
 +        SDL_FColor blend;
 +        uint8_t stencil_ref;
 +        SDL_GPUGraphicsPipeline *pipeline;
-+        struct { SDL_GPUBuffer *buf; uint32_t off; } vb;
-+        struct { SDL_GPUTexture *tex[WG_MAX_SAMPLERS]; SDL_GPUSampler *smp[WG_MAX_SAMPLERS]; uint32_t first, n; } samplers;
++        struct { WgBufferStorage *buf; uint32_t off; } vb;
++        struct { WgTextureStorage *tex[WG_MAX_SAMPLERS]; SDL_GPUSampler *smp[WG_MAX_SAMPLERS]; uint32_t first, n; } samplers;
 +        struct { int fragment; uint32_t off; } uniform;
 +        struct { uint32_t count, instances, first, first_instance; int32_t vertex_offset; } draw;
 +    };
@@ -4614,7 +4616,7 @@ index 0000000..6c96f39
 + * references; texture destruction invalidates every entry that uses it. */
 +#define WG_BIND_CACHE 1024u
 +typedef struct {
-+    SDL_GPUTexture *textures[WG_MAX_SAMPLERS];
++    WgTextureStorage *textures[WG_MAX_SAMPLERS];
 +    SDL_GPUSampler *samplers[WG_MAX_SAMPLERS];
 +    WGPUBindGroup group;
 +} WgBindCache;
@@ -4670,7 +4672,7 @@ index 0000000..6c96f39
 +    return wgpuDeviceCreateBindGroupLayout(s_dev, &d);
 +}
 +
-+static WGPUBindGroup material_group(SDL_GPUTexture *const *tex, SDL_GPUSampler *const *smp)
++static WGPUBindGroup material_group(WgTextureStorage *const *tex, SDL_GPUSampler *const *smp)
 +{
 +    uint32_t hash = 2166136261u;
 +    for (uint32_t i = 0; i < WG_MAX_SAMPLERS; i++) {
@@ -4967,13 +4969,13 @@ index 0000000..6c96f39
 +}
 +
 +/* ── Textures ─────────────────────────────────────────────────────────── */
-+typedef struct { const SDL_GPUTextureCreateInfo *info; SDL_GPUTexture *out; } TexArgs;
++typedef struct { const SDL_GPUTextureCreateInfo *info; WgTextureStorage *out; } TexArgs;
 +
 +static void do_create_texture(void *p)
 +{
 +    TexArgs *a = (TexArgs *)p;
 +    const SDL_GPUTextureCreateInfo *i = a->info;
-+    SDL_GPUTexture *t = (SDL_GPUTexture *)calloc(1, sizeof *t);
++    WgTextureStorage *t = (WgTextureStorage *)calloc(1, sizeof *t);
 +    if (!t) return;
 +    WGPUTextureUsage usage = 0;
 +    t->format = tex_format(i->format);
@@ -5012,19 +5014,28 @@ index 0000000..6c96f39
 +    a->out = t;
 +}
 +
-+SDL_GPUTexture *WG_CreateGPUTexture(SDL_GPUDevice *d, const SDL_GPUTextureCreateInfo *i)
++static WgTextureStorage *texture_storage_create(const SDL_GPUTextureCreateInfo *i)
 +{
-+    (void)d;
 +    TexArgs a = { i, NULL };
-+    if (tex_format(i->format) == WGPUTextureFormat_Undefined) { SDL_SetError("texture format not supported on WebGPU"); return NULL; }
 +    run_sync(do_create_texture, &a);
 +    if (!a.out) SDL_SetError("WebGPU texture creation failed");
 +    return a.out;
 +}
++SDL_GPUTexture *WG_CreateGPUTexture(SDL_GPUDevice *d, const SDL_GPUTextureCreateInfo *i)
++{
++    (void)d;
++    if (tex_format(i->format) == WGPUTextureFormat_Undefined) { SDL_SetError("texture format not supported on WebGPU"); return NULL; }
++    SDL_GPUTexture *t = (SDL_GPUTexture *)calloc(1, sizeof *t);
++    if (!t) return NULL;
++    t->info = *i;
++    t->storage = texture_storage_create(i);
++    if (!t->storage) { free(t); return NULL; }
++    return t;
++}
 +
 +static void do_release_texture(void *p)
 +{
-+    SDL_GPUTexture *t = (SDL_GPUTexture *)p;
++    WgTextureStorage *t = (WgTextureStorage *)p;
 +    for (uint32_t i = 0; i < WG_BIND_CACHE; i++) {
 +        WgBindCache *entry = &s_bind_cache[i];
 +        if (!entry->group) continue;
@@ -5041,22 +5052,39 @@ index 0000000..6c96f39
 +    if (t->tex) wgpuTextureRelease(t->tex);
 +    free(t);
 +}
-+void WG_ReleaseGPUTexture(SDL_GPUDevice *d, SDL_GPUTexture *t)
++static void texture_storage_drop(WgTextureStorage *t)
 +{
-+    (void)d;
 +    if (t && !t->swapchain && atomic_fetch_sub(&t->refs, 1) == 1)
 +        emscripten_proxy_async(q(), s_server, do_release_texture, t);
 +}
++static WgTextureStorage *texture_current(SDL_GPUTexture *t) { return t ? t->storage : NULL; }
++static WgTextureStorage *texture_for_write(SDL_GPUTexture *t, bool cycle)
++{
++    if (!t) return NULL;
++    WgTextureStorage *old = t->storage;
++    if (cycle && !old->swapchain && atomic_load(&old->refs) > 1) {
++        WgTextureStorage *fresh = texture_storage_create(&t->info);
++        if (!fresh) return NULL;
++        t->storage = fresh;
++        texture_storage_drop(old);
++    }
++    return t->storage;
++}
++void WG_ReleaseGPUTexture(SDL_GPUDevice *d, SDL_GPUTexture *t)
++{
++    (void)d;
++    if (t && !t->storage->swapchain) { texture_storage_drop(t->storage); free(t); }
++}
 +
 +/* ── Buffers ──────────────────────────────────────────────────────────── */
-+typedef struct { const SDL_GPUBufferCreateInfo *info; SDL_GPUBuffer *out; } BufArgs;
++typedef struct { const SDL_GPUBufferCreateInfo *info; WgBufferStorage *out; } BufArgs;
 +static void do_create_buffer(void *p)
 +{
 +    BufArgs *a = (BufArgs *)p;
 +    WGPUBufferUsage u = WGPUBufferUsage_CopyDst;
 +    if (a->info->usage & SDL_GPU_BUFFERUSAGE_VERTEX) u |= WGPUBufferUsage_Vertex;
 +    if (a->info->usage & SDL_GPU_BUFFERUSAGE_INDEX) u |= WGPUBufferUsage_Index;
-+    SDL_GPUBuffer *b = (SDL_GPUBuffer *)calloc(1, sizeof *b);
++    WgBufferStorage *b = (WgBufferStorage *)calloc(1, sizeof *b);
 +    if (!b) return;
 +    atomic_init(&b->refs, 1);
 +    b->size = (a->info->size + 3u) & ~3u;
@@ -5065,19 +5093,45 @@ index 0000000..6c96f39
 +    if (!b->buf) { free(b); return; }
 +    a->out = b;
 +}
++static WgBufferStorage *buffer_storage_create(const SDL_GPUBufferCreateInfo *i)
++{
++    BufArgs a = { i, NULL };
++    run_sync(do_create_buffer, &a);
++    if (!a.out) SDL_SetError("WebGPU buffer creation failed");
++    return a.out;
++}
 +SDL_GPUBuffer *WG_CreateGPUBuffer(SDL_GPUDevice *d, const SDL_GPUBufferCreateInfo *i)
 +{
 +    (void)d;
-+    BufArgs a = { i, NULL };
-+    run_sync(do_create_buffer, &a);
-+    return a.out;
++    SDL_GPUBuffer *b = (SDL_GPUBuffer *)calloc(1, sizeof *b);
++    if (!b) return NULL;
++    b->info = *i;
++    b->storage = buffer_storage_create(i);
++    if (!b->storage) { free(b); return NULL; }
++    return b;
 +}
-+static void do_release_buffer(void *p) { SDL_GPUBuffer *b = (SDL_GPUBuffer *)p; wgpuBufferRelease(b->buf); free(b); }
++static void do_release_buffer(void *p) { WgBufferStorage *b = (WgBufferStorage *)p; wgpuBufferRelease(b->buf); free(b); }
++static void buffer_storage_drop(WgBufferStorage *b)
++{
++    if (b && atomic_fetch_sub(&b->refs, 1) == 1)
++        emscripten_proxy_async(q(), s_server, do_release_buffer, b);
++}
++static WgBufferStorage *buffer_for_write(SDL_GPUBuffer *b, bool cycle)
++{
++    if (!b) return NULL;
++    WgBufferStorage *old = b->storage;
++    if (cycle && atomic_load(&old->refs) > 1) {
++        WgBufferStorage *fresh = buffer_storage_create(&b->info);
++        if (!fresh) return NULL;
++        b->storage = fresh;
++        buffer_storage_drop(old);
++    }
++    return b->storage;
++}
 +void WG_ReleaseGPUBuffer(SDL_GPUDevice *d, SDL_GPUBuffer *b)
 +{
 +    (void)d;
-+    if (b && atomic_fetch_sub(&b->refs, 1) == 1)
-+        emscripten_proxy_async(q(), s_server, do_release_buffer, b);
++    if (b) { buffer_storage_drop(b->storage); free(b); }
 +}
 +
 +/* A command captures the backing allocation at recording time. Cycling a
@@ -5364,16 +5418,16 @@ index 0000000..6c96f39
 +/* SDL release relinquishes the application reference. Recorded commands
 + * keep wrappers and upload/readback storage alive through replay, including
 + * cancellation, rejected submissions, and asynchronous readbacks. */
-+static void texture_ref(SDL_GPUTexture *t, int release)
++static void texture_ref(WgTextureStorage *t, int release)
 +{
 +    if (!t || t->swapchain) return;
-+    if (release) WG_ReleaseGPUTexture(NULL, t);
++    if (release) texture_storage_drop(t);
 +    else atomic_fetch_add(&t->refs, 1);
 +}
-+static void buffer_ref(SDL_GPUBuffer *b, int release)
++static void buffer_ref(WgBufferStorage *b, int release)
 +{
 +    if (!b) return;
-+    if (release) WG_ReleaseGPUBuffer(NULL, b);
++    if (release) buffer_storage_drop(b);
 +    else atomic_fetch_add(&b->refs, 1);
 +}
 +static void transfer_ref(WgTransferStorage *b, int release)
@@ -5390,10 +5444,10 @@ index 0000000..6c96f39
 +    case OP_DOWNLOAD_TEXTURE: texture_ref(o->dt.src, release); transfer_ref(o->dt.dst, release); break;
 +    case OP_COPY_TEXTURE: texture_ref(o->ct.src, release); texture_ref(o->ct.dst, release); break;
 +    case OP_MIPMAPS: texture_ref(o->mip.tex, release); break;
-+    case OP_BLIT: texture_ref(o->blit.src.texture, release); texture_ref(o->blit.dst.texture, release); break;
++    case OP_BLIT: texture_ref(o->blit.source, release); texture_ref(o->blit.destination, release); break;
 +    case OP_BEGIN_PASS:
-+        if (o->pass.has_color) texture_ref(o->pass.color.texture, release);
-+        if (o->pass.has_depth) texture_ref(o->pass.depth.texture, release);
++        if (o->pass.has_color) texture_ref(o->pass.color_storage, release);
++        if (o->pass.has_depth) texture_ref(o->pass.depth_storage, release);
 +        break;
 +    case OP_VERTEX_BUFFER: case OP_INDEX_BUFFER: buffer_ref(o->vb.buf, release); break;
 +    case OP_SAMPLERS:
@@ -5417,22 +5471,27 @@ index 0000000..6c96f39
 +
 +void WG_UploadToGPUBuffer(SDL_GPUCopyPass *p, const SDL_GPUTransferBufferLocation *s, const SDL_GPUBufferRegion *d, bool cycle)
 +{
-+    (void)cycle;
 +    if (!s || !d || !s->transfer_buffer || !d->buffer ||
 +        (uint64_t)s->offset + d->size > s->transfer_buffer->size ||
-+        (uint64_t)d->offset + d->size > d->buffer->size ||
++        (uint64_t)d->offset + d->size > d->buffer->storage->size ||
 +        ((s->offset | d->offset | d->size) & 3u)) {
 +        cmd_fail(CMD(p), "invalid buffer upload range or alignment"); return;
 +    }
 +    Op *o = push(CMD(p), OP_UPLOAD_BUFFER);
-+    if (o) { o->ub = (typeof(o->ub)){ s->transfer_buffer->storage, s->offset, d->buffer, d->offset, d->size }; op_resources(o, 0); }
++    if (o) {
++        WgBufferStorage *dst = buffer_for_write(d->buffer, cycle);
++        if (!dst) { cmd_fail(CMD(p), "buffer cycling failed"); return; }
++        o->ub = (typeof(o->ub)){ s->transfer_buffer->storage, s->offset, dst, d->offset, d->size };
++        op_resources(o, 0);
++    }
 +}
 +static int texture_region_valid(SDL_GPUTexture *t, uint32_t level, uint32_t x, uint32_t y,
 +                                uint32_t w, uint32_t h, uint32_t layer, uint32_t depth)
 +{
-+    if (!t || t->swapchain || level >= t->levels || level >= 32 || layer >= t->layers ||
-+        depth != 1 || !w || !h || is_depth(t->format)) return 0;
-+    uint32_t tw = t->w >> level, th = t->h >> level;
++    WgTextureStorage *storage = texture_current(t);
++    if (!storage || storage->swapchain || level >= storage->levels || level >= 32 || layer >= storage->layers ||
++        depth != 1 || !w || !h || is_depth(storage->format)) return 0;
++    uint32_t tw = storage->w >> level, th = storage->h >> level;
 +    if (!tw) tw = 1;
 +    if (!th) th = 1;
 +    return (uint64_t)x + w <= tw && (uint64_t)y + h <= th;
@@ -5449,15 +5508,18 @@ index 0000000..6c96f39
 +
 +void WG_UploadToGPUTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureTransferInfo *s, const SDL_GPUTextureRegion *d, bool cycle)
 +{
-+    (void)cycle;
 +    if (!s || !d || !texture_region_valid(d->texture, d->mip_level, d->x, d->y, d->w, d->h, d->layer, d->d) ||
 +        !transfer_region_valid(s->transfer_buffer, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w, d->w, d->h)) {
 +        cmd_fail(CMD(p), "invalid texture upload region or transfer range"); return;
 +    }
 +    Op *o = push(CMD(p), OP_UPLOAD_TEXTURE);
-+    if (o) { o->ut = (typeof(o->ut)){ s->transfer_buffer->storage, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
-+                                   s->rows_per_layer ? s->rows_per_layer : d->h, d->texture, d->mip_level,
-+                                   d->x, d->y, d->w, d->h, d->layer }; op_resources(o, 0); }
++    if (o) {
++        WgTextureStorage *dst = texture_for_write(d->texture, cycle);
++        if (!dst) { cmd_fail(CMD(p), "texture cycling failed"); return; }
++        o->ut = (typeof(o->ut)){ s->transfer_buffer->storage, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
++            s->rows_per_layer ? s->rows_per_layer : d->h, dst, d->mip_level, d->x, d->y, d->w, d->h, d->layer };
++        op_resources(o, 0);
++    }
 +}
 +void WG_DownloadFromGPUTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureRegion *s, const SDL_GPUTextureTransferInfo *d)
 +{
@@ -5467,7 +5529,7 @@ index 0000000..6c96f39
 +    }
 +    Op *o = push(CMD(p), OP_DOWNLOAD_TEXTURE);
 +    if (o) {
-+        o->dt = (typeof(o->dt)){ s->texture, s->mip_level, s->x, s->y, s->w, s->h, s->layer, d->transfer_buffer->storage, d->offset,
++        o->dt = (typeof(o->dt)){ texture_current(s->texture), s->mip_level, s->x, s->y, s->w, s->h, s->layer, d->transfer_buffer->storage, d->offset,
 +                                   d->pixels_per_row ? d->pixels_per_row : s->w };
 +        op_resources(o, 0);
 +        CMD(p)->has_download = 1;
@@ -5476,35 +5538,59 @@ index 0000000..6c96f39
 +void WG_CopyGPUTextureToTexture(SDL_GPUCopyPass *p, const SDL_GPUTextureLocation *s, const SDL_GPUTextureLocation *d,
 +                                Uint32 w, Uint32 h, Uint32 depth, bool cycle)
 +{
-+    (void)cycle;
 +    if (!s || !d || !texture_region_valid(s->texture, s->mip_level, s->x, s->y, w, h, s->layer, depth) ||
 +        !texture_region_valid(d->texture, d->mip_level, d->x, d->y, w, h, d->layer, depth) ||
-+        s->texture->format != d->texture->format) {
++        texture_current(s->texture)->format != texture_current(d->texture)->format) {
 +        cmd_fail(CMD(p), "invalid texture copy region or format"); return;
 +    }
 +    Op *o = push(CMD(p), OP_COPY_TEXTURE);
-+    if (o) { o->ct = (typeof(o->ct)){ s->texture, d->texture, s->mip_level, s->x, s->y, d->mip_level, d->x, d->y, w, h, s->layer, d->layer }; op_resources(o, 0); }
++    if (o) {
++        WgTextureStorage *src = texture_current(s->texture);
++        texture_ref(src, 0); /* also protects a self-copy while the destination rotates */
++        WgTextureStorage *dst = texture_for_write(d->texture, cycle);
++        if (!dst) { texture_ref(src, 1); cmd_fail(CMD(p), "copy destination cycling failed"); return; }
++        o->ct = (typeof(o->ct)){ src, dst, s->mip_level, s->x, s->y, d->mip_level, d->x, d->y, w, h, s->layer, d->layer };
++        texture_ref(dst, 0);
++    }
 +}
 +void WG_GenerateMipmapsForGPUTexture(SDL_GPUCommandBuffer *c, SDL_GPUTexture *t)
 +{
 +    Op *o = push(c, OP_MIPMAPS);
-+    if (o) { o->mip.tex = t; op_resources(o, 0); }
++    if (o) { o->mip.tex = texture_current(t); op_resources(o, 0); }
 +}
 +void WG_BlitGPUTexture(SDL_GPUCommandBuffer *c, const SDL_GPUBlitInfo *i)
 +{
 +    Op *o = push(c, OP_BLIT);
-+    if (o) { o->blit = (typeof(o->blit)){ i->source, i->destination, i->filter == SDL_GPU_FILTER_LINEAR,
-+                                       i->load_op == SDL_GPU_LOADOP_CLEAR, i->clear_color }; op_resources(o, 0); }
++    if (!o) return;
++    WgTextureStorage *src = texture_current(i->source.texture);
++    texture_ref(src, 0);
++    WgTextureStorage *dst = texture_for_write(i->destination.texture, i->cycle);
++    if (!src || !dst) { texture_ref(src, 1); cmd_fail(c, "invalid blit resource or cycling failure"); return; }
++    o->blit = (typeof(o->blit)){ i->source, i->destination, src, dst, i->filter == SDL_GPU_FILTER_LINEAR,
++        i->load_op == SDL_GPU_LOADOP_CLEAR, i->clear_color };
++    o->blit.src.texture = o->blit.dst.texture = NULL; /* replay uses captured storage */
++    texture_ref(dst, 0);
 +}
 +
 +SDL_GPURenderPass *WG_BeginGPURenderPass(SDL_GPUCommandBuffer *c, const SDL_GPUColorTargetInfo *ct, Uint32 n,
 +                                         const SDL_GPUDepthStencilTargetInfo *ds)
 +{
 +    Op *o = push(c, OP_BEGIN_PASS);
-+    if (o) {
-+        if (n) { o->pass.color = ct[0]; o->pass.has_color = 1; }
-+        if (ds) { o->pass.depth = *ds; o->pass.has_depth = 1; }
-+        op_resources(o, 0);
++    if (!o) return NULL;
++    if (n) {
++        WgTextureStorage *color = texture_for_write(ct[0].texture, ct[0].cycle && ct[0].load_op != SDL_GPU_LOADOP_LOAD);
++        if (!color) { cmd_fail(c, "color target cycling failed"); return NULL; }
++        texture_ref(color, 0);
++        o->pass.color = ct[0]; o->pass.color.texture = NULL;
++        o->pass.has_color = 1; o->pass.color_storage = color;
++    }
++    if (ds) {
++        bool cycle = ds->cycle && ds->load_op != SDL_GPU_LOADOP_LOAD && ds->stencil_load_op != SDL_GPU_LOADOP_LOAD;
++        WgTextureStorage *depth = texture_for_write(ds->texture, cycle);
++        if (!depth) { cmd_fail(c, "depth target cycling failed"); return NULL; }
++        texture_ref(depth, 0);
++        o->pass.depth = *ds; o->pass.depth.texture = NULL;
++        o->pass.has_depth = 1; o->pass.depth_storage = depth;
 +    }
 +    return (SDL_GPURenderPass *)c;
 +}
@@ -5517,13 +5603,13 @@ index 0000000..6c96f39
 +void WG_BindGPUVertexBuffers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUBufferBinding *b, Uint32 n)
 +{
 +    (void)first;
-+    if (n) { Op *o = push(CMD(p), OP_VERTEX_BUFFER); if (o) { o->vb = (typeof(o->vb)){ b[0].buffer, b[0].offset }; op_resources(o, 0); } }
++    if (n) { Op *o = push(CMD(p), OP_VERTEX_BUFFER); if (o) { o->vb = (typeof(o->vb)){ b[0].buffer->storage, b[0].offset }; op_resources(o, 0); } }
 +}
 +void WG_BindGPUIndexBuffer(SDL_GPURenderPass *p, const SDL_GPUBufferBinding *b, SDL_GPUIndexElementSize s)
 +{
 +    (void)s;   /* the renderer only uses 32-bit indices */
 +    Op *o = push(CMD(p), OP_INDEX_BUFFER);
-+    if (o) { o->vb = (typeof(o->vb)){ b->buffer, b->offset }; op_resources(o, 0); }
++    if (o) { o->vb = (typeof(o->vb)){ b->buffer->storage, b->offset }; op_resources(o, 0); }
 +}
 +void WG_BindGPUFragmentSamplers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUTextureSamplerBinding *b, Uint32 n)
 +{
@@ -5531,7 +5617,7 @@ index 0000000..6c96f39
 +    if (!o) return;
 +    o->samplers.first = first;
 +    o->samplers.n = n > WG_MAX_SAMPLERS ? WG_MAX_SAMPLERS : n;
-+    for (uint32_t i = 0; i < o->samplers.n; i++) { o->samplers.tex[i] = b[i].texture; o->samplers.smp[i] = b[i].sampler; }
++    for (uint32_t i = 0; i < o->samplers.n; i++) { o->samplers.tex[i] = texture_current(b[i].texture); o->samplers.smp[i] = b[i].sampler; }
 +    op_resources(o, 0);
 +}
 +static void push_uniform(SDL_GPUCommandBuffer *c, int fragment, const void *data, Uint32 len)
@@ -5604,7 +5690,7 @@ index 0000000..6c96f39
 +    SDL_GPUFence *fence;
 +} Replay;
 +
-+static WGPUTextureView view_of(Replay *r, SDL_GPUTexture *t, uint32_t level, int sampling)
++static WGPUTextureView view_of(Replay *r, WgTextureStorage *t, uint32_t level, int sampling)
 +{
 +    if (t->swapchain) {
 +        if (!r->swap_tex) {
@@ -5679,30 +5765,32 @@ index 0000000..6c96f39
 +
 +    if (begin->pass.has_color) {
 +        const SDL_GPUColorTargetInfo *t = &begin->pass.color;
-+        ca = (WGPURenderPassColorAttachment){ .view = view_of(r, t->texture, t->mip_level, 0),
++        WgTextureStorage *storage = begin->pass.color_storage;
++        ca = (WGPURenderPassColorAttachment){ .view = view_of(r, storage, t->mip_level, 0),
 +            .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED, .loadOp = load_op(t->load_op), .storeOp = store_op(t->store_op),
 +            .clearValue = { t->clear_color.r, t->clear_color.g, t->clear_color.b, t->clear_color.a } };
 +        rp.colorAttachmentCount = 1;
 +        rp.colorAttachments = &ca;
-+        tw = t->texture->swapchain ? s_surface_w : t->texture->w;
-+        th = t->texture->swapchain ? s_surface_h : t->texture->h;
++        tw = storage->swapchain ? s_surface_w : storage->w;
++        th = storage->swapchain ? s_surface_h : storage->h;
 +    }
 +    if (begin->pass.has_depth) {
 +        const SDL_GPUDepthStencilTargetInfo *t = &begin->pass.depth;
-+        da = (WGPURenderPassDepthStencilAttachment){ .view = t->texture->level_views[0],
++        WgTextureStorage *storage = begin->pass.depth_storage;
++        da = (WGPURenderPassDepthStencilAttachment){ .view = storage->level_views[0],
 +            .depthLoadOp = load_op(t->load_op), .depthStoreOp = store_op(t->store_op), .depthClearValue = t->clear_depth };
-+        if (has_stencil(t->texture->format)) {
++        if (has_stencil(storage->format)) {
 +            da.stencilLoadOp = load_op(t->stencil_load_op);
 +            da.stencilStoreOp = store_op(t->stencil_store_op);
 +            da.stencilClearValue = t->clear_stencil;
 +        }
 +        rp.depthStencilAttachment = &da;
-+        if (!tw) { tw = t->texture->w; th = t->texture->h; }
++        if (!tw) { tw = storage->w; th = storage->h; }
 +    }
 +
 +    WGPURenderPassEncoder pe = wgpuCommandEncoderBeginRenderPass(r->enc, &rp);
 +    r->encoded = 1;
-+    SDL_GPUTexture *tex[WG_MAX_SAMPLERS] = {0};
++    WgTextureStorage *tex[WG_MAX_SAMPLERS] = {0};
 +    SDL_GPUSampler *smp[WG_MAX_SAMPLERS] = {0};
 +    uint32_t vs_off = 0, fs_off = 0;
 +    int samplers_dirty = 1;
@@ -5888,7 +5976,7 @@ index 0000000..6c96f39
 +            break;
 +        }
 +        case OP_MIPMAPS: {
-+            SDL_GPUTexture *t = o->mip.tex;
++            WgTextureStorage *t = o->mip.tex;
 +            for (uint32_t face = 0; face < t->layers; face++)
 +            for (uint32_t l = 1; l < t->levels; l++)
 +                fullscreen_pass(r, t->level_views[face * t->levels + l - 1], s_linear_sampler,
@@ -5898,7 +5986,7 @@ index 0000000..6c96f39
 +        }
 +        case OP_BLIT: {
 +            const SDL_GPUBlitRegion *src = &o->blit.src, *dst = &o->blit.dst;
-+            SDL_GPUTexture *s = src->texture, *d = dst->texture;
++            WgTextureStorage *s = o->blit.source, *d = o->blit.destination;
 +            if (!src->w || !src->h || !dst->w || !dst->h || src->mip_level >= s->levels)
 +                break;
 +            WGPUTextureView dv = view_of(r, d, dst->mip_level, 0);
@@ -6105,16 +6193,17 @@ index 0000000..6c96f39
 +
 +bool WG_WaitAndAcquireGPUSwapchainTexture(SDL_GPUCommandBuffer *c, SDL_Window *w, SDL_GPUTexture **t, Uint32 *tw, Uint32 *th)
 +{
-+    static struct SDL_GPUTexture swap = { .swapchain = 1, .levels = 1 };
++    static WgTextureStorage swap_storage = { .swapchain = 1, .levels = 1 };
++    static struct SDL_GPUTexture swap = { .storage = &swap_storage };
 +    SizeArgs a;
 +    (void)c;
 +    window_pixels(w, &a.w, &a.h);
 +    if (a.w != s_surface_w || a.h != s_surface_h)
 +        run_sync(do_configure, &a);
 +    run_sync_ctx(do_frame_wait, NULL);
-+    swap.w = s_surface_w;
-+    swap.h = s_surface_h;
-+    swap.format = s_surface_format;
++    swap_storage.w = s_surface_w;
++    swap_storage.h = s_surface_h;
++    swap_storage.format = s_surface_format;
 +    *t = &swap;
 +    if (tw) *tw = s_surface_w;
 +    if (th) *th = s_surface_h;
@@ -9338,10 +9427,10 @@ index 0000000..4691e41
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..0377186
+index 0000000..62e700d
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1125 @@
+@@ -0,0 +1,1334 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -9493,6 +9582,7 @@ index 0000000..0377186
 +    uint32_t binding_count;
 +    Shade shade;
 +    int passes;
++    int reuse_vertices; /* bind the previously uploaded vertex backing */
 +    int clear_color; uint32_t clear_argb;
 +    int clear_depth; float depth_value;
 +    SDL_Rect scissor;
@@ -9510,14 +9600,16 @@ index 0000000..0377186
 +        vb = SDL_CreateGPUBuffer(dev, &bi);
 +        tb = SDL_CreateGPUTransferBuffer(dev, &ti);
 +    }
-+    memcpy(SDL_MapGPUTransferBuffer(dev, tb, true), d->v, bytes);
-+    SDL_UnmapGPUTransferBuffer(dev, tb);
 +    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
-+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
-+    SDL_GPUTransferBufferLocation from = { .transfer_buffer = tb };
-+    SDL_GPUBufferRegion to = { .buffer = vb, .size = bytes };
-+    SDL_UploadToGPUBuffer(cp, &from, &to, true);
-+    SDL_EndGPUCopyPass(cp);
++    if (!d->reuse_vertices) {
++        memcpy(SDL_MapGPUTransferBuffer(dev, tb, true), d->v, bytes);
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(c);
++        SDL_GPUTransferBufferLocation from = { .transfer_buffer = tb };
++        SDL_GPUBufferRegion to = { .buffer = vb, .size = bytes };
++        SDL_UploadToGPUBuffer(cp, &from, &to, true);
++        SDL_EndGPUCopyPass(cp);
++    }
 +
 +    uint32_t a = d->clear_argb;
 +    SDL_GPUColorTargetInfo ct = { .texture = d->color, .store_op = SDL_GPU_STOREOP_STORE,
@@ -9558,6 +9650,32 @@ index 0000000..0377186
 +}
 +
 +static void draw(const Draw *d) { SDL_SubmitGPUCommandBuffer(record_draw(d)); }
++
++/* Bind pre-uploaded buffers so destination cycling can be tested separately
++ * from transfer-buffer contents and vertex uploads. */
++static SDL_GPUCommandBuffer *record_indexed_binding(SDL_GPUTexture *target, SDL_GPUTexture *depth,
++    SDL_GPUGraphicsPipeline *pipe, SDL_GPUBuffer *vertices, SDL_GPUBuffer *indices, SDL_GPUTexture *white)
++{
++    SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
++    SDL_GPUColorTargetInfo ct = {.texture = target, .load_op = SDL_GPU_LOADOP_CLEAR,
++        .store_op = SDL_GPU_STOREOP_STORE, .clear_color = {0,0,0,1}};
++    SDL_GPUDepthStencilTargetInfo ds = {.texture = depth, .clear_depth = 1,
++        .load_op = SDL_GPU_LOADOP_CLEAR, .store_op = SDL_GPU_STOREOP_STORE,
++        .stencil_load_op = SDL_GPU_LOADOP_CLEAR, .stencil_store_op = SDL_GPU_STOREOP_STORE};
++    SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(c, &ct, 1, &ds);
++    SDL_GPUViewport viewport = {0,0,W,H,0,1};
++    SDL_SetGPUViewport(pass, &viewport); SDL_BindGPUGraphicsPipeline(pass, pipe);
++    SDL_GPUBufferBinding binding = {.buffer = vertices};
++    SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
++    binding.buffer = indices; SDL_BindGPUIndexBuffer(pass, &binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
++    SDL_GPUTextureSamplerBinding sampler = {.texture = white, .sampler = point_wrap};
++    SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
++    float size[4] = {W,H,1,0}; Shade shade = {0};
++    SDL_PushGPUVertexUniformData(c, 0, size, sizeof size);
++    SDL_PushGPUFragmentUniformData(c, 0, &shade, sizeof shade);
++    SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0); SDL_EndGPURenderPass(pass);
++    return c;
++}
 +
 +static uint32_t px(const uint8_t *img, uint32_t x, uint32_t y)   /* BGRA bytes -> 0xAARRGGBB */
 +{
@@ -10406,6 +10524,186 @@ index 0000000..0377186
 +        CHECK(pixel == 0xFF00FF00u, "old readback cannot overwrite a newer transfer mapping");
 +        SDL_ReleaseGPUTransferBuffer(dev, tb);
 +        SDL_ReleaseGPUTexture(dev, first); SDL_ReleaseGPUTexture(dev, second);
++    }
++
++    /* Cycling a destination must preserve an already bound texture. */
++    {
++        SDL_GPUTexture *sample = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++        SDL_GPUTexture *first = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *second = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        uint32_t red = 0xFF0000FFu, blue = 0xFFFF0000u;
++        upload(sample, &red, 1, 1);
++        SgVertex vertices[6];
++        quad(vertices, 0, 0, W, H, 0, 0, 1, 1, 0xFFFFFFFFu, 1);
++        Draw a = {.color = first, .depth = depth, .tex = sample, .pipe = opaque,
++            .v = vertices, .n = 6, .shade = {.tex_size = {1,1}},
++            .clear_color = 1, .clear_argb = 0xFF000000u, .clear_depth = 1, .depth_value = 1};
++        SDL_GPUCommandBuffer *old = record_draw(&a);
++        SDL_GPUTransferBufferCreateInfo ti = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 4};
++        SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++        *(uint32_t *)SDL_MapGPUTransferBuffer(dev, tb, false) = blue;
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCommandBuffer *change = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(change);
++        SDL_GPUTextureTransferInfo from = {.transfer_buffer = tb};
++        SDL_GPUTextureRegion to = {.texture = sample, .w = 1, .h = 1, .d = 1};
++        SDL_UploadToGPUTexture(cp, &from, &to, true); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_SubmitGPUCommandBuffer(change), "submit a cycling destination texture upload");
++        SDL_ReleaseGPUTransferBuffer(dev, tb);
++        a.color = second;
++        draw(&a);
++        download(second, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFF0000FFu, "new draw samples the new blue destination version");
++        CHECK(SDL_SubmitGPUCommandBuffer(old), "submit the earlier draw after the destination cycles");
++        download(first, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFFFF0000u, "old draw samples its bound red destination version");
++        SDL_ReleaseGPUTexture(dev, sample); SDL_ReleaseGPUTexture(dev, first); SDL_ReleaseGPUTexture(dev, second);
++    }
++
++    /* Cycling the vertex destination preserves an earlier binding. */
++    {
++        SDL_GPUTexture *seed = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *first = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *second = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SgVertex red[6], blue[6];
++        quad(red, 0, 0, W, H, 0, 0, 0, 0, 0xFFFF0000u, 0);
++        quad(blue, 0, 0, W, H, 0, 0, 0, 0, 0xFF0000FFu, 0);
++        Draw a = {.color = seed, .depth = depth, .tex = white, .pipe = opaque,
++            .v = red, .n = 6, .clear_color = 1, .clear_argb = 0xFF000000u,
++            .clear_depth = 1, .depth_value = 1};
++        draw(&a); download(seed, 0, W, H, img);
++        a.color = first; a.reuse_vertices = 1;
++        SDL_GPUCommandBuffer *old = record_draw(&a);
++        a.color = second; a.reuse_vertices = 0; a.v = blue;
++        draw(&a); download(second, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFF0000FFu, "new draw uses the cycled blue vertex destination");
++        CHECK(SDL_SubmitGPUCommandBuffer(old), "submit an earlier vertex binding after destination cycling");
++        download(first, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFFFF0000u, "old draw retains its bound red vertex destination");
++        SDL_ReleaseGPUTexture(dev, seed); SDL_ReleaseGPUTexture(dev, first); SDL_ReleaseGPUTexture(dev, second);
++    }
++
++    /* Every destination-writing operation must choose a new backing while
++     * an earlier command still reads the original. Release public handles
++     * before replay to check that records own versions, not containers. */
++    for (int mode = 0; mode < 3; mode++) {
++        const char *names[] = {"copy", "blit", "color clear"};
++        SDL_GPUTextureUsageFlags usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
++        SDL_GPUTexture *target = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, usage, 1, 1, 1);
++        SDL_GPUTexture *blue = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, usage, 1, 1, 1);
++        SDL_GPUTexture *before = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, usage, 1, 1, 1);
++        SDL_GPUTexture *after = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, usage, 1, 1, 1);
++        uint32_t red_pixel = 0xFFFF0000u, blue_pixel = 0xFF0000FFu, pixel;
++        upload(target, &red_pixel, 1, 1); upload(blue, &blue_pixel, 1, 1);
++        SDL_GPUCommandBuffer *old = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(old);
++        SDL_GPUTextureLocation from = {.texture = target}, to = {.texture = before};
++        SDL_CopyGPUTextureToTexture(cp, &from, &to, 1, 1, 1, false); SDL_EndGPUCopyPass(cp);
++        SDL_GPUCommandBuffer *change = SDL_AcquireGPUCommandBuffer(dev);
++        if (mode == 0) {
++            cp = SDL_BeginGPUCopyPass(change); from.texture = blue; to.texture = target;
++            SDL_CopyGPUTextureToTexture(cp, &from, &to, 1, 1, 1, true); SDL_EndGPUCopyPass(cp);
++        } else if (mode == 1) {
++            SDL_GPUBlitInfo info = {.source = {.texture = blue, .w = 1, .h = 1},
++                .destination = {.texture = target, .w = 1, .h = 1}, .load_op = SDL_GPU_LOADOP_CLEAR,
++                .filter = SDL_GPU_FILTER_NEAREST, .cycle = true};
++            SDL_BlitGPUTexture(change, &info);
++        } else {
++            SDL_GPUColorTargetInfo ct = {.texture = target, .load_op = SDL_GPU_LOADOP_CLEAR,
++                .store_op = SDL_GPU_STOREOP_STORE, .clear_color = {0,0,1,1}, .cycle = true};
++            SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(change, &ct, 1, NULL);
++            SDL_EndGPURenderPass(pass);
++        }
++        SDL_GPUCommandBuffer *fresh = SDL_AcquireGPUCommandBuffer(dev);
++        cp = SDL_BeginGPUCopyPass(fresh); from.texture = target; to.texture = after;
++        SDL_CopyGPUTextureToTexture(cp, &from, &to, 1, 1, 1, false); SDL_EndGPUCopyPass(cp);
++        SDL_ReleaseGPUTexture(dev, target); SDL_ReleaseGPUTexture(dev, blue);
++        CHECK(SDL_SubmitGPUCommandBuffer(change) && SDL_SubmitGPUCommandBuffer(fresh) && SDL_SubmitGPUCommandBuffer(old),
++            "%s cycles a bound destination after public handle release", names[mode]);
++        download(before, 0, 1, 1, &pixel);
++        CHECK(pixel == red_pixel, "%s preserves the old destination contents", names[mode]);
++        download(after, 0, 1, 1, &pixel);
++        CHECK(pixel == blue_pixel, "%s exposes the new destination contents", names[mode]);
++        SDL_ReleaseGPUTexture(dev, before); SDL_ReleaseGPUTexture(dev, after);
++    }
++    {
++        SDL_GPUTexture *z = make_tex(depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, W, H, 1);
++        SDL_GPUTexture *before = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *after = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUCommandBuffer *seed = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUDepthStencilTargetInfo ds = {.texture = z, .clear_depth = 1, .load_op = SDL_GPU_LOADOP_CLEAR,
++            .store_op = SDL_GPU_STOREOP_STORE, .stencil_load_op = SDL_GPU_LOADOP_CLEAR,
++            .stencil_store_op = SDL_GPU_STOREOP_STORE};
++        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(seed, NULL, 0, &ds); SDL_EndGPURenderPass(pass);
++        CHECK(SDL_SubmitGPUCommandBuffer(seed), "seed original depth backing");
++        SgVertex red[6]; quad(red, 0, 0, W, H, 0, 0, 0, 0, 0xFFFF0000u, 0);
++        SDL_GPUGraphicsPipeline *less = flat_pipe(0, 15, 1, SDL_GPU_COMPAREOP_LESS);
++        Draw a = {.color = before, .depth = z, .tex = white, .pipe = less, .v = red, .n = 6,
++            .clear_color = 1, .clear_argb = 0xFF000000u};
++        SDL_GPUCommandBuffer *old = record_draw(&a);
++        SDL_GPUCommandBuffer *change = SDL_AcquireGPUCommandBuffer(dev);
++        ds.clear_depth = 0; ds.cycle = true;
++        pass = SDL_BeginGPURenderPass(change, NULL, 0, &ds); SDL_EndGPURenderPass(pass);
++        CHECK(SDL_SubmitGPUCommandBuffer(change), "cycle a bound depth-stencil destination");
++        a.color = after; draw(&a);
++        SDL_ReleaseGPUTexture(dev, z);
++        CHECK(SDL_SubmitGPUCommandBuffer(old), "old depth attachment survives public handle release");
++        download(before, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFFFF0000u, "old depth version accepts the red draw");
++        download(after, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFF000000u, "new depth version rejects the red draw");
++        SDL_ReleaseGPUTexture(dev, before); SDL_ReleaseGPUTexture(dev, after);
++    }
++
++    {
++        SgVertex vertices[12]; uint32_t indices[6] = {0,1,2,3,4,5};
++        quad(vertices, 0, 0, W, H, 0, 0, 0, 0, 0xFFFF0000u, 0);
++        quad(vertices + 6, 0, 0, W, H, 0, 0, 0, 0, 0xFF0000FFu, 0);
++        SDL_GPUBufferCreateInfo bi = {.usage = SDL_GPU_BUFFERUSAGE_VERTEX, .size = sizeof vertices};
++        SDL_GPUBuffer *vb = SDL_CreateGPUBuffer(dev, &bi);
++        bi.usage = SDL_GPU_BUFFERUSAGE_INDEX; bi.size = sizeof indices;
++        SDL_GPUBuffer *ib = SDL_CreateGPUBuffer(dev, &bi);
++        SDL_GPUTransferBufferCreateInfo ti = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
++            .size = sizeof vertices + sizeof indices};
++        SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++        uint8_t *bytes = SDL_MapGPUTransferBuffer(dev, tb, false);
++        memcpy(bytes, vertices, sizeof vertices); memcpy(bytes + sizeof vertices, indices, sizeof indices);
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCommandBuffer *seed = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(seed);
++        SDL_GPUTransferBufferLocation from = {.transfer_buffer = tb};
++        SDL_GPUBufferRegion to = {.buffer = vb, .size = sizeof vertices};
++        SDL_UploadToGPUBuffer(cp, &from, &to, false);
++        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices;
++        SDL_UploadToGPUBuffer(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_SubmitGPUCommandBuffer(seed), "seed indexed destination versions");
++        SDL_GPUTexture *before = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *after = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUCommandBuffer *old = record_indexed_binding(before, depth, opaque, vb, ib, white);
++        for (int i=0;i<6;i++) indices[i] += 6;
++        bytes = SDL_MapGPUTransferBuffer(dev, tb, true);
++        memcpy(bytes + sizeof vertices, indices, sizeof indices); SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCommandBuffer *change = SDL_AcquireGPUCommandBuffer(dev); cp = SDL_BeginGPUCopyPass(change);
++        SDL_UploadToGPUBuffer(cp, &from, &to, true); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_SubmitGPUCommandBuffer(change), "cycle a bound index buffer destination");
++        SDL_GPUCommandBuffer *fresh = record_indexed_binding(after, depth, opaque, vb, ib, white);
++        SDL_ReleaseGPUBuffer(dev, vb); SDL_ReleaseGPUBuffer(dev, ib); SDL_ReleaseGPUTransferBuffer(dev, tb);
++        CHECK(SDL_SubmitGPUCommandBuffer(fresh) && SDL_SubmitGPUCommandBuffer(old), "old and new index bindings survive public handle release");
++        download(before, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFFFF0000u, "old index backing selects the red vertices");
++        download(after, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFF0000FFu, "new index backing selects the blue vertices");
++        SDL_ReleaseGPUTexture(dev, before); SDL_ReleaseGPUTexture(dev, after);
 +    }
 +
 +    /* 10. Presenting: copy the flipped target to a sampled texture, then

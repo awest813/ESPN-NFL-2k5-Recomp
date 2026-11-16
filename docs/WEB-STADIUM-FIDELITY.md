@@ -160,8 +160,8 @@ non-cycling writes to unreferenced ranges, and an old readback completing after 
 Launcher/OPFS and audio/video/input integration run against the rebuilt game.
 The headless retail case in `build-web-tests/transfer-cycle-retail/report.json`
 rendered the stadium, intro and players without browser/GPU exceptions. Known
-guest TODO diagnostics remain. GPU destination-resource cycling remains a
-separate open check.
+guest TODO diagnostics remain. GPU destination-resource cycling was still a
+separate open check at that checkpoint; the follow-up below covers it.
 
 The supplied files in Downloads now allow a local xemu reference boot. An
 isolated configuration and copied EEPROM/ROM files are under ignored
@@ -172,3 +172,43 @@ That run used 128 MB and surface scale 2; a later configuration explicitly
 selects 64 MB and scale 1 for repeatable checks. Desktop interaction stopped
 when the user pressed Escape. A controlled scene-matched comparison has not
 yet been completed, so these captures do not establish rendering/audio parity.
+
+## Destination texture and buffer versions
+
+The destination follow-up reproduced two more exact-pixel failures on both
+hardware WebGPU and SwiftShader: cycling a texture upload changed a previously
+bound red texture to blue, and cycling a vertex upload changed an earlier red
+draw to blue. The failing logs are
+`build-web-tests/destination-cycle-probe-expanded-before.log` and
+`destination-cycle-probe-expanded-linux-before.log`.
+
+Public texture/buffer handles now select a current backing allocation. Recorded
+operations retain that specific backing, independently of subsequent cycling
+and public-handle release. A cycling write creates a new allocation when the
+current one is referenced by a recording; allocation failure preserves the old
+allocation and rejects the recording. Copy/blit sources are retained before
+rotating their destination, including when the handles alias. Bind-group cache
+entries identify the captured texture version. Clear passes capture their
+color/depth versions, while LOAD passes retain their existing contents.
+
+Permanent exact-pixel tests cover texture, vertex and index uploads, texture
+copies, blits, color clears and depth-stencil clears. They submit old and new
+recordings in reverse order and release public handles before replay. The full
+suite passes on hardware Chrome and Chromium/SwiftShader without WebGPU
+validation errors (`destination-cycle-final-hardware.log` and
+`destination-cycle-final-linux.log`). Launcher/OPFS and audio/video/controller
+integration checks pass against the rebuilt game. A fresh pinned checkout
+reproduces all 51 patched files without changing the submodule revision.
+
+The retail case in `build-web-tests/destination-cycle-retail/report.json`
+completed stadium entry, a sideline coach shot and coin toss without recorded
+browser/GPU exceptions on hardware Chrome 157. Visual inspection found large
+stray polygons behind the coach in `stadium-intro.png`; this is an unresolved
+geometry fault, and its relationship to resource cycling is unproven. The
+later `players-gameplay.png` shows players, referee, stadium and Demo Mode text
+at coin toss. This run is partial, not a visual-fidelity pass. Frame-rate
+samples below 30 FPS and audio drops also remain in the runtime log.
+
+These checks establish resource-version correctness for the covered cases.
+They do not establish full stadium/staff-model fidelity, audio/gameplay parity,
+or a sustained 30 FPS floor.
