@@ -845,3 +845,35 @@ blocks. Scene and host load are uncontrolled; it establishes no retail
 continuity improvement. Executable DSP remains opt-in. Original-Xbox output
 matching, complete stadium/staff fidelity and a sustained 30 FPS floor remain
 unfinished.
+
+## Audio timing diagnostics and remaining stalls
+
+The APU utilization counter now accumulates elapsed time around each actual
+condition-variable wait. Previously it sampled the clock after refreshing the
+loop's timestamp, usually recording zero sleep. The deterministic production-
+throttle test now checks a complete 5 ms wait, repeated early wakeups,
+accumulation across frames and no fictitious sleep during paused/late frames,
+alongside the existing exact one-hour pacing test. Removing the new accounting
+makes the 5 ms assertion fail (`apu-pacing/before.log`).
+
+The producer diagnostic also recognizes a one-frame WebAudio queue as dry:
+the worklet needs a second source frame for interpolation. Its old zero-only
+check could report no underruns while the worklet repeatedly ran dry with four
+queued bytes. The counter is now named `starved_submissions` to distinguish
+producer arrivals from worklet underrun blocks. Tests execute the real PCM
+submission function after startup and verify starvation counts of 1, 1, 2 for
+queue depths of 1, 2, 0 frames, preserving the supplied samples. The worklet
+remains the authoritative measure of dry render blocks at its output rate.
+Wasm pacing/submission/worklet tests, native APU compilation, browser linking
+and fresh 74-file runtime patch reproduction pass.
+
+The 132-second profiled capture (`dsp-dispatch-stall-profile/report.json`)
+reaches Tennessee player introductions with rendered uniforms and readable
+career graphics. It reports no browser/GPU/DSP faults but ends with 778
+worklet underrun blocks. Around 97–112 seconds, five-second windows process
+only 6,663–6,702 APU frames against the required 7,500, with 4.4–4.8 seconds
+spent processing frames. The recorded worst frame includes 29.1 ms in VP;
+other windows record DSP delays, and shorter IRQ waits also occur. Host
+scheduling and instrumentation remain uncontrolled. This narrows the next
+investigation to frame-processing throughput and scheduling as well as IRQ
+latency; it does not establish an audio-continuity fix or complete fidelity.

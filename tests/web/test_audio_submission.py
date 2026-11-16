@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import re
 
 root = Path(__file__).resolve().parents[2]
 source = (root / 'external/xboxrecomp/src/apu/apu_xaudio2.c').read_text(encoding='utf-8')
@@ -29,13 +30,26 @@ static uint32_t web_audio_put(const int16_t *samples,uint32_t count) {
 }
 static void SDL_LockMutex(void *m) { (void)m; }
 static void SDL_UnlockMutex(void *m) { (void)m; }
-static Uint64 SDL_GetTicks(void) { return 1; }
+static Uint64 test_ticks=1;
+static Uint64 SDL_GetTicks(void) { return test_ticks; }
 static int SDL_GetAudioStreamQueued(void *s) { (void)s;abort(); }
 static int SDL_PutAudioStreamData(void *s,const void *p,int n) { (void)s;(void)p;(void)n;abort(); }
 /* SUBMIT */
-int main(void) {
+int main(int argc,char **argv) {
     int16_t pcm[1024][2];
     for(int i=0;i<1024;i++) {pcm[i][0]=(int16_t)(100+i);pcm[i][1]=(int16_t)(-100-i);}
+    if(argc>1) {
+        /* After startup, one retained frame is dry; two frames are readable. */
+        queued=2048;
+        for(int i=0;i<51;i++){written=0;assert(xa2_submit_samples(&pcm[0][0],1024));}
+        const uint32_t depths[]={1,2,0};
+        for(unsigned i=0;i<3;i++) {
+            queued=depths[i];written=0;test_ticks+=10000;
+            assert(xa2_submit_samples(&pcm[0][0],1024));
+            assert(!memcmp(output,pcm,sizeof pcm));
+        }
+        return 0;
+    }
     for(queued=0;queued<=2048;queued+=512) {
         written=calls=0;
         assert(xa2_submit_samples(&pcm[0][0],1024)==1);
@@ -58,3 +72,8 @@ out.mkdir(parents=True, exist_ok=True)
 subprocess.run([shutil.which('emcc') or 'emcc', str(out / 'test.c'), '-O2',
                 '-sENVIRONMENT=node', '-o', str(out / 'test.js')], check=True)
 subprocess.run([shutil.which('node') or 'node', str(out / 'test.js')], check=True)
+diagnostic = subprocess.run([shutil.which('node') or 'node', str(out / 'test.js'), 'diagnostics'],
+                            check=True, capture_output=True, text=True)
+counts = re.findall(r'starved_submissions=(\d+) queued_bytes=(\d+)', diagnostic.stderr)
+assert counts == [('1', '4'), ('1', '8'), ('2', '0')], diagnostic.stderr
+print('ok: producer starvation distinguishes one retained frame from two readable frames')

@@ -22,9 +22,11 @@ typedef struct {
 } MCPXAPUState;
 static int64_t now_us;
 static unsigned waits;
+static bool early_wake;
 static int64_t qemu_clock_get_us(int clock) { (void)clock; return now_us; }
 static void qemu_cond_timedwait(int *cond,int *lock,int ms) {
-    (void)cond;(void)lock;assert(ms>0);now_us+=(int64_t)ms*1000;waits++;
+    (void)cond;(void)lock;assert(ms>0);
+    now_us+=early_wake ? 500 : (int64_t)ms*1000;waits++;
 }
 /* THROTTLE */
 int main(void) {
@@ -46,8 +48,21 @@ int main(void) {
     throttle(&d);assert(d.next_frame_time_us==before+5333); /* Bounded catch-up. */
     now_us=d.next_frame_time_us+64001;before=now_us;
     throttle(&d);assert(d.next_frame_time_us==before+5333); /* Rebase phase too. */
+    int64_t wait_start=now_us;
     throttle(&d);assert(waits && now_us<d.next_frame_time_us); /* Actually waits. */
-    puts("PASS APU throttle: exact one-hour pacing, frame divisor, catch-up, rebase and wait");
+    assert(d.sleep_acc_us==now_us-wait_start && d.sleep_acc_us==5000);
+    /* Signals/spurious wakes can return before the requested timeout. Count
+     * each real wait once, preserving accumulated sleep from earlier frames. */
+    early_wake=true;wait_start=now_us;unsigned old_waits=waits;
+    int old_sleep=d.sleep_acc_us;
+    throttle(&d);assert(waits>old_waits+1);
+    assert(d.sleep_acc_us==old_sleep+now_us-wait_start);
+    /* A paused or behind-schedule producer never adds fictitious sleep. */
+    old_sleep=d.sleep_acc_us;d.pause_requested=true;throttle(&d);
+    assert(d.sleep_acc_us==old_sleep);
+    d.pause_requested=false;now_us=d.next_frame_time_us+1000;throttle(&d);
+    assert(d.sleep_acc_us==old_sleep);
+    puts("PASS APU throttle: exact one-hour pacing, catch-up, rebase, actual sleep and early wakes");
 }
 '''.replace('/* THROTTLE */', function)
 out = root / 'build-web-tests/apu-pacing'
