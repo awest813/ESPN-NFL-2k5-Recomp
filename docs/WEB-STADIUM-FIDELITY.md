@@ -1,9 +1,10 @@
 # Stadium and staff rendering checks
 
 Original-Xbox scene/audio matching, complete game-mode fidelity and a sustained
-30 FPS floor remain unfinished. The current APU GP/EP implementation bypasses
-DSP programs; original effects processing is still missing. The chronological
-checks below document specific behavior and limitations.
+30 FPS floor remain unfinished. Default audio still bypasses DSP programs.
+An opt-in GP/EP path now executes uploaded programs, but its continuity and
+original-Xbox output matching remain unfinished. The chronological checks
+below document specific behavior and limitations.
 
 November 8, 2026. Retail USA disc in Chrome 156 on Windows, hardware WebGPU
 on Intel `gen-12hp`, development O1 link and the default 30 FPS cap. The
@@ -689,3 +690,51 @@ GP/EP MMIO, scratch/FIFO wiring, reset/bootstrap transitions and frame dispatch
 still use the previous bypass and need integration. These tests do not prove
 all DSP instructions, complete retail audio, original-Xbox parity or a minimum
 frame rate. No retail effects or performance improvement is claimed here.
+
+## Opt-in GP/EP execution bridge
+
+`RECOMP_APU_DSP=1` now connects the executable processors to the APU. The bridge
+adapts xemu's pinned `gp_ep.c`: GP/EP X/Y/P windows, the GP mixbuffer alias,
+reset/bootstrap transitions, page-scattered scratch transfers, circular FIFOs,
+GP processing each VP frame and EP processing every eight frames. Transfers
+use `apu_phys` so contiguous Xbox allocations resolve through the physical
+window. DSP memory reads take the same frame-boundary lock handoff as writers.
+Processor allocations are released after the APU thread stops, and partial
+initialization failure is cleaned up.
+
+Unused DSP execution credit now expires at idle. The old `dsp_run` retained
+positive cycle credit after early idle, accumulating extra credit across
+frames. Intentionally non-idling firmware hits an explicit diagnostic ceiling
+instead of keeping the APU lock forever; processor state is retained and the
+overrun is reported. That ceiling is not a hardware clock model or a complete
+DMA timing implementation. Unsupported EP PCM packet sizes and invalid FIFO
+ranges are reported, and retail audit classification treats these DSP faults
+as failures.
+
+The production bridge/MMIO regression runs uploaded firmware that doubles all
+32 left/right GP samples and idles, then runs EP firmware that starts planar-
+to-interleaved DMA and produces an exact 256-sample stereo PCM packet. It checks
+24-bit memory windows, a two-page noncontiguous bootstrap, disabled-mode
+isolation, code upload, idle credit, EP scheduling, FIFO cursor wrap, reset and
+non-idling firmware reporting. Wasm undefined-behavior checks, Linux address/
+undefined-behavior sanitizers, native Windows/MSVC and the actual native APU
+build pass. The full browser game links.
+
+The four-minute retail capture (`build-web-tests/gp-ep-retail/report.json`)
+reaches New York at Cincinnati, its stadium introduction, coin toss and active
+gameplay. It records no browser/GPU/audio processor failures or logged DSP
+faults, but 16,745 worklet underrun blocks, zero dropped producer submissions
+and a maximum 132.0 ms pipeline interval. This is seriously discontinuous
+playback, not acceptable real-time audio.
+
+A second capture (`build-web-tests/gp-ep-instruction-profile/report.json`)
+adds instruction counts correlated with the same worst pipeline frame. It
+confirms actual guest program execution: steady GP samples show approximately
+8,350 instructions, with about 7,100 EP instructions on its scheduled frames.
+It still records 1,796 underrun blocks in 132 seconds and a largest 26.5 ms
+pipeline interval, with no logged DSP faults. Capture durations, scenes and
+host load differ; these counts do not establish a performance improvement.
+The path stays opt-in. Full DSP instruction/effects conformance, original-Xbox
+audio matching, continuity and a sustained 30 FPS floor remain open.
+Legacy bed/commentary gain controls also still need mapping to the executable
+DSP's routing; this path currently outputs the guest program's PCM directly.

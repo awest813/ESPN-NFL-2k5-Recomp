@@ -1,10 +1,19 @@
 diff --git a/src/apu/CMakeLists.txt b/src/apu/CMakeLists.txt
 --- a/src/apu/CMakeLists.txt
 +++ b/src/apu/CMakeLists.txt
-@@ -9,8 +9,12 @@
+@@ -2,15 +2,19 @@
+ # Extracted from xemu (https://github.com/xemu-project/xemu)
+ #
+ # Voice Processor (VP): ADPCM/PCM decode, sample mixing, envelopes, filters
+-# Global Processor (GP): Stub - effects bypass
+-# Encode Processor (EP): Stub - direct mixbin passthrough
++# GP/EP: executable DSP path via RECOMP_APU_DSP=1; default legacy mixdown
+
+ add_library(xbox_apu STATIC
      apu_core.c
      apu_vp.c
      apu_dsp.c
++    apu_gp_ep.c
 +    dsp/dsp.c
 +    dsp/dsp_cpu.c
 +    dsp/dsp_dma.c
@@ -3076,7 +3085,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      mcpx_debug_end_frame();
  }
-@@ -494,12 +527,27 @@
+@@ -494,12 +527,28 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -3095,6 +3104,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +    int64_t profile_since = 0, profile_total = 0, profile_max = 0;
 +    int64_t worst_vp = 0, worst_dsp = 0, worst_output = 0, worst_voice_wait = 0;
 +    unsigned worst_voice_wait_count = 0;
++    unsigned worst_gp_instructions = 0, worst_ep_instructions = 0;
 +    unsigned profile_frames = 0;
      qemu_mutex_lock(&d->lock);
 
@@ -3104,7 +3114,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          if (d->pause_requested && !g_test_tone.active && !g_mixer_active_count) {
              d->is_idle = true;
              qemu_cond_signal(&d->idle_cond);
-@@ -571,7 +619,36 @@
+@@ -571,7 +620,40 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -3121,6 +3131,8 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +                    worst_output = d->profile.output_us;
 +                    worst_voice_wait = d->profile.voice_wait_us;
 +                    worst_voice_wait_count = d->profile.voice_wait_count;
++                    worst_gp_instructions = d->profile.gp_instructions;
++                    worst_ep_instructions = d->profile.ep_instructions;
 +                }
 +                profile_frames++;
 +                if (!profile_since) profile_since = started;
@@ -3128,28 +3140,32 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +                    fprintf(stderr, "[APU-PERF] frames=%u busy=%.1fms max=%.1fms over=%.1fms\n",
 +                            profile_frames, profile_total / 1000.0, profile_max / 1000.0,
 +                            (now - profile_since) / 1000.0);
-+                    fprintf(stderr, "[APU-STAGES] worst-vp=%.1fms dsp=%.1fms output=%.1fms voice-wait=%.1fms waits=%u\n",
++                    fprintf(stderr, "[APU-STAGES] worst-vp=%.1fms dsp=%.1fms output=%.1fms voice-wait=%.1fms waits=%u gp-inst=%u ep-inst=%u\n",
 +                            worst_vp / 1000.0, worst_dsp / 1000.0, worst_output / 1000.0,
-+                            worst_voice_wait / 1000.0, worst_voice_wait_count);
++                            worst_voice_wait / 1000.0, worst_voice_wait_count,
++                            worst_gp_instructions, worst_ep_instructions);
 +                    profile_since = now;
 +                    profile_total = profile_max = 0;
 +                    profile_frames = 0;
 +                    worst_vp = worst_dsp = worst_output = worst_voice_wait = 0;
 +                    worst_voice_wait_count = 0;
++                    worst_gp_instructions = worst_ep_instructions = 0;
 +                }
 +            }
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,6 +698,7 @@
+@@ -621,7 +703,9 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
 +    InterlockedExchange(&d->sample_count, 0);
      mcpx_apu_vp_reset(d);
++    mcpx_apu_dsp_reset(d);
 
      if (d->gp.dsp) {
-@@ -648,6 +726,8 @@
+         memset((void *)d->gp.dsp->core.pram_opcache, 0,
+@@ -648,6 +732,8 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
@@ -3158,7 +3174,72 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -766,9 +846,33 @@
+@@ -665,6 +751,19 @@
+
+     /* Init DSP (GP/EP - stubbed) */
+     mcpx_apu_dsp_init(d);
++    if (!d->gp.dsp || !d->ep.dsp) {
++        fprintf(stderr, "[APU] DSP allocation failed\n");
++        dsp_destroy(d->gp.dsp);
++        dsp_destroy(d->ep.dsp);
++        mcpx_apu_vp_finalize(d);
++        qemu_mutex_unlock(&d->lock);
++        qemu_cond_destroy(&d->cond);
++        qemu_cond_destroy(&d->idle_cond);
++        qemu_mutex_destroy(&d->lock);
++        free(d);
++        g_state = NULL;
++        return NULL;
++    }
+
+     /* Init software mixer for DirectSound bridge */
+     mixer_init();
+@@ -705,6 +804,8 @@
+     qemu_thread_join(&d->apu_thread);
+     mcpx_apu_vp_finalize(d);
+     mcpx_apu_monitor_finalize(d);
++    dsp_destroy(d->gp.dsp);
++    dsp_destroy(d->ep.dsp);
+
+     free(d);
+     g_state = NULL;
+@@ -737,8 +838,12 @@
+         if (is_write) {
+             mcpx_apu_write(d, addr, val, size);
+         }
+-    }
+-    /* GP (0x30000) and EP (0x50000) regions ignored for now */
++    } else if (d->dsp_enabled && is_write) {
++        if (addr >= 0x30000 && addr < 0x40000)
++            mcpx_apu_dsp_write(d, true, (uint32_t)addr - 0x30000, (uint32_t)val, size);
++        else if (addr >= 0x50000 && addr < 0x60000)
++            mcpx_apu_dsp_write(d, false, (uint32_t)addr - 0x50000, (uint32_t)val, size);
++    }
+ }
+
+ /* ============================================================
+@@ -749,6 +854,20 @@
+ uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size)
+ {
+     if (!d) return 0;
++    if (d->dsp_enabled && ((addr >= 0x30000 && addr < 0x40000) ||
++                          (addr >= 0x50000 && addr < 0x60000))) {
++        /* DSP RAM is modified by the frame thread. Readers must take the
++         * same frame-boundary handoff as writers before touching it. */
++        qatomic_fetch_add(&d->mmio_waiters, 1);
++        qemu_mutex_lock(&d->lock);
++        bool gp = addr < 0x40000;
++        uint64_t result = mcpx_apu_dsp_read(d, gp,
++                            (uint32_t)addr - (gp ? 0x30000 : 0x50000), size);
++        if (qatomic_fetch_add(&d->mmio_waiters, -1) == 1)
++            qemu_cond_signal(&d->cond);
++        qemu_mutex_unlock(&d->lock);
++        return result;
++    }
+     if (addr >= 0x20000 && addr < 0x30000) {
+         return mcpx_apu_vp_read(d, addr - 0x20000, size);
+     } else if (addr < 0x20000) {
+@@ -766,9 +885,33 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -3324,7 +3405,13 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
      QemuCond cond;
      QemuCond idle_cond;
      bool pause_requested;
-@@ -476,10 +367,17 @@
+@@ -472,14 +363,24 @@
+     MCPXAPUVPState vp;
+     MCPXAPUGPState gp;
+     MCPXAPUEPState ep;
++    bool dsp_enabled;
++    unsigned dsp_overruns;
+
      uint32_t regs[0x20000];
 
      int ep_frame_div;
@@ -3338,10 +3425,28 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
 +        bool enabled;
 +        int64_t vp_us, dsp_us, output_us, voice_wait_us;
 +        unsigned voice_wait_count;
++        unsigned gp_instructions, ep_instructions;
 +    } profile;
 
      struct {
          struct {
+@@ -513,10 +414,15 @@
+ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
+ void mcpx_apu_vp_reset(MCPXAPUState *d);
+
+-/* DSP functions (stubbed) */
++/* DSP functions; executable GP/EP is opt-in during integration. */
+ void mcpx_apu_dsp_init(MCPXAPUState *d);
+ void mcpx_apu_update_dsp_preference(MCPXAPUState *d);
+ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
++void mcpx_apu_dsp_real_init(MCPXAPUState *d);
++void mcpx_apu_dsp_reset(MCPXAPUState *d);
++void mcpx_apu_dsp_real_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
++uint32_t mcpx_apu_dsp_read(MCPXAPUState *d, bool gp, uint32_t addr, unsigned size);
++void mcpx_apu_dsp_write(MCPXAPUState *d, bool gp, uint32_t addr, uint32_t value, unsigned size);
+
+ /* Debug globals */
+ extern MCPXAPUState *g_state;
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c
@@ -4397,10 +4502,10 @@ index 0000000..8095135
 +Public License instead of this License.
 diff --git a/src/apu/dsp/README.md b/src/apu/dsp/README.md
 new file mode 100644
-index 0000000..c934361
+index 0000000..3da7b79
 --- /dev/null
 +++ b/src/apu/dsp/README.md
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,47 @@
 +# Standalone DSP56300 core
 +
 +Source: [xemu a34bb0f8c229a9aabda46ac69184285112f65841](https://github.com/xemu-project/xemu/tree/a34bb0f8c229a9aabda46ac69184285112f65841/hw/xbox/mcpx/apu/dsp),
@@ -4431,11 +4536,23 @@ index 0000000..c934361
 +sanitizers or MSVC. Instruction encodings follow the
 +[DSP56300 Family Manual](https://www.nxp.com/docs/en/reference-manual/DSP56300FM.pdf).
 +
-+This adds an executable core, not full DSP conformance or retail effects
-+support. GP/EP MMIO, guest scratch/FIFO wiring, reset/bootstrap transitions and
-+frame execution still need connection to the APU. `apu_dsp.c` continues its
-+existing bypass until that integration is implemented and verified. Tests of
-+this core cannot establish the game's complete audio output or performance.
++The opt-in `RECOMP_APU_DSP=1` path now connects GP/EP MMIO, guest scratch/FIFO
++transfers, reset/bootstrap transitions and frame execution in `apu_gp_ep.c`.
++It reuses the APU physical-window resolver, serializes DSP reads with the frame
++thread, and releases processor storage at shutdown. Unused cycles expire when
++a processor idles instead of accumulating credit across frames.
++
++`tests/web/test_gp_ep.py` also executes uploaded stereo GP and EP programs
++through the production MMIO dispatcher and bridge, including scattered-page
++bootstrap, transformed GP mixbins, EP PCM output, eight-subframe scheduling,
++FIFO wrap and reset. Intentionally non-idling firmware exercises an explicit
++diagnostic execution ceiling; this is a stability limit, not a hardware clock
++model. Real-time overruns and unsupported FIFO packets are audit failures.
++
++The default continues the legacy bypass. Retail firmware now executes in the
++opt-in path, but continuity, full instruction/effects conformance, original-Xbox
++output matching and performance remain unproven. Tests of this core and bridge
++cannot establish complete retail audio fidelity.
 diff --git a/src/apu/dsp/debug.h b/src/apu/dsp/debug.h
 new file mode 100644
 index 0000000..befef22
@@ -4481,10 +4598,10 @@ index 0000000..befef22
 +#endif
 diff --git a/src/apu/dsp/dsp.c b/src/apu/dsp/dsp.c
 new file mode 100644
-index 0000000..44be03b
+index 0000000..5dd85b7
 --- /dev/null
 +++ b/src/apu/dsp/dsp.c
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,250 @@
 +/*
 + * MCPX DSP emulator
 + *
@@ -4658,7 +4775,12 @@ index 0000000..44be03b
 +            dsp->dma.control |= DMA_CONTROL_STOPPED;
 +        }
 +
-+        if (dsp->core.is_idle) break;
++        if (dsp->core.is_idle) {
++            /* Time left in an idle frame expires; it is not extra execution
++             * credit for future frames (which could overflow save_cycles). */
++            dsp->save_cycles = 0;
++            break;
++        }
 +    }
 +
 +    /* FIXME: DMA timing be done cleaner. Xbox enables running
@@ -17952,6 +18074,469 @@ index 0000000..99f4757
 +  Ty Coon, President of Vice
 +
 +That's all there is to it!
+diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
+--- a/src/apu/apu_dsp.c
++++ b/src/apu/apu_dsp.c
+@@ -1,17 +1,17 @@
+ /*
+- * MCPX APU DSP (GP/EP) - Stub implementation
++ * MCPX APU DSP mode selection and legacy mixdown
+  *
+  * The DSP Global Processor (GP) and Encode Processor (EP) handle effects
+- * processing (reverb, chorus, etc.) and final output encoding. The full
+- * DSP is ~3000 lines of DSP56300 emulation code.
+- *
+- * For initial audio, we bypass the DSP entirely:
++ * processing (reverb, chorus, etc.) and final output encoding. The executable
++ * path in apu_gp_ep.c is selected with RECOMP_APU_DSP=1 during integration.
++ *
++ * The default legacy path bypasses the DSP:
+  * - VP mixbins are passed directly to the EP output
+  * - GP effects processing is skipped
+  * - The EP just copies mixbin 0/1 (front L/R) to the monitor buffer
+  *
+- * This gives us basic voice playback without effects. The DSP can be
+- * connected later for reverb, EQ, and other processing.
++ * The executable path needs further retail fidelity and performance checks
++ * before it can replace this legacy path by default.
+  *
+  * Copyright (c) 2012 espes
+  * Copyright (c) 2019-2025 Matt Borgerson
+@@ -126,6 +126,13 @@
+
+ void mcpx_apu_dsp_init(MCPXAPUState *d)
+ {
++    const char *enable = getenv("RECOMP_APU_DSP");
++    d->dsp_enabled = enable && atoi(enable) != 0;
++    if (d->dsp_enabled) {
++        mcpx_apu_dsp_real_init(d);
++        fprintf(stderr, "[APU] DSP GP/EP executable path enabled\n");
++        return;
++    }
+     /* Allocate minimal DSP state for GP and EP.
+      * We need these to exist so reset doesn't crash,
+      * but they won't actually run DSP programs. */
+@@ -158,6 +165,10 @@
+ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+                          float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+ {
++    if (d->dsp_enabled) {
++        mcpx_apu_dsp_real_frame(d, mixbins);
++        return;
++    }
+     /* Bypass DSP: take mixbin 0 (front-left) and mixbin 1 (front-right)
+      * and write them directly to the monitor frame buffer as the final
+      * EP output.
+diff --git a/src/apu/apu_gp_ep.c b/src/apu/apu_gp_ep.c
+new file mode 100644
+index 0000000..384d5b4
+--- /dev/null
++++ b/src/apu/apu_gp_ep.c
+@@ -0,0 +1,404 @@
++/*
++ * QEMU MCPX Audio Processing Unit implementation
++ *
++ * Copyright (c) 2012 espes
++ * Copyright (c) 2018-2019 Jannik Vogel
++ * Copyright (c) 2019-2025 Matt Borgerson
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "apu_state.h"
++#include "fpconv.h"
++#define DPRINTF(...) ((void)0)
++
++static const int16_t ep_silence[256][2] = { 0 };
++
++static void scatter_gather_rw(MCPXAPUState *d, hwaddr sge_base,
++                              unsigned int max_sge, uint8_t *ptr, uint32_t addr,
++                              size_t len, bool dir)
++{
++    unsigned int page_entry = addr / TARGET_PAGE_SIZE;
++    unsigned int offset_in_page = addr % TARGET_PAGE_SIZE;
++    unsigned int bytes_to_copy = TARGET_PAGE_SIZE - offset_in_page;
++
++    while (len > 0) {
++        assert(page_entry <= max_sge);
++
++        uint32_t prd_address = ldl_le_phys(address_space_memory,
++                                           sge_base + page_entry * 8 + 0);
++        // uint32_t prd_control = ldl_le_phys(address_space_memory,
++        //                                     sge_base + page_entry * 8 + 4);
++
++        hwaddr paddr = prd_address + offset_in_page;
++
++        if (bytes_to_copy > len) {
++            bytes_to_copy = len;
++        }
++
++        assert(((uint32_t)paddr & 0x03ffffffu) + bytes_to_copy <= 0x04000000u);
++
++        if (dir) {
++            memcpy(apu_phys(paddr), ptr, bytes_to_copy);
++
++        } else {
++            memcpy(ptr, apu_phys(paddr), bytes_to_copy);
++        }
++
++        ptr += bytes_to_copy;
++        len -= bytes_to_copy;
++
++        /* After the first iteration, we are page aligned */
++        page_entry += 1;
++        bytes_to_copy = TARGET_PAGE_SIZE;
++        offset_in_page = 0;
++    }
++}
++
++static void gp_scratch_rw(void *opaque, uint8_t *ptr, uint32_t addr, size_t len,
++                          bool dir)
++{
++    MCPXAPUState *d = opaque;
++    // fprintf(stderr, "GP %s scratch 0x%x bytes (0x%x words) at %x (0x%x words)\n", dir ? "writing to" : "reading from", len, len/4, addr, addr/4);
++    scatter_gather_rw(d, d->regs[NV_PAPU_GPSADDR], d->regs[NV_PAPU_GPSMAXSGE],
++                      ptr, addr, len, dir);
++}
++
++static void ep_scratch_rw(void *opaque, uint8_t *ptr, uint32_t addr, size_t len,
++                          bool dir)
++{
++    MCPXAPUState *d = opaque;
++    // fprintf(stderr, "EP %s scratch 0x%x bytes (0x%x words) at %x (0x%x words)\n", dir ? "writing to" : "reading from", len, len/4, addr, addr/4);
++    scatter_gather_rw(d, d->regs[NV_PAPU_EPSADDR], d->regs[NV_PAPU_EPSMAXSGE],
++                      ptr, addr, len, dir);
++}
++
++static uint32_t circular_scatter_gather_rw(MCPXAPUState *d, hwaddr sge_base,
++                                           unsigned int max_sge, uint8_t *ptr,
++                                           uint32_t base, uint32_t end,
++                                           uint32_t cur, size_t len, bool dir)
++{
++    if (end <= base || cur < base || cur >= end) {
++        fprintf(stderr,"[APU-DSP] invalid circular FIFO %08X..%08X at %08X\n",base,end,cur);
++        return cur;
++    }
++    while (len > 0) {
++        unsigned int bytes_to_copy = end - cur;
++
++        if (bytes_to_copy > len) {
++            bytes_to_copy = len;
++        }
++
++        DPRINTF("circular scatter gather %s in range 0x%x - 0x%x at 0x%x of "
++                "length 0x%x / 0x%lx bytes\n",
++                dir ? "write" : "read", base, end, cur, bytes_to_copy, len);
++
++        assert((cur >= base) && ((cur + bytes_to_copy) <= end));
++        scatter_gather_rw(d, sge_base, max_sge, ptr, cur, bytes_to_copy, dir);
++
++        ptr += bytes_to_copy;
++        len -= bytes_to_copy;
++
++        /* After the first iteration we might have to wrap */
++        cur += bytes_to_copy;
++        if (cur >= end) {
++            assert(cur == end);
++            cur = base;
++        }
++    }
++
++    return cur;
++}
++
++static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
++                       size_t len, bool dir)
++{
++    MCPXAPUState *d = opaque;
++    uint32_t base;
++    uint32_t end;
++    hwaddr cur_reg;
++    if (dir) {
++        assert(index < GP_OUTPUT_FIFO_COUNT);
++        base = GET_MASK(d->regs[NV_PAPU_GPOFBASE0 + 0x10 * index],
++                        NV_PAPU_GPOFBASE0_VALUE);
++        end = GET_MASK(d->regs[NV_PAPU_GPOFEND0 + 0x10 * index],
++                       NV_PAPU_GPOFEND0_VALUE);
++        cur_reg = NV_PAPU_GPOFCUR0 + 0x10 * index;
++    } else {
++        assert(index < GP_INPUT_FIFO_COUNT);
++        base = GET_MASK(d->regs[NV_PAPU_GPIFBASE0 + 0x10 * index],
++                        NV_PAPU_GPOFBASE0_VALUE);
++        end = GET_MASK(d->regs[NV_PAPU_GPIFEND0 + 0x10 * index],
++                       NV_PAPU_GPOFEND0_VALUE);
++        cur_reg = NV_PAPU_GPIFCUR0 + 0x10 * index;
++    }
++
++    uint32_t cur = GET_MASK(d->regs[cur_reg], NV_PAPU_GPOFCUR0_VALUE);
++
++    // fprintf(stderr, "GP %s fifo #%d, base = %x, end = %x, cur = %x, len = %x\n",
++    //     dir ? "writing to" : "reading from", index,
++    //     base, end, cur, len);
++
++    /* DSP hangs if current >= end; but forces current >= base */
++    assert(cur < end);
++    if (cur < base) {
++        cur = base;
++    }
++
++    cur = circular_scatter_gather_rw(d,
++        d->regs[NV_PAPU_GPFADDR], d->regs[NV_PAPU_GPFMAXSGE],
++        ptr, base, end, cur, len, dir);
++
++    SET_MASK(d->regs[cur_reg], NV_PAPU_GPOFCUR0_VALUE, cur);
++}
++
++static bool ep_sink_samples(MCPXAPUState *d, uint8_t *ptr, size_t len)
++{
++    if (d->monitor.point == MCPX_APU_DEBUG_MON_AC97) {
++        return false;
++    } else if ((d->monitor.point == MCPX_APU_DEBUG_MON_EP) ||
++        (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP)) {
++        if (len != sizeof(d->monitor.frame_buf)) {
++            fprintf(stderr,"[APU-DSP] unsupported EP PCM packet: %zu bytes\n",len);
++            return false;
++        }
++        memcpy(d->monitor.frame_buf, ptr, len);
++    }
++
++    return true;
++}
++
++static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
++                       size_t len, bool dir)
++{
++    MCPXAPUState *d = opaque;
++    uint32_t base;
++    uint32_t end;
++    hwaddr cur_reg;
++    if (dir) {
++        assert(index < EP_OUTPUT_FIFO_COUNT);
++        base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
++                        NV_PAPU_GPOFBASE0_VALUE);
++        end = GET_MASK(d->regs[NV_PAPU_EPOFEND0 + 0x10 * index],
++                       NV_PAPU_GPOFEND0_VALUE);
++        cur_reg = NV_PAPU_EPOFCUR0 + 0x10 * index;
++    } else {
++        assert(index < EP_INPUT_FIFO_COUNT);
++        base = GET_MASK(d->regs[NV_PAPU_EPIFBASE0 + 0x10 * index],
++                        NV_PAPU_GPOFBASE0_VALUE);
++        end = GET_MASK(d->regs[NV_PAPU_EPIFEND0 + 0x10 * index],
++                       NV_PAPU_GPOFEND0_VALUE);
++        cur_reg = NV_PAPU_EPIFCUR0 + 0x10 * index;
++    }
++
++    uint32_t cur = GET_MASK(d->regs[cur_reg], NV_PAPU_GPOFCUR0_VALUE);
++
++    // fprintf(stderr, "EP %s fifo #%d, base = %x, end = %x, cur = %x, len = %x\n",
++    //     dir ? "writing to" : "reading from", index,
++    //     base, end, cur, len);
++
++    if (dir && index == 0) {
++        bool did_sink = ep_sink_samples(d, ptr, len);
++        if (did_sink) {
++            /* Since we are sinking, push silence out */
++            assert(len <= sizeof(ep_silence));
++            ptr = (uint8_t*)ep_silence;
++        }
++    }
++
++    /* DSP hangs if current >= end; but forces current >= base */
++    if (cur >= end) {
++        if (end <= base) {
++            fprintf(stderr,"[APU-DSP] invalid EP FIFO range %08X..%08X\n",base,end);
++            return;
++        }
++        cur = base + (cur - base) % (end - base);
++    }
++    if (cur < base) {
++        cur = base;
++    }
++
++    cur = circular_scatter_gather_rw(d,
++        d->regs[NV_PAPU_EPFADDR], d->regs[NV_PAPU_EPFMAXSGE],
++        ptr, base, end, cur, len, dir);
++
++    SET_MASK(d->regs[cur_reg], NV_PAPU_GPOFCUR0_VALUE, cur);
++}
++
++static void proc_rst_write(DSPState *dsp, uint32_t oldval, uint32_t val)
++{
++    if (!(val & NV_PAPU_GPRST_GPRST) || !(val & NV_PAPU_GPRST_GPDSPRST)) {
++        dsp_reset(dsp);
++    } else if (
++        (!(oldval & NV_PAPU_GPRST_GPRST) || !(oldval & NV_PAPU_GPRST_GPDSPRST))
++        && ((val & NV_PAPU_GPRST_GPRST) && (val & NV_PAPU_GPRST_GPDSPRST))) {
++        dsp_bootstrap(dsp);
++    }
++}
++
++/* GP/EP windows are byte addressed; each DSP word occupies four bytes. */
++static bool dsp_window(bool gp, uint32_t addr, char *space, uint32_t *word)
++{
++    if (addr < (gp ? 0x4000u : 0x3000u)) {
++        *space='X'; *word=addr/4; return true;
++    }
++    if (gp && addr >= 0x5000 && addr < 0x6000) {
++        *space='X'; *word=GP_DSP_MIXBUF_BASE+(addr-0x5000)/4; return true;
++    }
++    if (addr >= 0x6000 && addr < (gp ? 0x8000u : 0x6400u)) {
++        *space='Y'; *word=(addr-0x6000)/4; return true;
++    }
++    if (addr >= 0xa000 && addr < 0xe000) {
++        *space='P'; *word=(addr-0xa000)/4; return true;
++    }
++    return false;
++}
++
++uint32_t mcpx_apu_dsp_read(MCPXAPUState *d, bool gp, uint32_t addr, unsigned size)
++{
++    if (size != 4 || (addr & 3) || addr >= 0x10000) return 0;
++    char space; uint32_t word;
++    DSPState *dsp=gp ? d->gp.dsp : d->ep.dsp;
++    if (dsp_window(gp,addr,&space,&word)) return dsp_read_memory(dsp,space,word);
++    return gp ? d->gp.regs[addr] : d->ep.regs[addr];
++}
++
++void mcpx_apu_dsp_write(MCPXAPUState *d, bool gp, uint32_t addr, uint32_t value, unsigned size)
++{
++    if (size != 4 || (addr & 3) || addr >= 0x10000) return;
++    char space; uint32_t word;
++    DSPState *dsp=gp ? d->gp.dsp : d->ep.dsp;
++    uint32_t *regs=gp ? d->gp.regs : d->ep.regs;
++    if (dsp_window(gp,addr,&space,&word)) {
++        dsp_write_memory(dsp,space,word,value & 0xffffffu);
++    } else {
++        if (addr == NV_PAPU_GPRST) {
++            proc_rst_write(dsp,regs[addr],value);
++            if (!gp) d->ep_frame_div=0;
++        }
++        regs[addr]=value;
++    }
++}
++
++static void run_processor_frame(MCPXAPUState *d, DSPState *dsp)
++{
++    dsp_start_frame(dsp);
++    dsp->core.is_idle=false;
++    dsp->core.cycle_count=0;
++    /* Diagnostic ceiling, not a hardware clock model. Preserve processor
++     * state on overrun instead of hanging the APU lock forever. */
++    for (unsigned batch=0;batch<1024;batch++) {
++        dsp_run(dsp,1000);
++        if (dsp->core.is_idle) return;
++    }
++    d->dsp_overruns++;
++    if ((d->dsp_overruns & (d->dsp_overruns-1)) == 0)
++        fprintf(stderr,"[APU-DSP] %s frame did not idle; pc=%06X overruns=%u\n",
++                dsp->is_gp ? "GP" : "EP",dsp->core.pc,d->dsp_overruns);
++}
++
++void mcpx_apu_dsp_real_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
++{
++    d->profile.gp_instructions=d->profile.ep_instructions=0;
++    /* Write VP results to the GP DSP MIXBUF */
++    for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
++        uint32_t base = GP_DSP_MIXBUF_BASE + mixbin * NUM_SAMPLES_PER_FRAME;
++        for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
++            dsp_write_memory(d->gp.dsp, 'X', base + sample,
++                             float_to_24b(mixbins[mixbin][sample]));
++        }
++    }
++
++    bool ep_enabled = (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPRST) &&
++                      (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPDSPRST);
++
++    /* Run GP */
++    if ((d->gp.regs[NV_PAPU_GPRST] & NV_PAPU_GPRST_GPRST) &&
++        (d->gp.regs[NV_PAPU_GPRST] & NV_PAPU_GPRST_GPDSPRST)) {
++        run_processor_frame(d,d->gp.dsp);
++        g_dbg.gp.cycles = d->gp.dsp->core.cycle_count;
++        d->profile.gp_instructions=d->gp.dsp->core.cycle_count;
++
++        if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
++            (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
++            int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
++            for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++                uint32_t l = dsp_read_memory(d->gp.dsp, 'X', 0x1400 + i);
++                d->monitor.frame_buf[off + i][0] = l >> 8;
++                uint32_t r =
++                    dsp_read_memory(d->gp.dsp, 'X', 0x1400 + 1 * 0x20 + i);
++                d->monitor.frame_buf[off + i][1] = r >> 8;
++            }
++        }
++    }
++
++    /* Run EP */
++    if ((d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPRST) &&
++        (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPDSPRST)) {
++        if (d->ep_frame_div % 8 == 0) {
++            run_processor_frame(d,d->ep.dsp);
++            g_dbg.ep.cycles = d->ep.dsp->core.cycle_count;
++            d->profile.ep_instructions=d->ep.dsp->core.cycle_count;
++        }
++    }
++}
++
++void mcpx_apu_dsp_real_init(MCPXAPUState *d)
++{
++    d->gp.dsp = dsp_init(d, gp_scratch_rw, gp_fifo_rw);
++    if (!d->gp.dsp) return;
++    for (int i = 0; i < DSP_PRAM_SIZE; i++) {
++        d->gp.dsp->core.pram[i] = 0xCACACACA;
++    }
++    memset((void *)d->gp.dsp->core.pram_opcache, 0,
++           sizeof(d->gp.dsp->core.pram_opcache));
++    d->gp.dsp->is_gp = true;
++    d->gp.dsp->core.is_gp = true;
++    d->gp.dsp->core.is_idle = false;
++    d->gp.dsp->core.cycle_count = 0;
++
++    d->ep.dsp = dsp_init(d, ep_scratch_rw, ep_fifo_rw);
++    if (!d->ep.dsp) return;
++    for (int i = 0; i < DSP_PRAM_SIZE; i++) {
++        d->ep.dsp->core.pram[i] = 0xCACACACA;
++    }
++    memset((void *)d->ep.dsp->core.pram_opcache, 0,
++           sizeof(d->ep.dsp->core.pram_opcache));
++    for (int i = 0; i < DSP_XRAM_SIZE; i++) {
++        d->ep.dsp->core.xram[i] = 0xCACACACA;
++    }
++    for (int i = 0; i < DSP_YRAM_SIZE; i++) {
++        d->ep.dsp->core.yram[i] = 0xCACACACA;
++    }
++    d->ep.dsp->is_gp = false;
++    d->ep.dsp->core.is_gp = false;
++    d->ep.dsp->core.is_idle = false;
++    d->ep.dsp->core.cycle_count = 0;
++
++    /* Until DSP is more performant, a switch to decide whether or not we should
++     * use the full audio pipeline or not.
++     */
++    d->monitor.point=MCPX_APU_DEBUG_MON_GP_OR_EP;
++    d->gp.realtime=d->ep.realtime=true;
++}
++
++void mcpx_apu_dsp_reset(MCPXAPUState *d)
++{
++    if (!d->dsp_enabled) return;
++    memset(d->gp.regs,0,sizeof(d->gp.regs));
++    memset(d->ep.regs,0,sizeof(d->ep.regs));
++    dsp_reset(d->gp.dsp);
++    dsp_reset(d->ep.dsp);
++    d->dsp_overruns=0;
++}
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c

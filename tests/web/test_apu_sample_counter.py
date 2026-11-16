@@ -55,6 +55,7 @@ static void qemu_cond_broadcast(int *c) { (void)c; }
 static void stl_le_phys(void *memory,uint32_t addr,uint32_t value) { (void)memory;(void)addr;(void)value; }
 static void mcpx_apu_update_dsp_preference(MCPXAPUState *d) { (void)d; }
 static void mcpx_apu_vp_reset(MCPXAPUState *d) { (void)d; }
+static void mcpx_apu_dsp_reset(MCPXAPUState *d) { (void)d; }
 static void mcpx_debug_begin_frame(void) {}
 static void mcpx_debug_end_frame(void) {}
 static void mcpx_apu_vp_frame(MCPXAPUState *d,float bins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]) { (void)d;(void)bins;vp_frames++; }
