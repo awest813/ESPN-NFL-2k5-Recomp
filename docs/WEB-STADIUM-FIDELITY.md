@@ -1306,3 +1306,52 @@ This change covers SDL GPU/WebGPU texture uploads. CPU software sampling,
 the native D3D11 upload path, remaining formats/volume textures and complete
 Xbox LOD behavior still need fidelity work. These component checks do not
 establish original-Xbox scene/audio parity or a sustained 30 FPS floor.
+Build and GitHub Pages both passed for this change at `e152e4b`.
+
+## Signed texture LOD bias and sampler lifetime
+
+The SDL GPU path ignored the low 13 bits of each texture FILTER register.
+These bits encode a signed 5.8 mip-level bias, as described by
+[xemu's conversion helper](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/texture.h).
+The renderer now passes all four stage biases to the fragment shader and
+applies them to both 2D and cube sampling. Shader-side bias works on Vulkan
+and WebGPU without separate sampler-cache entries. Border coverage follows
+the same biased mip level and minification/magnification decision.
+
+The extra vector brings the 3D uniform block to 512 bytes. The queue's
+existing compile-time bound and adjacent-draw canary fixture verify that
+the complete block fits without overwriting neighboring draws. The first
+72-case GPU fixture reproduced 32 wrong mip selections before the fix.
+The final fixture checks 176 exact pixels on each of Vulkan and hardware
+WebGPU: all four stages, 2D/cube sampling, two starting LODs, signed extrema,
+fractional nearest-level selection and fractional trilinear blending.
+The browser suite also checks two biased-border results. Standalone checks
+cover all 8,192 bias encodings on each stage. Vulkan checks pass address and
+undefined-behavior sanitizers with driver leak checking disabled.
+
+The new browser fixture also exposed an unimplemented sampler-release API:
+the call fell through to native SDL with a WebGPU wrapper and aborted with
+an invalid function-table index. The adapter now owns that API, retains
+samplers in recorded commands and releases them on replay/cancellation.
+Final destruction runs on the GPU server, invalidating cached material
+bindings before freeing the sampler. This follows
+[SDL's deferred-release contract](https://wiki.libsdl.org/SDL3/SDL_ReleaseGPUSampler).
+Browser checks cover both 2D and cube draws released before submission,
+fresh LOD0 samplers after release, and released samplers in cancelled draws.
+The complete WebGPU suite reports no validation errors.
+
+Native kernel and browser game builds pass, and a fresh pinned tree
+reproduces all 79 patched files. Guest LOD clamps, software filtering and
+the native D3D11 texture path remain separate fidelity gaps.
+
+The 246-second `lod-bias-retail/report.json` run reaches Jacksonville at
+Indianapolis live play, including a scoring sequence, stadium roof/crowd,
+sideline staff and kickoff views. Negative bias appears in 2,943,009 /
+429,332 / 482,084 / 234,762 sampled-stage batches for stages 0..3; no
+positive-bias batch appears in these intervals. This confirms use by the
+retail title, including its cube/reflection stages. No browser/GPU/DSP
+fault is recorded. Five-second frame averages after 150 seconds range from
+24.4 to 30.0 FPS, with 237 worklet underrun blocks. Different scenes and
+host contention prevent a performance comparison with the preceding run.
+The audit remains partial: full Xbox parity, all modes/stadiums, continuous
+audio and the 30 FPS floor are not established.

@@ -64,7 +64,13 @@ int main(void) {
     CHECK(rect->info.max_lod == 0); /* linear RTTs have no guest mip chain */
     CHECK(get(0,6,2,0x06,3,3) != rect); /* format affects sampler key */
     CHECK(get(3,2,1,0x06,3,3) == font);
+    for(unsigned st=0;st<4;st++)for(unsigned raw=0;raw<8192;raw++) {
+        s_tex_reg[(0x1B14+st*0x40-NV_TEX_FIRST)/4]=0x01030000u|raw;
+        float expected=(float)(raw<4096?(int)raw:(int)raw-8192)/256.0f;
+        CHECK(sg_texture_lod_bias(st)==expected);
+    }
     puts("PASS independent min/mag filters, seven min modes, linear RTT LOD0 and sampler reuse");
+    puts("PASS all 8192 signed 5.8 LOD-bias encodings on each of four stages");
     return 0;
 }
 '''
