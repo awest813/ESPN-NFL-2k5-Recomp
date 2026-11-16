@@ -4504,10 +4504,10 @@ index 0000000..8095135
 +Public License instead of this License.
 diff --git a/src/apu/dsp/README.md b/src/apu/dsp/README.md
 new file mode 100644
-index 0000000..d5749a1
+index 0000000..6026042
 --- /dev/null
 +++ b/src/apu/dsp/README.md
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,70 @@
 +# Standalone DSP56300 core
 +
 +Source: [xemu a34bb0f8c229a9aabda46ac69184285112f65841](https://github.com/xemu-project/xemu/tree/a34bb0f8c229a9aabda46ac69184285112f65841/hw/xbox/mcpx/apu/dsp),
@@ -4529,6 +4529,15 @@ index 0000000..d5749a1
 +17,000 exact Python-integer vectors and two million comparisons against the
 +original limb algorithm. Its optional `--benchmark` builds an unsanitized
 +Wasm executable separately from the correctness instrumentation.
++
++Program-word caches retain typed execution handlers for both parallel and
++nonparallel instructions. Instruction-only family selection happens on a
++cache miss; operands, addressing, ALU operations and retirement remain dynamic.
++P-memory writes, DMA program uploads and bootstrap clear affected cached
++handlers. `test_dsp_dispatch.py` compares every core byte except this private
++cache against the previous dispatcher in 141,664 cold/warm cases, plus
++multi-step programs, interrupt retirement and self-modifying code. These are
++equivalence checks, not a claim of complete hardware instruction conformance.
 +
 +DMA transfer storage is owned by each processor and freed by `dsp_destroy`.
 +The original signed `-1` capacity compares as an unsigned maximum on Wasm32,
@@ -4969,10 +4978,10 @@ index 0000000..56c5da2
 +}
 diff --git a/src/apu/dsp/dsp_cpu.c b/src/apu/dsp/dsp_cpu.c
 new file mode 100644
-index 0000000..ab9044a
+index 0000000..193a519
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1345 @@
+@@ -0,0 +1,1366 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -5420,6 +5429,37 @@ index 0000000..ab9044a
 +    return opcache[tag].entry;
 +}
 +
++/* Resolve instruction-only dispatch once per program word. Operand reads,
++ * address updates, ALU ordering and retirement still run on every step. */
++static void execute_register_update(dsp_core_t *dsp)
++{
++    uint32_t dummy;
++    emu_calc_ea(dsp, (dsp->cur_inst >> 8) & 31u, &dummy);
++    opcodes_alu[dsp->cur_inst & 255u](dsp);
++}
++
++static dsp_exec_func_t decode_executor(uint32_t instruction)
++{
++    if (instruction < 0x100000) {
++        const OpcodeEntry *op = lookup_opcode(instruction);
++        if (op->emu_func) return op->emu_func;
++        DPRINTF("%x - %s\n", instruction, op->name);
++        return emu_undefined;
++    }
++    if ((instruction >> 20) == 2) {
++        if ((instruction & 0xffff00) == 0x200000)
++            return opcodes_alu[instruction & 255u];
++        if ((instruction & 0xffe000) == 0x204000)
++            return execute_register_update;
++        if ((instruction & 0xfc0000) == 0x200000)
++            return emu_pm_2_2;
++        return emu_pm_3;
++    }
++    if ((instruction >> 20) == 4)
++        return (instruction & 0xf40000) == 0x400000 ? emu_pm_4x : emu_pm_5;
++    return opcodes_parmove[(instruction >> 20) & 15u];
++}
++
 +static uint16_t disasm_instruction(dsp_core_t* dsp, dsp_trace_disasm_t mode)
 +{
 +    dsp->disasm_mode = mode;
@@ -5600,22 +5640,12 @@ index 0000000..ab9044a
 +        }
 +    }
 +
-+    if (dsp->cur_inst < 0x100000) {
-+        const OpcodeEntry *op = dsp->pram_opcache[dsp->pc];
-+        if (op == NULL) {
-+            op = lookup_opcode(dsp->cur_inst);
-+            dsp->pram_opcache[dsp->pc] = op;
-+        }
-+        if (op->emu_func) {
-+            op->emu_func(dsp);
-+        } else {
-+            DPRINTF("%x - %s\n", dsp->cur_inst, op->name);
-+            emu_undefined(dsp);
-+        }
-+    } else {
-+        /* Do parallel move read */
-+        opcodes_parmove[(dsp->cur_inst>>20) & BITMASK(4)](dsp);
++    dsp_exec_func_t execute = dsp->pram_opcache[dsp->pc];
++    if (execute == NULL) {
++        execute = decode_executor(dsp->cur_inst);
++        dsp->pram_opcache[dsp->pc] = execute;
 +    }
++    execute(dsp);
 +
 +    /* Disasm current instruction ? (trace mode only) */
 +    if (tracing && disasm_return) {
@@ -6320,10 +6350,10 @@ index 0000000..ab9044a
 +}
 diff --git a/src/apu/dsp/dsp_cpu.h b/src/apu/dsp/dsp_cpu.h
 new file mode 100644
-index 0000000..4cffd26
+index 0000000..7a47d0d
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,149 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -6370,6 +6400,7 @@ index 0000000..4cffd26
 +} dsp_interrupt_t;
 +
 +typedef struct dsp_core_s dsp_core_t;
++typedef void (*dsp_exec_func_t)(dsp_core_t *core);
 +
 +struct dsp_core_s {
 +    bool is_gp;
@@ -6389,7 +6420,7 @@ index 0000000..4cffd26
 +    uint32_t xram[DSP_XRAM_SIZE];
 +    uint32_t yram[DSP_YRAM_SIZE];
 +    uint32_t pram[DSP_PRAM_SIZE];
-+    const void *pram_opcache[DSP_PRAM_SIZE];
++    dsp_exec_func_t pram_opcache[DSP_PRAM_SIZE];
 +
 +    uint32_t mixbuffer[DSP_MIXBUFFER_SIZE];
 +

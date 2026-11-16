@@ -80,6 +80,13 @@ int main(void) {
     write_node(d,NODE_CONTROL_DIRECTION|(0xe<<5)|(1<<10)|(1<<4),2,0x100,6,128,8);
     uint16_t a,b;memcpy(&a,scratch+134,2);memcpy(&b,scratch+128,2);
     assert(a==0x1234 && b==0xfedc && dsp_read_memory(d,'X',0x204)==2);
+    /* A program-memory DMA upload must invalidate an already cached move. */
+    dsp_write_memory(d,'P',0,0x44f400);dsp_write_memory(d,'P',1,1);
+    dsp_reset(d);dsp_step(d);assert(d->core.registers[DSP_REG_X0]==1);
+    uint32_t replacement=0x200013;memcpy(scratch+64,&replacement,4); /* CLR A */
+    write_node(d,(0xf<<5)|(2<<10),1,0x2800,0,64,4);
+    d->core.pc=0;d->core.registers[DSP_REG_A1]=0x123456;
+    dsp_step(d);assert(d->core.registers[DSP_REG_A1]==0 && d->core.pc==1);
     dsp_destroy(d);
     puts("PASS DSP56300: uploaded signed sample program, REP, code patch, bootstrap, frame IRQ, idle, scratch/FIFO DMA and circular wrap");
 }

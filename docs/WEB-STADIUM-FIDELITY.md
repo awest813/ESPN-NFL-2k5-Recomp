@@ -804,3 +804,44 @@ processes each consuming more than one CPU core. This limits conclusions about
 scheduling cost; it does not erase the observed discontinuities. The DSP path
 remains opt-in, and full original-Xbox matching, smooth playback and a sustained
 30 FPS floor remain unfinished.
+
+## Cached DSP execution handlers
+
+The interpreter now caches typed execution handlers for every program word,
+including parallel moves. Pure ALU, register-update and move-family selection
+is resolved on cache misses. Operand reads, addressing, instruction effects,
+cycle accounting, REP/DO and interrupt retirement still execute normally.
+Program writes invalidate their slot before the next execution; this includes
+DMA uploads and instructions that overwrite themselves. Bootstrap clears the
+cache. The cache occupies the same number of pointer slots as before.
+
+The new dispatch regression compares all core state except the private cache
+against the previous dispatcher in 141,664 cold/warm cases and two 2,000-step
+programs. It also checks software interrupts, changed extension words,
+cross-family uploads and self-modifying MOVEM. A separate wrapper regression
+checks DMA invalidation of an already executed program word. Wasm undefined-
+behavior checks, native Linux address/undefined-behavior checks, Windows/MSVC,
+the native APU build, GP/EP integration and the complete browser build pass.
+The persisted runtime patch reproduces all 74 files from a fresh pinned tree.
+
+Two private retail snapshots contain an 8,351-instruction GP frame and a
+7,119-instruction EP frame, with their scratch/FIFO transactions and complete
+before/after state. Both published and candidate release Wasm cores replay
+every transaction with identical output bytes, memory, registers, DMA state
+and cycle counts. Repeated replay retains only valid decoded handlers; all
+comparisons remain enabled independently of NDEBUG. These snapshots contain
+game data and are not published. Temporary capture instrumentation and its
+filesystem export were removed before the normal browser rebuild.
+
+Seven alternating same-process rounds of 1,000 frame replays give a GP median
+of 129.684 ms before and 104.369 ms after, about 19.5% less execution time.
+EP improves in every pair, but host contention makes timing noisy: paired
+reductions range from roughly 12% to 42%. This measures captured-frame DSP
+execution with checked I/O, not whole-game performance or hardware accuracy.
+
+The four-minute browser capture (`dsp-cached-dispatch-gameplay/report.json`)
+records no browser/GPU/DSP faults but still reports 2,632 worklet underrun
+blocks. Scene and host load are uncontrolled; it establishes no retail
+continuity improvement. Executable DSP remains opt-in. Original-Xbox output
+matching, complete stadium/staff fidelity and a sustained 30 FPS floor remain
+unfinished.
