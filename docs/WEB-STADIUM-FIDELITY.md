@@ -1478,3 +1478,53 @@ scenes prevent attributing this range to the branch fix. Absence of a flag
 diagnostic in this run does not prove that particular branch executed; the
 compiled component regression supplies the positive branch evidence. Full
 Xbox fidelity, continuous audio and a sustained 30 FPS floor remain open.
+
+### Filtering in pre-transformed HUD/text draws
+
+The pre-transformed SDL GPU fragment shader previously used `texelFetch`
+at level zero, bypassing the guest sampler. Unlike the 3D path, these draws
+therefore ignored linear filtering, authored mip selection, mirror addressing
+and border colours; negative repeat coordinates were clamped before wrapping.
+This affected the rendering path used by menus, HUD elements and text.
+
+These draws now sample through the configured GPU sampler with signed LOD
+bias, independent min/mag filtering and the authored mip chain. The existing
+fractional sampler clamps also apply. Software border coverage follows the
+same filter, mip and LOD choices as the 3D shader. Point-filter boundary
+correction remains, without shifting bilinear weights. Integer colour
+modulation and the final alpha comparison remain after texture sampling.
+Texture alpha-kill now tests the floating sample before 8-bit rounding, so
+a positive filtered alpha below half an 8-bit step is not discarded.
+
+Native executor and browser shader checks cover 128 patterned pixel cases:
+repeat, mirror, edge clamp and coloured border; negative/interior/outside
+coordinates; magnification/minification with opposite min/mag settings.
+Five more cases check authored mip selection with negative/positive bias.
+Two alpha-kill cases distinguish an exact zero from a positive sub-byte alpha.
+They create the fractional value through shader border coverage, avoiding
+an assumption that every backend retains sub-byte UNORM filter precision.
+An independent texel-domain reference supplies the expected patterned pixels.
+A controlled comparison with the previously published shader fails 60 of the
+128 filter/address cases and three of the five mip cases. The fixed shader
+passes, while the existing point-reference scenes remain checked with
+explicit point sampler settings. Their negative-repeat reference now wraps
+instead of preserving the old software-only clamp behavior.
+
+This change does not implement full register combiners or interpolated vertex
+colour in pre-transformed draws. The CPU fallback still uses its simplified
+point sampler. Component checks do not establish original-Xbox scene parity.
+
+The corrected shader passes native Vulkan, address/undefined-behavior
+sanitizers (driver leak checks disabled), hardware WebGPU and the browser
+game build. A fresh pinned runtime reproduces all 86 patched files. The
+preceding guest-flag publication `b5c4e99` also passed Build and Pages CI.
+The final 246-second `flat-filter-final-retail/report.json` run reaches intro
+and live play with stadium crowd, player clothing, field markings and HUD
+text visible, without a recorded browser/GPU/DSP fault. Five-second averages
+after 150 seconds range from 25.2 to 30.0 FPS, with 170 audio worklet underrun
+blocks. This does not establish a performance improvement or a 30 FPS floor;
+different scenes and competing host load prevent a controlled comparison.
+The preceding `flat-filter-retail` run used the intermediate alpha-kill shader
+and overlapped compilation, so it is not final-code or performance evidence.
+Full stadium/staff-model fidelity, continuous audio and original-Xbox parity
+remain open.

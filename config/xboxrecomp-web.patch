@@ -2173,7 +2173,15 @@ index 0000000..c06e770
 diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_draw.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_draw.inc.c
-@@ -19,7 +19,9 @@
+@@ -14,12 +14,15 @@
+  * sg_draw_flat2d() pre-transformed (fixed-function) batches: menus, HUD,
+  *                  text, movie quads. The triangles come from
+  *                  batch_triangles(), the same assembly the software
+- *                  rasterizer uses, and shaders/flat2d.* reproduce its
+- *                  shading bit for bit. Blending is GPU fixed-function and
++ *                  rasterizer uses. shaders/flat2d.* preserve integer
++ *                  modulation while honoring guest texture filtering.
++ *                  Blending is GPU fixed-function and
   *                  may differ from the software integer blend by up to 2/255.
   */
 
@@ -2184,7 +2192,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
  #include "flat2d_vert.h"
  #include "flat2d_frag.h"
  #include "xf_vert.h"
-@@ -54,7 +56,11 @@
+@@ -54,7 +57,11 @@
                                  Uint32 samplers) {
      SDL_GPUShaderCreateInfo info = {
          .code = (const Uint8 *) code, .code_size = size, .entrypoint = "main",
@@ -2196,7 +2204,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          .num_samplers = samplers, .num_uniform_buffers = 1,
      };
      return SDL_CreateGPUShader(s_sg.dev, &info);
-@@ -78,13 +84,23 @@
+@@ -78,13 +85,23 @@
      if (s_sg.draw_ready || tried)
          return s_sg.draw_ready;
      tried = 1;
@@ -2222,7 +2230,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          fprintf(stderr, "  [SDLGPU] drawing unavailable: %s\n", SDL_GetError());
          return 0;
      }
-@@ -146,45 +162,93 @@
+@@ -146,45 +163,93 @@
      if (need <= *cap)
          return p;
      n = *cap ? *cap : 64;
@@ -2328,7 +2336,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (!(g = sg_grow(q->udata, &q->ucap, q->ubytes + d->vs_uniform_size, 1))) return 0;
      q->udata = (uint8_t *)g;
 
-@@ -197,8 +261,10 @@
+@@ -197,8 +262,10 @@
      qd->pipe = d->pipe;
      qd->vertex_offset = q->vbytes;
      qd->vertex_count = d->vertex_count;
@@ -2339,7 +2347,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      qd->index_offset = q->ibytes;
      qd->index_count = d->index_count;
-@@ -222,18 +288,22 @@
+@@ -222,18 +289,22 @@
      qd->tex_count = d->tex_count;
      for (i = 0; i < (uint32_t) d->tex_count; i++) {
          SgTextureUse *t = &d->tex[i];
@@ -2365,7 +2373,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      qd->blend_constant = (SDL_FColor){
          (float) ((s_gpu.blend_color >> 16) & 0xFF) / 255.0f, (float) ((s_gpu.blend_color >> 8) & 0xFF) / 255.0f,
          (float) (s_gpu.blend_color & 0xFF) / 255.0f, (float) (s_gpu.blend_color >> 24) / 255.0f,
-@@ -243,7 +313,13 @@
+@@ -243,7 +314,13 @@
      qd->fs_size = d->fs_uniform_size;
     // memcpy(qd->vs, d->vs_uniform, d->vs_uniform_size);
      memcpy(qd->fs, d->fs_uniform, d->fs_uniform_size);
@@ -2380,7 +2388,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      /* The GPU copy will be the newer one. Anything that reads the surface on
       * the CPU flushes the queue first (sg_cpu_access, sg_flip). */
-@@ -265,9 +341,12 @@
+@@ -265,9 +342,12 @@
          q->upload_surface = 0;
          return 1;
      }
@@ -2394,7 +2402,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (sg_vertex_buffer_reserve(q->vbytes) && sg_index_buffer_reserve(q->ibytes) && sg_upload_reserve(total)) {
          SDL_GPUCommandBuffer *cmd;
          uint8_t *stage = (uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.upload, true);
-@@ -278,10 +357,12 @@
+@@ -278,10 +358,12 @@
          }
          /* Transfer layout: vertices | indices | surface | textures */
          memcpy(stage, q->vdata, q->vbytes);
@@ -2409,7 +2417,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
 
-@@ -310,16 +391,18 @@
+@@ -310,16 +392,18 @@
              }
              for (i = 0; i < q->upload_count; i++) {
                  const SgQueuedUpload *u = &q->uploads[i];
@@ -2436,7 +2444,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          }
          {
              SDL_GPUColorTargetInfo target = {
-@@ -329,14 +412,22 @@
+@@ -329,14 +413,22 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
@@ -2460,7 +2468,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,9 +441,14 @@
+@@ -350,9 +442,14 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -2478,7 +2486,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
-@@ -360,19 +456,27 @@
+@@ -360,19 +457,27 @@
                  if (qd->index_count) {
                      SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
                      SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -2511,7 +2519,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          static int told;
          if (!told++)
              fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
-@@ -385,6 +489,7 @@
+@@ -385,6 +490,7 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -2519,7 +2527,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      return ok;
  }
 
-@@ -456,7 +561,8 @@
+@@ -452,12 +558,19 @@
+     {
+         float surface_size[2] = {(float) s->w, (float) s->h};
+         struct {
+-            uint32_t tex_size[2], tex_wrap[2], alpha_test, alpha_func, alpha_ref, pad;
++            uint32_t tex_size[2], tex_wrap[2], alpha_test, alpha_func, alpha_ref, pad, sampling[4];
          } shade = {
              {s_gpu.tex.width, s_gpu.tex.height},
              {s_gpu.tex.addr_u == 1, s_gpu.tex.addr_v == 1},
@@ -2527,8 +2540,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +            s_gpu.alpha_test != 0, s_gpu.alpha_func, s_gpu.alpha_ref & 0xFF,
 +            (s_gpu.tex.color == 0x1E ? 1u : 0u) | (s_gpu.tex.enabled && texture_alpha_kill(0) ? 2u : 0u),
          };
++        shade.sampling[0] = (s_gpu.tex.addr_u == 4 ? 2u : 0u) | (s_gpu.tex.addr_v == 4 ? 4u : 0u)
++            | (sg_filter_flags(0) << 8) | (texture_mip_levels(0, &s_gpu.tex) << 16);
++        shade.sampling[1] = sg_lod_clamps(0);
++        shade.sampling[2] = s_tex_reg[(0x1B24u - NV_TEX_FIRST) / 4];
++        float bias = sg_texture_lod_bias(0);
++        memcpy(&shade.sampling[3], &bias, sizeof bias);
          SgDraw d = {
              .surface = s, .pipe = pipe,
+             .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgVertex),
 diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c
@@ -3667,21 +3687,94 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
 diff --git a/src/kernel/sdlgpu/shaders/flat2d.frag b/src/kernel/sdlgpu/shaders/flat2d.frag
 --- a/src/kernel/sdlgpu/shaders/flat2d.frag
 +++ b/src/kernel/sdlgpu/shaders/flat2d.frag
-@@ -16,7 +16,7 @@
+@@ -1,6 +1,5 @@
+ #version 450
+-// Shading for pre-transformed NV2A triangles, bit-exact with the software
+-// path in nv2a_pb_exec.c: point-sampled texel MODULATE flat colour
++// Shading for pre-transformed NV2A triangles: guest-filtered texel MODULATE flat colour
+ // ((t * c + 127) / 255 per channel), then the alpha test. Blending and the
+ // channel write mask are pipeline state.
+
+@@ -12,16 +11,14 @@
+
+ layout(set = 3, binding = 0) uniform Shade {
+     uvec2 tex_size;
+-    uvec2 tex_wrap;          // per axis: 1 = wrap, otherwise clamp (wrap_coord)
++    uvec2 tex_wrap;          // reserved legacy address fields; addressing is in the sampler
      uint  alpha_test;        // nonzero: apply alpha_func against alpha_ref
      uint  alpha_func;        // GL compare enum, 0x0200..0x0207
      uint  alpha_ref;         // 0..255
 -    uint  pad;
 +    uint  pad;               // bit 0: opaque XRGB alpha; bit 1: texture alpha-kill
++    uvec4 sampling;          // filter/border/level flags, Q8 LOD clamps, ARGB border, float bias bits
  } sh;
 
- // As raster_triangle: negative coordinates clamp to 0, then a C cast to
-@@ -59,6 +59,8 @@
-         ivec2 at = ivec2(texel_coord(v_uv.x, sh.tex_size.x, sh.tex_wrap.x),
-                          texel_coord(v_uv.y, sh.tex_size.y, sh.tex_wrap.y));
-         uvec4 t = uvec4(round(texelFetch(tex, at, 0) * 255.0));
-+        if ((sh.pad & 1u) != 0u) t.a = 255u;
-+        if ((sh.pad & 2u) != 0u && t.a == 0u) discard;
+-// As raster_triangle: negative coordinates clamp to 0, then a C cast to
+-// uint32_t (truncation), then wrap_coord.
+-//
+ // Software interpolation computes texel boundaries exactly (a 16-texel span
+ // over 190 rows gives exactly 4.0 at row 77); the GPU's interpolator lands a
+ // hair short (3.99998) and would read the texel before. A 1/512-texel bias
+@@ -29,12 +26,44 @@
+ // a boundary, which is far rarer.
+ const float TEXEL_BIAS = 1.0 / 512.0;
+
+-uint texel_coord(float c, uint size, uint wrap)
++vec2 border_coverage(vec2 uv, vec2 size, bool linear_filter)
+ {
+-    uint u = uint(max(c + TEXEL_BIAS, 0.0));
+-    if (size == 0u) return 0u;
+-    if (wrap == 1u) return u % size;
+-    return u >= size ? size - 1u : u;
++    if (linear_filter)
++        return clamp(uv * size + 0.5, 0.0, 1.0) * clamp((1.0 - uv) * size + 0.5, 0.0, 1.0);
++    return vec2(greaterThanEqual(uv, vec2(0.0))) * vec2(lessThan(uv, vec2(1.0)));
++}
++
++vec4 sample_texel()
++{
++    vec2 size = max(vec2(sh.tex_size), vec2(1.0));
++    vec2 uv = v_uv.xy / size;
++    float bias = uintBitsToFloat(sh.sampling.w);
++    uint flags = sh.sampling.x;
++    vec2 dx = dFdx(uv) * size, dy = dFdy(uv) * size;
++    float rho2 = max(dot(dx, dx), dot(dy, dy)) * exp2(2.0 * bias);
++    bool linear_filter = (flags & (rho2 <= 1.0 && (sh.sampling.y & 0xFFFu) == 0u ? 0x100u : 0x200u)) != 0u;
++    // Retain the point-boundary correction without shifting bilinear weights.
++    vec4 c = texture(tex, uv + (linear_filter ? vec2(0.0) : vec2(TEXEL_BIAS) / size), bias);
++    if ((sh.pad & 1u) != 0u) c.a = 1.0;
++    if ((flags & 6u) != 0u) {
++        uint levels = (flags >> 16) & 15u;
++        float max_lod = levels != 0u ? float(levels - 1u) : 0.0;
++        max_lod = min(max_lod, float((sh.sampling.y >> 12) & 0xFFFu) / 256.0);
++        float min_lod = min(max_lod, float(sh.sampling.y & 0xFFFu) / 256.0);
++        float lod = (flags & 0x800u) != 0u ? clamp(0.5 * log2(max(rho2, 1e-20)), min_lod, max_lod) : 0.0;
++        bool mip_linear = (flags & 0x400u) != 0u;
++        float level = mip_linear ? floor(lod) : floor(lod + 0.5);
++        vec2 coverage = border_coverage(uv, max(floor(size / exp2(level)), vec2(1.0)), linear_filter);
++        if (mip_linear) {
++            vec2 next = border_coverage(uv, max(floor(size / exp2(level + 1.0)), vec2(1.0)), linear_filter);
++            coverage = mix(coverage, next, fract(lod));
++        }
++        float inside = ((flags & 2u) != 0u ? coverage.x : 1.0) * ((flags & 4u) != 0u ? coverage.y : 1.0);
++        uint b = sh.sampling.z;
++        vec4 border = vec4(float((b >> 16) & 255u), float((b >> 8) & 255u), float(b & 255u), float(b >> 24)) / 255.0;
++        c = mix(border, c, inside);
++    }
++    return c;
+ }
+
+ bool alpha_pass(uint a)
+@@ -56,9 +85,9 @@
+ {
+     uvec4 c = uvec4(round(clamp(v_color, 0.0, 1.0) * 255.0));
+     if (v_uv.z != 0.0) {
+-        ivec2 at = ivec2(texel_coord(v_uv.x, sh.tex_size.x, sh.tex_wrap.x),
+-                         texel_coord(v_uv.y, sh.tex_size.y, sh.tex_wrap.y));
+-        uvec4 t = uvec4(round(texelFetch(tex, at, 0) * 255.0));
++        vec4 sampled = sample_texel();
++        if ((sh.pad & 2u) != 0u && sampled.a == 0.0) discard;
++        uvec4 t = uvec4(round(sampled * 255.0));
          c = (t * c + 127u) / 255u;
      }
      if (sh.alpha_test != 0u && !alpha_pass(c.a))
@@ -4471,9 +4564,14 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  {
      uint32_t out = 0;
      for (int sh = 0; sh < 32; sh += 8)
-@@ -165,7 +154,7 @@
-                     if (su < 0) su = 0;
-                     if (sv < 0) sv = 0;
+@@ -162,10 +151,10 @@
+                     float su = (w1 * uv[0][0] + w2 * uv[1][0] + w0 * uv[2][0]) / area;
+                     float sv = (w1 * uv[0][1] + w2 * uv[1][1] + w0 * uv[2][1]) / area;
+                     uint32_t texel;
+-                    if (su < 0) su = 0;
+-                    if (sv < 0) sv = 0;
++                    if (su < 0) su = s_gpu.tex.addr_u == 1 ? su + s_gpu.tex.width * (floorf(-su / s_gpu.tex.width) + 1) : 0;
++                    if (sv < 0) sv = s_gpu.tex.addr_v == 1 ? sv + s_gpu.tex.height * (floorf(-sv / s_gpu.tex.height) + 1) : 0;
                      if (sample_texture((uint32_t)su, (uint32_t)sv, &texel)) {
 -                        ref_shade(x, y, modulate(texel, g_tris[t].argb));
 +                        ref_shade(x, y, ref_modulate(texel, g_tris[t].argb));
@@ -4492,7 +4590,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,776 @@
+@@ -231,34 +220,834 @@
      return bad == 0;
  }
 
@@ -5074,6 +5172,19 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        for(unsigned face=0;face<layers;face++)for(unsigned l=0,lw=w,lh=h;l<levels;l++,lw=lw>1?lw/2:1,lh=lh>1?lh/2:1)
 +            check_authored_mip(texture,l,face,lw,lh,expected[face][l],id);
 +        if(fmt==6 && big==1) {
++            if(stage==0 && !cube) {
++                const int flat_biases[]={-256,0,256,512,768};
++                const unsigned flat_levels[]={0,0,1,2,3};
++                for(unsigned bi=0;bi<5;bi++) {
++                    record_tex_reg(0x1B14,0x01030000u|((uint32_t)flat_biases[bi]&0x1FFFu));
++                    g_ntris=2;quad(0,0,0,16,16,0,0,2,2,0xFFFFFFFFu,1);
++                    s_gpu.clear_color=0;CHECK(sg_clear(0xF0),"flat authored mip clear");
++                    upload_scene();CHECK(sg_draw_batch(1),"flat authored mip draw");download_frame();
++                    uint32_t pixel;memcpy(&pixel,g_ram+0x200000+4*64+4*4,4);
++                    uint32_t rgba=expected[0][flat_levels[bi]],argb=(rgba&0xFF00FF00u)|((rgba>>16)&255u)|((rgba&255u)<<16);
++                    CHECK(pixel==argb,"flat authored mip bias %d: %08X expected %08X",flat_biases[bi],pixel,argb);
++                }
++            }
 +            /* One texel per pixel before bias; uniform-colour levels make
 +             * the selected mip independent of wrapping and interpolation. */
 +            const int biases[]={0,256,512,64,192,-256,-192,4095,-4096};
@@ -5226,6 +5337,50 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_gpu.clip_w=saved_width;s_gpu.clip_h=saved_height;s_vs=saved;
 +}
 +
++#include "../sdlgpu_web/flat_filter_reference.h"
++static void test_flat_filtering(void)
++{
++    Texture saved = s_gpu.tex;
++    uint32_t regs[sizeof s_tex_reg/4]; memcpy(regs, s_tex_reg, sizeof regs);
++    target(0x400000, 64, 64, 256);
++    s_gpu.tex = (Texture){.offset=0x700000, .width=8, .height=8, .color=0x12, .pitch=32, .valid=1, .enabled=1};
++    for (int y=0;y<8;y++) for (int x=0;x<8;x++)
++        ((uint32_t *)(g_ram+0x700000))[y*8+x] = flat_filter_texel(x, 3);
++    const float positions[] = {-2.75f,-0.25f,0.25f,0.75f,1.25f,7.75f,8.25f,9.25f};
++    for (int mode=1;mode<=4;mode++) for (int minify=0;minify<2;minify++) for (int linear=0;linear<2;linear++)
++    for (unsigned p=0;p<sizeof positions/sizeof *positions;p++) {
++        s_gpu.tex.addr_u=mode;s_gpu.tex.addr_v=3;
++        /* Opposite min/mag choices make selecting the wrong filter visible. */
++        int mag=minify?!linear:linear, min=minify?linear:!linear;
++        record_tex_reg(0x1B14, ((mag?2u:1u)<<24)|((min?2u:1u)<<16));
++        record_tex_reg(0x1B24, 0xFF209060u);
++        float scale=minify?2.0f:0.25f, start=positions[p]-4.5f*scale;
++        g_ntris=2;quad(0,16,16,32,32,start,3.5f,start+16*scale,3.5f,0xFFFFFFFFu,1);
++        s_gpu.clear_color=0;CHECK(sg_clear(0xF0),"flat filter clear");
++        upload_scene();CHECK(sg_draw_batch(1),"flat filter GPU draw");download_frame();
++        uint32_t pixel;memcpy(&pixel,g_ram+0x400000+20*256+20*4,4);
++        uint32_t expected=flat_filter_expected(positions[p],mode,linear);
++        int good=1;for(int c=0;c<32;c+=8)good&=abs((int)((pixel>>c)&255u)-(int)((expected>>c)&255u))<=1;
++        CHECK(good,"flat filter mode=%d minify=%d linear=%d u=%g: %08X expected %08X",mode,minify,linear,positions[p],pixel,expected);
++    }
++    for(int y=0;y<8;y++)for(int x=0;x<8;x++)
++        ((uint32_t *)(g_ram+0x700000))[y*8+x]=0x01FFFFFFu;
++    s_gpu.tex.addr_u=4;s_gpu.tex.addr_v=3;
++    record_tex_reg(0x1B14,0x02020000u);record_tex_reg(0x1B0C,0x40000004u);
++    record_tex_reg(0x1B24,0x00FFFFFFu);
++    for(int nonzero=0;nonzero<2;nonzero++) {
++        /* Border coverage supplies a portable floating quarter-byte alpha,
++         * independent of backend UNORM texture-filter rounding precision. */
++        float u=nonzero?-0.25f:-0.75f;
++        g_ntris=2;quad(0,16,16,32,32,u,3.5f,u,3.5f,0xFFFFFFFFu,1);
++        s_gpu.clear_color=0xFF112233u;CHECK(sg_clear(0xF0),"flat filtered alpha clear");
++        upload_scene();CHECK(sg_draw_batch(1),"flat filtered alpha draw");download_frame();
++        uint32_t pixel;memcpy(&pixel,g_ram+0x400000+20*256+20*4,4);
++        CHECK(pixel==(nonzero?0x00FFFFFFu:0xFF112233u),"flat alpha-kill tests filtered alpha before quantization: %08X",pixel);
++    }
++    s_gpu.tex=saved;memcpy(s_tex_reg,regs,sizeof regs);
++}
++
  int main(void)
  {
      setenv("RECOMP_SDLGPU", "1", 1);
@@ -5262,6 +5417,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    test_direction_texture_stages();
 +    test_authored_mip_chains();
 +    test_software_presentation();
++    test_flat_filtering();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
      target(0x400000, 320, 240, 1536);              /* padded rows, like the title */
@@ -5273,7 +5429,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +998,8 @@
+@@ -267,10 +1056,11 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -5281,10 +5437,14 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 -    s_texture_snapshot[0] = (TextureSnapshot){ (uint8_t *)tex, sizeof tex, 0, { 0 }, 1 };
 +    s_gpu.tex = (Texture){.offset=0x700000, .width=8, .height=8, .addr_u=1, .addr_v=1,
 +        .color=0x12, .pitch=32, .valid=1, .enabled=1};
++    record_tex_reg(0x1B14, 0x01010000u); /* Reference below explicitly models point filtering. */
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
-     run_scene("textured, wrapped, modulated, negative u clamps", 0);
+-    run_scene("textured, wrapped, modulated, negative u clamps", 0);
++    run_scene("textured, wrapped, modulated, negative u wraps", 0);
 
-@@ -308,7 +1039,10 @@
+     s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
+     g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
+@@ -308,7 +1098,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -5296,7 +5456,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +1056,32 @@
+@@ -322,6 +1115,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -20447,6 +20607,30 @@ diff --git a/tools/recomp/test_lifter_fpu_reverse.py b/tools/recomp/test_lifter_
              ("fyl2x", "log2(fp_top())"),
          ):
              with self.subTest(mnemonic=mnemonic):
+diff --git a/tests/sdlgpu_web/flat_filter_reference.h b/tests/sdlgpu_web/flat_filter_reference.h
+new file mode 100644
+index 0000000..0de7277
+--- /dev/null
++++ b/tests/sdlgpu_web/flat_filter_reference.h
+@@ -0,0 +1,18 @@
++/* Independent texel-domain reference for an 8-wide repeating row. */
++static uint32_t flat_filter_texel(int x, int mode)
++{
++    if (mode == 1) x = (x % 8 + 8) % 8;
++    else if (mode == 2) { x = (x % 16 + 16) % 16; if (x >= 8) x = 15 - x; }
++    else if (mode == 4 && (x < 0 || x >= 8)) return 0xFF209060u;
++    else { if (x < 0) x = 0; if (x > 7) x = 7; }
++    return 0xFF000000u | (uint32_t)(x * 32) << 16 | (uint32_t)(255 - x * 32);
++}
++static uint32_t flat_filter_expected(float u, int mode, int linear)
++{
++    if (!linear) return flat_filter_texel((int)floorf(u), mode);
++    float p = u - 0.5f, f = p - floorf(p);
++    uint32_t a = flat_filter_texel((int)floorf(p), mode), b = flat_filter_texel((int)floorf(p) + 1, mode), out = 0;
++    for (int ch = 0; ch < 32; ch += 8)
++        out |= (uint32_t)floorf(((a >> ch) & 255u) * (1-f) + ((b >> ch) & 255u) * f + 0.5f) << ch;
++    return out;
++}
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -23594,10 +23778,10 @@ index 0000000..65e0c18
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..9cf258e
+index 0000000..c7d1d6c
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,2203 @@
+@@ -0,0 +1,2354 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -23659,6 +23843,7 @@ index 0000000..9cf258e
 +    "    alpha_func: u32,\n"
 +    "    alpha_ref: u32,\n"
 +    "    pad: u32,\n"
++    "    sampling: vec4<u32>,\n"
 +    "}\n"
 +    "\n"
 +    "struct FragmentOutput {\n"
@@ -23677,39 +23862,201 @@ index 0000000..9cf258e
 +    "@group(3) @binding(0) \n"
 +    "var<uniform> sh: Shade;\n"
 +    "\n"
-+    "fn texel_coord(c: f32, size: u32, wrap: u32) -> u32 {\n"
-+    "    var c_1: f32;\n"
-+    "    var size_1: u32;\n"
-+    "    var wrap_1: u32;\n"
-+    "    var u: u32;\n"
-+    "    var local: u32;\n"
++    "fn border_coverage(uv: vec2<f32>, size: vec2<f32>, linear_filter: bool) -> vec2<f32> {\n"
++    "    var uv_1: vec2<f32>;\n"
++    "    var size_1: vec2<f32>;\n"
++    "    var linear_filter_1: bool;\n"
 +    "\n"
-+    "    c_1 = c;\n"
++    "    uv_1 = uv;\n"
 +    "    size_1 = size;\n"
-+    "    wrap_1 = wrap;\n"
-+    "    let _e25 = c_1;\n"
-+    "    u = u32(max((_e25 + TEXEL_BIAS), 0f));\n"
-+    "    let _e31 = size_1;\n"
-+    "    if (_e31 == 0u) {\n"
-+    "        return 0u;\n"
++    "    linear_filter_1 = linear_filter;\n"
++    "    let _e27 = linear_filter_1;\n"
++    "    if _e27 {\n"
++    "        let _e28 = uv_1;\n"
++    "        let _e29 = size_1;\n"
++    "        let _e40 = uv_1;\n"
++    "        let _e43 = size_1;\n"
++    "        return (clamp(((_e28 * _e29) + vec2(0.5f)), vec2(0f), vec2(1f)) * clamp((((vec2(1f) - _e40) * _e43) + vec2(0.5f)), vec2(0f), vec2(1f)));\n"
 +    "    }\n"
-+    "    let _e35 = wrap_1;\n"
-+    "    if (_e35 == 1u) {\n"
-+    "        let _e38 = u;\n"
-+    "        let _e39 = size_1;\n"
-+    "        return (_e38 % _e39);\n"
-+    "    }\n"
-+    "    let _e41 = u;\n"
-+    "    let _e42 = size_1;\n"
-+    "    if (_e41 >= _e42) {\n"
-+    "        let _e44 = size_1;\n"
-+    "        local = (_e44 - 1u);\n"
++    "    let _e54 = uv_1;\n"
++    "    let _e63 = uv_1;\n"
++    "    return (select(vec2(0f), vec2(1f), (_e54 >= vec2(0f))) * select(vec2(0f), vec2(1f), (_e63 < vec2(1f))));\n"
++    "}\n"
++    "\n"
++    "fn sample_texel() -> vec4<f32> {\n"
++    "    var size_2: vec2<f32>;\n"
++    "    var uv_2: vec2<f32>;\n"
++    "    var bias: f32;\n"
++    "    var flags: u32;\n"
++    "    var dx: vec2<f32>;\n"
++    "    var dy: vec2<f32>;\n"
++    "    var rho2_: f32;\n"
++    "    var local: u32;\n"
++    "    var linear_filter_2: bool;\n"
++    "    var local_1: vec2<f32>;\n"
++    "    var c: vec4<f32>;\n"
++    "    var levels: u32;\n"
++    "    var local_2: f32;\n"
++    "    var max_lod: f32;\n"
++    "    var min_lod: f32;\n"
++    "    var local_3: f32;\n"
++    "    var lod: f32;\n"
++    "    var mip_linear: bool;\n"
++    "    var local_4: f32;\n"
++    "    var level: f32;\n"
++    "    var coverage: vec2<f32>;\n"
++    "    var next: vec2<f32>;\n"
++    "    var local_5: f32;\n"
++    "    var local_6: f32;\n"
++    "    var inside: f32;\n"
++    "    var b: u32;\n"
++    "    var border: vec4<f32>;\n"
++    "\n"
++    "    let _e21 = sh;\n"
++    "    size_2 = max(vec2<f32>(_e21.tex_size), vec2(1f));\n"
++    "    let _e28 = v_uv_1;\n"
++    "    let _e30 = size_2;\n"
++    "    uv_2 = (_e28.xy / _e30);\n"
++    "    let _e33 = sh;\n"
++    "    bias = bitcast<f32>(_e33.sampling.w);\n"
++    "    let _e38 = sh;\n"
++    "    flags = _e38.sampling.x;\n"
++    "    let _e42 = uv_2;\n"
++    "    let _e43 = dpdx(_e42);\n"
++    "    let _e44 = size_2;\n"
++    "    dx = (_e43 * _e44);\n"
++    "    let _e47 = uv_2;\n"
++    "    let _e48 = dpdy(_e47);\n"
++    "    let _e49 = size_2;\n"
++    "    dy = (_e48 * _e49);\n"
++    "    let _e52 = dx;\n"
++    "    let _e53 = dx;\n"
++    "    let _e55 = dy;\n"
++    "    let _e56 = dy;\n"
++    "    let _e60 = bias;\n"
++    "    rho2_ = (max(dot(_e52, _e53), dot(_e55, _e56)) * exp2((2f * _e60)));\n"
++    "    let _e65 = flags;\n"
++    "    let _e66 = rho2_;\n"
++    "    let _e69 = sh;\n"
++    "    if ((_e66 <= 1f) && ((_e69.sampling.y & 4095u) == 0u)) {\n"
++    "        local = 256u;\n"
 +    "    } else {\n"
-+    "        let _e47 = u;\n"
-+    "        local = _e47;\n"
++    "        local = 512u;\n"
 +    "    }\n"
-+    "    let _e49 = local;\n"
-+    "    return _e49;\n"
++    "    let _e80 = local;\n"
++    "    linear_filter_2 = ((_e65 & _e80) != 0u);\n"
++    "    let _e85 = uv_2;\n"
++    "    let _e86 = linear_filter_2;\n"
++    "    if _e86 {\n"
++    "        local_1 = vec2(0f);\n"
++    "    } else {\n"
++    "        let _e91 = size_2;\n"
++    "        local_1 = (vec2(0.001953125f) / _e91);\n"
++    "    }\n"
++    "    let _e94 = local_1;\n"
++    "    let _e96 = bias;\n"
++    "    let _e97 = textureSampleBias(tex_t, tex_s, (_e85 + _e94), _e96);\n"
++    "    c = _e97;\n"
++    "    let _e99 = sh;\n"
++    "    if ((_e99.pad & 1u) != 0u) {\n"
++    "        c.w = 1f;\n"
++    "    }\n"
++    "    let _e107 = flags;\n"
++    "    if ((_e107 & 6u) != 0u) {\n"
++    "        {\n"
++    "            let _e112 = flags;\n"
++    "            levels = ((_e112 >> 16u) & 15u);\n"
++    "            let _e119 = levels;\n"
++    "            if (_e119 != 0u) {\n"
++    "                let _e122 = levels;\n"
++    "                local_2 = f32((_e122 - 1u));\n"
++    "            } else {\n"
++    "                local_2 = 0f;\n"
++    "            }\n"
++    "            let _e128 = local_2;\n"
++    "            max_lod = _e128;\n"
++    "            let _e130 = max_lod;\n"
++    "            let _e131 = sh;\n"
++    "            max_lod = min(_e130, (f32(((_e131.sampling.y >> 12u) & 4095u)) / 256f));\n"
++    "            let _e143 = max_lod;\n"
++    "            let _e144 = sh;\n"
++    "            min_lod = min(_e143, (f32((_e144.sampling.y & 4095u)) / 256f));\n"
++    "            let _e154 = flags;\n"
++    "            if ((_e154 & 2048u) != 0u) {\n"
++    "                let _e160 = rho2_;\n"
++    "                let _e165 = min_lod;\n"
++    "                let _e166 = max_lod;\n"
++    "                local_3 = clamp((0.5f * log2(max(_e160, 0.00000000000000000001f))), _e165, _e166);\n"
++    "            } else {\n"
++    "                local_3 = 0f;\n"
++    "            }\n"
++    "            let _e170 = local_3;\n"
++    "            lod = _e170;\n"
++    "            let _e172 = flags;\n"
++    "            mip_linear = ((_e172 & 1024u) != 0u);\n"
++    "            let _e178 = mip_linear;\n"
++    "            if _e178 {\n"
++    "                let _e179 = lod;\n"
++    "                local_4 = floor(_e179);\n"
++    "            } else {\n"
++    "                let _e181 = lod;\n"
++    "                local_4 = floor((_e181 + 0.5f));\n"
++    "            }\n"
++    "            let _e186 = local_4;\n"
++    "            level = _e186;\n"
++    "            let _e188 = uv_2;\n"
++    "            let _e189 = size_2;\n"
++    "            let _e190 = level;\n"
++    "            let _e198 = linear_filter_2;\n"
++    "            let _e199 = border_coverage(_e188, max(floor((_e189 / vec2(exp2(_e190)))), vec2(1f)), _e198);\n"
++    "            coverage = _e199;\n"
++    "            let _e201 = mip_linear;\n"
++    "            if _e201 {\n"
++    "                {\n"
++    "                    let _e202 = uv_2;\n"
++    "                    let _e203 = size_2;\n"
++    "                    let _e204 = level;\n"
++    "                    let _e214 = linear_filter_2;\n"
++    "                    let _e215 = border_coverage(_e202, max(floor((_e203 / vec2(exp2((_e204 + 1f))))), vec2(1f)), _e214);\n"
++    "                    next = _e215;\n"
++    "                    let _e217 = coverage;\n"
++    "                    let _e218 = next;\n"
++    "                    let _e219 = lod;\n"
++    "                    coverage = mix(_e217, _e218, vec2(fract(_e219)));\n"
++    "                }\n"
++    "            }\n"
++    "            let _e223 = flags;\n"
++    "            if ((_e223 & 2u) != 0u) {\n"
++    "                let _e228 = coverage;\n"
++    "                local_5 = _e228.x;\n"
++    "            } else {\n"
++    "                local_5 = 1f;\n"
++    "            }\n"
++    "            let _e232 = local_5;\n"
++    "            let _e233 = flags;\n"
++    "            if ((_e233 & 4u) != 0u) {\n"
++    "                let _e238 = coverage;\n"
++    "                local_6 = _e238.y;\n"
++    "            } else {\n"
++    "                local_6 = 1f;\n"
++    "            }\n"
++    "            let _e242 = local_6;\n"
++    "            inside = (_e232 * _e242);\n"
++    "            let _e245 = sh;\n"
++    "            b = _e245.sampling.z;\n"
++    "            let _e249 = b;\n"
++    "            let _e256 = b;\n"
++    "            let _e263 = b;\n"
++    "            let _e267 = b;\n"
++    "            border = (vec4<f32>(f32(((_e249 >> 16u) & 255u)), f32(((_e256 >> 8u) & 255u)), f32((_e263 & 255u)), f32((_e267 >> 24u))) / vec4(255f));\n"
++    "            let _e277 = border;\n"
++    "            let _e278 = c;\n"
++    "            let _e279 = inside;\n"
++    "            c = mix(_e277, _e278, vec4(_e279));\n"
++    "        }\n"
++    "    }\n"
++    "    let _e282 = c;\n"
++    "    return _e282;\n"
 +    "}\n"
 +    "\n"
 +    "fn alpha_pass(a: u32) -> bool {\n"
@@ -23717,95 +24064,83 @@ index 0000000..9cf258e
 +    "    var r: u32;\n"
 +    "\n"
 +    "    a_1 = a;\n"
-+    "    let _e21 = sh;\n"
-+    "    r = _e21.alpha_ref;\n"
-+    "    let _e24 = sh;\n"
-+    "    if (_e24.alpha_func == 512u) {\n"
++    "    let _e23 = sh;\n"
++    "    r = _e23.alpha_ref;\n"
++    "    let _e26 = sh;\n"
++    "    if (_e26.alpha_func == 512u) {\n"
 +    "        return false;\n"
 +    "    }\n"
-+    "    let _e29 = sh;\n"
-+    "    if (_e29.alpha_func == 513u) {\n"
-+    "        let _e33 = a_1;\n"
-+    "        let _e34 = r;\n"
-+    "        return (_e33 < _e34);\n"
++    "    let _e31 = sh;\n"
++    "    if (_e31.alpha_func == 513u) {\n"
++    "        let _e35 = a_1;\n"
++    "        let _e36 = r;\n"
++    "        return (_e35 < _e36);\n"
 +    "    }\n"
-+    "    let _e36 = sh;\n"
-+    "    if (_e36.alpha_func == 514u) {\n"
-+    "        let _e40 = a_1;\n"
-+    "        let _e41 = r;\n"
-+    "        return (_e40 == _e41);\n"
++    "    let _e38 = sh;\n"
++    "    if (_e38.alpha_func == 514u) {\n"
++    "        let _e42 = a_1;\n"
++    "        let _e43 = r;\n"
++    "        return (_e42 == _e43);\n"
 +    "    }\n"
-+    "    let _e43 = sh;\n"
-+    "    if (_e43.alpha_func == 515u) {\n"
-+    "        let _e47 = a_1;\n"
-+    "        let _e48 = r;\n"
-+    "        return (_e47 <= _e48);\n"
++    "    let _e45 = sh;\n"
++    "    if (_e45.alpha_func == 515u) {\n"
++    "        let _e49 = a_1;\n"
++    "        let _e50 = r;\n"
++    "        return (_e49 <= _e50);\n"
 +    "    }\n"
-+    "    let _e50 = sh;\n"
-+    "    if (_e50.alpha_func == 516u) {\n"
-+    "        let _e54 = a_1;\n"
-+    "        let _e55 = r;\n"
-+    "        return (_e54 > _e55);\n"
++    "    let _e52 = sh;\n"
++    "    if (_e52.alpha_func == 516u) {\n"
++    "        let _e56 = a_1;\n"
++    "        let _e57 = r;\n"
++    "        return (_e56 > _e57);\n"
 +    "    }\n"
-+    "    let _e57 = sh;\n"
-+    "    if (_e57.alpha_func == 517u) {\n"
-+    "        let _e61 = a_1;\n"
-+    "        let _e62 = r;\n"
-+    "        return (_e61 != _e62);\n"
++    "    let _e59 = sh;\n"
++    "    if (_e59.alpha_func == 517u) {\n"
++    "        let _e63 = a_1;\n"
++    "        let _e64 = r;\n"
++    "        return (_e63 != _e64);\n"
 +    "    }\n"
-+    "    let _e64 = sh;\n"
-+    "    if (_e64.alpha_func == 518u) {\n"
-+    "        let _e68 = a_1;\n"
-+    "        let _e69 = r;\n"
-+    "        return (_e68 >= _e69);\n"
++    "    let _e66 = sh;\n"
++    "    if (_e66.alpha_func == 518u) {\n"
++    "        let _e70 = a_1;\n"
++    "        let _e71 = r;\n"
++    "        return (_e70 >= _e71);\n"
 +    "    }\n"
 +    "    return true;\n"
 +    "}\n"
 +    "\n"
 +    "fn main_1() {\n"
-+    "    var c_2: vec4<u32>;\n"
-+    "    var at: vec2<i32>;\n"
++    "    var c_1: vec4<u32>;\n"
++    "    var sampled: vec4<f32>;\n"
 +    "    var t: vec4<u32>;\n"
 +    "\n"
-+    "    let _e19 = v_color_1;\n"
-+    "    c_2 = vec4<u32>(round((clamp(_e19, vec4(0f), vec4(1f)) * 255f)));\n"
-+    "    let _e30 = v_uv_1;\n"
-+    "    if (_e30.z != 0f) {\n"
++    "    let _e21 = v_color_1;\n"
++    "    c_1 = vec4<u32>(round((clamp(_e21, vec4(0f), vec4(1f)) * 255f)));\n"
++    "    let _e32 = v_uv_1;\n"
++    "    if (_e32.z != 0f) {\n"
 +    "        {\n"
-+    "            let _e34 = v_uv_1;\n"
-+    "            let _e36 = sh;\n"
-+    "            let _e39 = sh;\n"
-+    "            let _e42 = texel_coord(_e34.x, _e36.tex_size.x, _e39.tex_wrap.x);\n"
-+    "            let _e43 = v_uv_1;\n"
-+    "            let _e45 = sh;\n"
-+    "            let _e48 = sh;\n"
-+    "            let _e51 = texel_coord(_e43.y, _e45.tex_size.y, _e48.tex_wrap.y);\n"
-+    "            at = vec2<i32>(i32(_e42), i32(_e51));\n"
-+    "            let _e56 = at;\n"
-+    "            let _e58 = textureLoad(tex_t, _e56, 0i);\n"
-+    "            t = vec4<u32>(round((_e58 * 255f)));\n"
-+    "            let _e64 = sh;\n"
-+    "            if ((_e64.pad & 1u) != 0u) {\n"
-+    "                t.w = 255u;\n"
-+    "            }\n"
-+    "            let _e72 = sh;\n"
-+    "            let _e78 = t;\n"
-+    "            if (((_e72.pad & 2u) != 0u) && (_e78.w == 0u)) {\n"
++    "            let _e36 = sample_texel();\n"
++    "            sampled = _e36;\n"
++    "            let _e38 = sh;\n"
++    "            let _e44 = sampled;\n"
++    "            if (((_e38.pad & 2u) != 0u) && (_e44.w == 0f)) {\n"
 +    "                discard;\n"
 +    "            }\n"
-+    "            let _e83 = t;\n"
-+    "            let _e84 = c_2;\n"
-+    "            c_2 = (((_e83 * _e84) + vec4(127u)) / vec4(255u));\n"
++    "            let _e49 = sampled;\n"
++    "            t = vec4<u32>(round((_e49 * 255f)));\n"
++    "            let _e55 = t;\n"
++    "            let _e56 = c_1;\n"
++    "            c_1 = (((_e55 * _e56) + vec4(127u)) / vec4(255u));\n"
 +    "        }\n"
 +    "    }\n"
-+    "    let _e92 = sh;\n"
-+    "    let _e96 = c_2;\n"
-+    "    let _e98 = alpha_pass(_e96.w);\n"
-+    "    if ((_e92.alpha_test != 0u) && !(_e98)) {\n"
++    "    let _e64 = sh;\n"
++    "    let _e68 = c_1;\n"
++    "    let _e70 = alpha_pass(_e68.w);\n"
++    "    if ((_e64.alpha_test != 0u) && !(_e70)) {\n"
 +    "        discard;\n"
 +    "    }\n"
-+    "    let _e101 = c_2;\n"
-+    "    out_color = (vec4<f32>(_e101) / vec4(255f));\n"
++    "    let _e73 = c_1;\n"
++    "    out_color = (vec4<f32>(_e73) / vec4(255f));\n"
 +    "    return;\n"
 +    "}\n"
 +    "\n"
@@ -23814,8 +24149,8 @@ index 0000000..9cf258e
 +    "    v_color_1 = v_color;\n"
 +    "    v_uv_1 = v_uv;\n"
 +    "    main_1();\n"
-+    "    let _e30 = out_color;\n"
-+    "    return FragmentOutput(_e30);\n"
++    "    let _e32 = out_color;\n"
++    "    return FragmentOutput(_e32);\n"
 +    "}\n";
 +
 +static const char k_sg_xf_vert_wgsl[] =
@@ -26900,10 +27235,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..c219f21
+index 0000000..aaea721
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1687 @@
+@@ -0,0 +1,1760 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -26924,6 +27259,7 @@ index 0000000..c219f21
 +#include "kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h"
 +#include "kernel/sdlgpu/webgpu/sg_wgsl.h"
 +#include "kernel/sdlgpu/sdlgpu_clip.h"
++#include "flat_filter_reference.h"
 +
 +static int fails;
 +#define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } \
@@ -26983,7 +27319,7 @@ index 0000000..c219f21
 +    return SDL_CreateGPUGraphicsPipeline(dev, &i);
 +}
 +
-+typedef struct { uint32_t tex_size[2], tex_wrap[2], alpha_test, alpha_func, alpha_ref, pad; } Shade;
++typedef struct { uint32_t tex_size[2], tex_wrap[2], alpha_test, alpha_func, alpha_ref, pad, sampling[4]; } Shade;
 +
 +static void quad(SgVertex *v, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1,
 +                 uint32_t argb, int textured)
@@ -27399,6 +27735,78 @@ index 0000000..c219f21
 +        CHECK(px(img, 1, 1) == 0xFF00FF00u, "GPU surface snapshot retains pixels after source overwrite");
 +        SDL_ReleaseGPUTexture(dev, snapshot);
 +        SDL_ReleaseGPUTexture(dev, alternate);
++    }
++
++    /* Pre-transformed HUD/text: the sampler, not a raw level-zero fetch,
++     * must choose min/mag filtering and address negative/outside coordinates. */
++    {
++        SDL_GPUTexture *pattern=make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,SDL_GPU_TEXTUREUSAGE_SAMPLER,8,8,1);
++        uint32_t pixels[64];
++        for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
++            uint32_t c=flat_filter_texel(x,3);
++            pixels[y*8+x]=(c&0xFF00FF00u)|((c>>16)&255u)|((c&255u)<<16);
++        }
++        upload(pattern,pixels,8,8);
++        const float positions[]={-2.75f,-0.25f,0.25f,0.75f,1.25f,7.75f,8.25f,9.25f};
++        for(int mode=1;mode<=4;mode++)for(int minify=0;minify<2;minify++)for(int linear=0;linear<2;linear++) {
++            int mag=minify?!linear:linear,min=minify?linear:!linear;
++            SDL_GPUSamplerCreateInfo info={.min_filter=min?SDL_GPU_FILTER_LINEAR:SDL_GPU_FILTER_NEAREST,
++                .mag_filter=mag?SDL_GPU_FILTER_LINEAR:SDL_GPU_FILTER_NEAREST,.max_lod=0.25f,
++                .address_mode_u=mode==1?SDL_GPU_SAMPLERADDRESSMODE_REPEAT:mode==2?SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT:SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
++                .address_mode_v=SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE};
++            SDL_GPUSampler *sampler=SDL_CreateGPUSampler(dev,&info);
++            SDL_GPUTextureSamplerBinding binding={.texture=pattern,.sampler=sampler};
++            for(unsigned p=0;p<sizeof positions/sizeof *positions;p++) {
++                float scale=minify?2.0f:0.25f,start=positions[p]-4.5f*scale;
++                quad(v,16,16,32,32,start,3.5f,start+16*scale,3.5f,0xFFFFFFFFu,1);
++                d=(Draw){.color=color,.depth=depth,.tex=pattern,.pipe=opaque,.v=v,.n=6,
++                    .bindings=&binding,.binding_count=1,.shade={.tex_size={8,8},
++                        .sampling={(mode==4?2u:0u)|((uint32_t)mag<<8)|((uint32_t)min<<9)|(1u<<16),0,0xFF209060u,0}},
++                    .clear_color=1,.clear_depth=1,.depth_value=1,.scissor={16,16,16,16}};
++                draw(&d);download(color,0,W,H,img);
++                uint32_t expected=flat_filter_expected(positions[p],mode,linear);
++                CHECK(near(px(img,20,20),expected,1),"flat filter mode=%d minify=%d linear=%d u=%g: %08X expected %08X",mode,minify,linear,positions[p],px(img,20,20),expected);
++            }
++            SDL_ReleaseGPUSampler(dev,sampler);
++        }
++        for(int y=0;y<8;y++)for(int x=0;x<8;x++)pixels[y*8+x]=0x01FFFFFFu;
++        upload(pattern,pixels,8,8);
++        SDL_GPUSamplerCreateInfo linear_info={.min_filter=SDL_GPU_FILTER_LINEAR,.mag_filter=SDL_GPU_FILTER_LINEAR,
++            .max_lod=0.25f,.address_mode_u=SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,.address_mode_v=SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE};
++        SDL_GPUSampler *linear_sampler=SDL_CreateGPUSampler(dev,&linear_info);
++        SDL_GPUTextureSamplerBinding linear_binding={.texture=pattern,.sampler=linear_sampler};
++        for(int nonzero=0;nonzero<2;nonzero++) {
++            float u=nonzero?-0.25f:-0.75f;
++            quad(v,16,16,32,32,u,3.5f,u,3.5f,0xFFFFFFFFu,1);
++            d=(Draw){.color=color,.depth=depth,.tex=pattern,.pipe=opaque,.v=v,.n=6,.bindings=&linear_binding,.binding_count=1,
++                .shade={.tex_size={8,8},.pad=2,.sampling={0x302u|(1u<<16),0,0x00FFFFFFu,0}},
++                .clear_color=1,.clear_argb=0xFF112233u,.clear_depth=1,.depth_value=1,.scissor={16,16,16,16}};
++            draw(&d);download(color,0,W,H,img);
++            CHECK(px(img,20,20)==(nonzero?0x00FFFFFFu:0xFF112233u),"flat alpha-kill tests filtered alpha before 8-bit rounding: %08X",px(img,20,20));
++        }
++        SDL_ReleaseGPUSampler(dev,linear_sampler);SDL_ReleaseGPUTexture(dev,pattern);
++        SDL_GPUTexture *mips=make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,SDL_GPU_TEXTUREUSAGE_SAMPLER,8,8,4);
++        const uint32_t rgba[]={0xFF0000FFu,0xFF00FF00u,0xFFFF0000u,0xFFFFFFFFu};
++        const uint32_t argb[]={0xFFFF0000u,0xFF00FF00u,0xFF0000FFu,0xFFFFFFFFu};
++        for(unsigned level=0;level<4;level++) {
++            for(unsigned p=0;p<(8u>>level)*(8u>>level);p++)pixels[p]=rgba[level];
++            upload_level(mips,pixels,8u>>level,8u>>level,level);
++        }
++        const float biases[]={-1,0,1,2,3};
++        const unsigned selected[]={0,0,1,2,3};
++        SDL_GPUSamplerCreateInfo info={.min_filter=SDL_GPU_FILTER_NEAREST,.mag_filter=SDL_GPU_FILTER_NEAREST,.max_lod=3};
++        SDL_GPUSampler *sampler=SDL_CreateGPUSampler(dev,&info);
++        SDL_GPUTextureSamplerBinding binding={.texture=mips,.sampler=sampler};
++        for(unsigned bi=0;bi<5;bi++) {
++            quad(v,16,16,32,32,0,0,16,16,0xFFFFFFFFu,1);
++            d=(Draw){.color=color,.depth=depth,.tex=mips,.pipe=opaque,.v=v,.n=6,.bindings=&binding,.binding_count=1,
++                .shade={.tex_size={8,8},.sampling={0x800u|(4u<<16),768u<<12,0,0}},
++                .clear_color=1,.clear_depth=1,.depth_value=1,.scissor={16,16,16,16}};
++            memcpy(&d.shade.sampling[3],&biases[bi],4);
++            draw(&d);download(color,0,W,H,img);
++            CHECK(px(img,20,20)==argb[selected[bi]],"flat authored mip bias %g: %08X expected %08X",biases[bi],px(img,20,20),argb[selected[bi]]);
++        }
++        SDL_ReleaseGPUSampler(dev,sampler);SDL_ReleaseGPUTexture(dev,mips);
 +    }
 +
 +    /* 5. Alpha test: GREATER 0x80 against alpha 0x40 discards. */
