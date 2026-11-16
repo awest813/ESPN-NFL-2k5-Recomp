@@ -20253,6 +20253,200 @@ index 0000000..3297182
 +  }
 +}
 +module.exports={waitForSuiteProgress};
+diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
+--- a/tools/recomp/translator.py
++++ b/tools/recomp/translator.py
+@@ -107,6 +107,54 @@
+     if not all(p in known for p in sources):
+         return None
+     return _merge_flag_states([known[p] for p in sources])
++
++
++def _flag_predecessors(blocks, start, indirect_targets):
++    """Ignore dead predecessors of reachable blocks, including table bytes.
++
++    Keep decoded blocks available for emission. Only flag inheritance uses
++    reachability. A reachable unresolved indirect jump makes the analysis
++    conservative again; a recovered switch contributes all its local edges.
++    """
++    by_start = {bb.start: bb for bb in blocks}
++    preds = {addr: set() for addr in by_start}
++    succ = {addr: set() for addr in by_start}
++    unknown = set()
++
++    def edge(source, target):
++        if target in by_start:
++            succ[source].add(target)
++            preds[target].add(source)
++
++    for bb in blocks:
++        last = bb.instructions[-1] if bb.instructions else None
++        if last is None:
++            continue
++        edge(bb.start, last.jump_target)
++        if last.mnemonic == 'jmp' and last.jump_target is None:
++            targets = indirect_targets.get(last.address)
++            if not targets:
++                unknown.add(bb.start)
++            else:
++                for target in targets:
++                    edge(bb.start, target)
++        leaves = last.is_ret or last.mnemonic in ('jmp', 'int3', 'ud2', 'hlt')
++        if not leaves:
++            edge(bb.start, last.end_address)
++
++    reachable = set()
++    pending = [start] if start in by_start else []
++    while pending:
++        addr = pending.pop()
++        if addr in reachable:
++            continue
++        if addr in unknown:
++            return preds
++        reachable.add(addr)
++        pending.extend(succ[addr] - reachable)
++    for addr in reachable:
++        preds[addr].intersection_update(reachable)
++    return preds
+
+
+ def write_if_changed(path, text):
+@@ -1083,9 +1131,11 @@
+                 label_addrs.add(insn.jump_target)
+         label_addrs |= self.lifter.imm_code_refs
+         # Add switch table targets (indirect jmp with intra-function table)
++        indirect_targets = {}
+         for insn in instructions:
+             if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
+                 switch_targets = self.lifter._analyze_switch_table(insn.operands)
++                indirect_targets[insn.address] = switch_targets
+                 for t in switch_targets:
+                     label_addrs.add(t)
+
+@@ -1095,18 +1145,7 @@
+         # memory. Threading the state linearly then hands that jcc the flags of
+         # whatever instruction happens to sit above it -- silently, and with a
+         # perfectly plausible-looking condition.
+-        preds = {bb.start: set() for bb in blocks}
+-        for i, bb in enumerate(blocks):
+-            last = bb.instructions[-1] if bb.instructions else None
+-            if last is None:
+-                continue
+-            if last.jump_target in preds:
+-                preds[last.jump_target].add(bb.start)
+-            # A conditional jump also falls through; ret and an unconditional
+-            # jmp do not.
+-            leaves = last.is_ret or last.mnemonic in ("jmp", "int3", "ud2", "hlt")
+-            if not leaves and i + 1 < len(blocks):
+-                preds[blocks[i + 1].start].add(bb.start)
++        preds = _flag_predecessors(blocks, start, indirect_targets)
+
+         # Settle the flag state before emitting anything.
+         #
+diff --git a/tools/recomp/test_flag_reachability.py b/tools/recomp/test_flag_reachability.py
+new file mode 100644
+index 0000000..0ee749d
+--- /dev/null
++++ b/tools/recomp/test_flag_reachability.py
+@@ -0,0 +1,37 @@
++"""Flag inference follows executable paths, not decoded table/padding bytes."""
++from tools.recomp import config
++from tools.recomp.translator import FunctionTranslator
++
++BASE = 0x10000
++
++
++def translate(image, targets=None):
++    config._install([config.Section('.text', BASE, len(image), 0, len(image), True)],
++                    entry_point=BASE, kernel_thunk_addr=BASE, origin='flag-reachability-test')
++    info = {'_addr': BASE, 'start': hex(BASE), 'end': BASE + len(image), 'size': len(image)}
++    translator = FunctionTranslator(image, {BASE: info})
++    if targets is not None:
++        translator.lifter._analyze_switch_table = lambda operands: targets
++    return translator.translate_function(BASE, info)
++
++
++def test_dead_predecessor_cannot_poison_cmp_after_register_overwrite():
++    # cmp eax,1; jmp join; dead:add edx,1; jmp join;
++    # join:mov eax,ebx; jne taken; mov eax,0;ret; taken:mov eax,1;ret
++    code = translate(bytes.fromhex('83f801eb0583c201eb0089d87506b800000000c3b801000000c3'))
++    assert 'CMP_NE(_fa, _fb)' in code, code
++    assert 'RECOMP_FLAGS_FALLBACK' not in code, code
++    assert 'eax = ebx;' in code
++
++
++def test_real_conflicting_paths_remain_unknown():
++    # Both the cmp and add paths are reachable from test edi,edi; jz alternate.
++    code = translate(bytes.fromhex('85ff740583f801eb0383c2017506b800000000c3b801000000c3'))
++    assert 'RECOMP_FLAGS_FALLBACK' in code, code
++
++
++def test_recovered_switch_cases_inherit_dispatch_comparison():
++    # cmp eax,1; jmp [edx*4+20000h]; two cases each consume its flags.
++    code = translate(bytes.fromhex('83f801ff2495000002007501c3c37501c3c3'), [BASE + 10, BASE + 14])
++    assert code.count('if (CMP_NE(_fa, _fb))') == 2, code
++    assert 'RECOMP_FLAGS_FALLBACK' not in code, code
+diff --git a/tools/recomp/test_flag_join_backedge.py b/tools/recomp/test_flag_join_backedge.py
+--- a/tools/recomp/test_flag_join_backedge.py
++++ b/tools/recomp/test_flag_join_backedge.py
+@@ -68,18 +68,11 @@
+
+
+ def test_disagreeing_predecessors_keep_the_fallback():
+-    # Two predecessors reach the jz: one after `sub`, one after `inc`, whose
+-    # flags come from a different operand. The join must refuse.
+-    #   +0  sub eax, ecx
+-    #   +2  jmp +3            -> the jz at +5
+-    #   +4  inc edx           (falls through to the jz, different flag source)
+-    #   +5 L: jz +1
+-    #   +7  ret
+-    image = (b"\x29\xC8"          # sub eax, ecx
+-             b"\xEB\x01"          # jmp +1 -> +5
+-             b"\x42"              # inc edx
+-             b"\x74\x00"          # jz +0 -> +7
+-             b"\xC3")             # ret
++    # Both setters must actually be reachable. An unconditional jump around
++    # `inc edx` made the old fixture a dead-predecessor case instead.
++    # test edi,edi; jz alternate; sub eax,ecx; jmp join;
++    # alternate:inc edx; join:jz done; ret; done:ret
++    image = bytes.fromhex('85ff740429c8eb01427401c3c3')
+     code = _translate(image)
+     assert "RECOMP_FLAGS_FALLBACK" in code, code
+
+diff --git a/tools/recomp/test_incdec_result.py b/tools/recomp/test_incdec_result.py
+--- a/tools/recomp/test_incdec_result.py
++++ b/tools/recomp/test_incdec_result.py
+@@ -14,6 +14,7 @@
+     if not cc: pytest.skip('C compiler unavailable')
+     code='''#include <stdint.h>
+ #include <stdio.h>
++#define RECOMP_INTERP_GATE(address) ((void)0)
+ static uint32_t eax,esp;
+ #define LO8(v) ((uint8_t)(v))
+ #define LO16(v) ((uint16_t)(v))
+diff --git a/tools/recomp/test_sar_width.py b/tools/recomp/test_sar_width.py
+--- a/tools/recomp/test_sar_width.py
++++ b/tools/recomp/test_sar_width.py
+@@ -12,6 +12,7 @@
+     if not cc: pytest.skip('C compiler unavailable')
+     code='''#include <stdint.h>
+     #include <stdio.h>
++    #define RECOMP_INTERP_GATE(address) ((void)0)
+     static uint32_t eax,ecx,edx,esp;
+     #define LO8(v) ((uint8_t)(v))
+     #define LO16(v) ((uint16_t)(v))
+diff --git a/tools/recomp/test_lifter_fpu_reverse.py b/tools/recomp/test_lifter_fpu_reverse.py
+--- a/tools/recomp/test_lifter_fpu_reverse.py
++++ b/tools/recomp/test_lifter_fpu_reverse.py
+@@ -67,7 +67,7 @@
+             ("fpatan", "atan2(fp_st1(), fp_top())"),
+             ("fsin", "sin(fp_top())"),
+             ("fcos", "cos(fp_top())"),
+-            ("frndint", "rint(fp_top())"),
++            ("frndint", "recomp_frndint(fp_top(), g_fp_control_word)"),
+             ("fyl2x", "log2(fp_top())"),
+         ):
+             with self.subTest(mnemonic=mnemonic):
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c

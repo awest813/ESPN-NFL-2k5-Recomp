@@ -1417,9 +1417,8 @@ All 1,374 preceding hardware checks remain; an explicit nonzero source also
 strengthens the independent texture-lifetime fixture. The five-minute total
 and 30-second inactivity watchdogs are unchanged. The final suite passes
 Linux Chromium 147 SwiftShader with the CI adapter flags in 11.46 seconds,
-
 with no WebGPU validation error. This verifies the fixture optimization;
-publication CI remains an additional gate.
+publication `574ce34` subsequently passed both Build and Pages workflows.
 The final 246-second `lod-fraction-retail/report.json` run reaches Philadelphia
 at Miami live play with players, crowd, sideline staff, field, intro statistics
 and HUD text visible. No browser/GPU/DSP fault is recorded. No restricted mip
@@ -1428,3 +1427,54 @@ stability and ordinary filtering rather than retail clamp usage. Five-second
 frame averages after 150 seconds range from 24.1 to 30.1 FPS, with 168 worklet
 underrun blocks. Full graphics/audio/gameplay parity and a sustained 30 FPS
 floor remain unproven.
+
+### Guest flag inheritance through executable paths
+
+A retail diagnostic at `0010D025` exposed a wrong branch in `sub_0010CFB0`.
+The original instructions compare ECX with 1, load a new ECX value, then JNE
+using the preceding comparison. Decoded jump-table bytes after a terminating
+path contributed a dead predecessor to flag inference. That poisoned the
+join and generated a fallback with zero flags, preventing the branch.
+
+The translator now computes executable reachability from function entry,
+including recovered switch targets and exact instruction fallthrough edges.
+Only unreachable predecessors of reachable blocks are excluded from flag
+inheritance. Decoded blocks remain available for emission; real conflicting
+paths and loop back edges retain conservative inference. A reachable unresolved
+indirect jump disables this pruning. An unresolved jump in dead table bytes
+does not prevent a proof on the executable path.
+
+Regenerating the function from the user's original XBE changes exactly the
+live JNE to consume its comparison operands. The separate overlapping tail
+function still contains an unreachable fallback; this is not a claim that
+every literal occurrence of the address has been removed. The corrected path
+selects different event words; the semantic role of those events remains
+unconfirmed. The XBE is a local ignored test input and is not published.
+
+The browser regression compiles the actual generated retail block and checks
+20,081 cases against the original instruction semantics: both branch choices,
+the overwritten register, selected event, tail argument, call count and stack
+balance. It fails on the old generated branch. Translator integration tests
+also cover dead predecessors, genuinely conflicting paths and recovered
+switches; dependency-free graph checks cover unknown jumps, loops and gaps.
+The full local recompiler suite passes 263 tests and 93 subtests. Three stale
+fixtures also failed on the untouched pinned runtime: two standalone C
+harnesses lacked the interpreter-gate stub and one FRNDINT assertion expected
+the obsolete host rounding expression. These fixtures now match the existing
+runtime contract without changing product rounding behavior.
+
+The actual browser game builds, existing gameplay flag-join checks pass, and
+a fresh pinned runtime reproduces all 85 patched files. Translator changes
+are carried in `config/xboxrecomp-web.patch`; apply that patch to a fresh
+submodule before running `tools/analyze.ps1` for regeneration, as the web
+build does automatically. The older local patch/revision files do not carry
+these changes.
+
+The final 246-second `flag-cfg-retail/report.json` run reaches Pittsburgh at
+the Jets live play, with player models, field and HUD text visible. It records
+no browser/GPU/DSP fault. Five-second averages after 150 seconds range from
+28.8 to 30.2 FPS, with 59 audio worklet underrun blocks. Different teams and
+scenes prevent attributing this range to the branch fix. Absence of a flag
+diagnostic in this run does not prove that particular branch executed; the
+compiled component regression supplies the positive branch evidence. Full
+Xbox fidelity, continuous audio and a sustained 30 FPS floor remain open.

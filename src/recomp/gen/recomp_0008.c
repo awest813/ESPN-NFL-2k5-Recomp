@@ -3337,7 +3337,7 @@ loc_0010D01C: ;
     ecx = MEM32(0xBA3A04);
 
 loc_0010D025: ;
-    if (RECOMP_FLAGS_FALLBACK(0x0010D025u, _flags) /* jne: not equal / not zero */) goto loc_0010D03B;
+    if (CMP_NE(_fa, _fb)) goto loc_0010D03B; /* jne: not equal / not zero */
 
 loc_0010D027: ;
     _fa = (uint32_t)(ecx) & 0xFFFFFFFFu; _fb = (uint32_t)(ecx) & 0xFFFFFFFFu;
