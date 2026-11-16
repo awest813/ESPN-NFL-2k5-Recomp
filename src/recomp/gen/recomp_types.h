@@ -894,10 +894,22 @@ extern uint8_t *g_interp_dirty_bits;
 extern uint32_t g_interp_dirty_limit;
 int recomp_interp_dirty(uint32_t va);
 void recomp_interp_call(uint32_t va);
+/* An IRQ worker must not wait for a long run of translated function calls to
+ * reach its next kernel call. The pending flag is normally zero; only a queued
+ * interrupt-priority worker requests a function-entry scheduling point. */
+extern volatile int32_t g_xbox_ggl_interrupt_waiting;
+void xbox_ggl_preempt_point(unsigned int guest_site);
+#if defined(_MSC_VER)
+/* Win32/x86 volatile loads pair with the publisher's InterlockedExchange. */
+#define RECOMP_INTERRUPT_PENDING() (g_xbox_ggl_interrupt_waiting != 0)
+#else
+#define RECOMP_INTERRUPT_PENDING() (__atomic_load_n(&g_xbox_ggl_interrupt_waiting, __ATOMIC_ACQUIRE) != 0)
+#endif
 /* Inline bitmap test: `va` is a constant at every gate, so this is one byte
  * load and a bit test (an out-of-line recomp_interp_dirty call here was 2.7%
  * of the game thread once the retail build marks functions, 2026-10-09). */
 #define RECOMP_INTERP_GATE(va) do { \
+    if (RECOMP_INTERRUPT_PENDING()) xbox_ggl_preempt_point(va); \
     if (g_interp_active && (uint32_t)(va) < g_interp_dirty_limit && \
         ((g_interp_dirty_bits[(uint32_t)(va) >> 3] >> ((uint32_t)(va) & 7u)) & 1u)) { recomp_interp_call(va); return; } \
 } while (0)

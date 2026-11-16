@@ -529,3 +529,48 @@ Other native compiler processes were active during that capture. Their presence
 does not establish the sole cause of the slowdown; the requested frame-rate
 floor is still unmet in this environment. These captures establish progression,
 not full gameplay or original-Xbox scene/audio parity.
+
+## Interrupt preemption between translated calls
+
+The guest lock already prioritizes the timer/interrupt worker, but checks for
+preemption only at kernel calls. A translated call sequence can therefore hold
+the guest CPU despite a queued interrupt. A regression using the actual guest
+lock, native threading primitives and `RECOMP_INTERP_GATE` reproduces the gap:
+the interrupt waits about 212 ms while translated calls continue
+(`build-web-tests/irq-preemption-before.log`).
+
+The lock now publishes an interrupt-priority waiter flag. Translated function
+entries check it and invoke the existing scheduling point only while such a
+worker is queued. Ordinary entries add no clock reads or guest-lock handoffs;
+they still pay the flag load/check. The publisher updates the waiter count
+before publishing the request. Wasm/native atomics publish and observe the
+flag; the Win32/x86 path pairs its volatile load with Interlocked publication.
+
+The regression services the queued interrupt in about 0.2 ms on Wasm/Node and
+0.06 ms natively. It also checks recursive lock-depth restoration, guest TLS
+register preservation, no extra lock grants for 10,000 uncontended calls, and
+the mod interpreter gate. These are measured fixture results, not a latency
+guarantee under arbitrary load. The full translated game rebuilds and all 54
+runtime patch files reproduce from the pinned checkout.
+
+This closes a function-boundary scheduling gap. A single translated loop with
+no function or kernel call still lacks a preemption point, and an interrupt
+worker already executing a long callback cannot preempt itself through this
+flag. Those limitations, delayed interrupt/DPC service and full gameplay/audio
+parity remain open.
+
+The four-minute retail profile (`build-web-tests/irq-entry-profile/report.json`)
+reaches Baltimore at Kansas City, the coin toss and active gameplay, with
+stadium tiers/fog, players, sideline staff/equipment and readable broadcast
+text. No browser/GPU/audio processor failures are recorded. The largest logged
+ISR wait is 18.8 ms, with no logged 40 ms ISR fallback; different attract scenes
+and the counter correction prevent a controlled comparison against the earlier
+307 ms observation.
+
+The same run still records 703 worklet underrun blocks and a maximum 184.5 ms
+APU pipeline interval, despite zero dropped output submissions. Profiling can
+perturb timing, and these wall-time measurements do not identify whether the
+remaining spikes are computation, locking, scheduling or diagnostic overhead.
+This is not evidence of resolved audio continuity or a sustained 30 FPS floor.
+The function-entry change fixes the deterministic scheduling gap demonstrated
+by the regression; remaining producer stalls require separate diagnosis.

@@ -3709,6 +3709,101 @@ diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
          case 13: vpb(&b, "    na0 = (int)floor(A.x + 0.001);\n"); break;
          default: break;
          }
+diff --git a/src/kernel/xbox_ggl.c b/src/kernel/xbox_ggl.c
+--- a/src/kernel/xbox_ggl.c
++++ b/src/kernel/xbox_ggl.c
+@@ -15,6 +15,7 @@
+ #endif
+ #include "platform/xbox_winnt.h"   /* XBOX_THREAD_LOCAL */
+ #include <stdio.h>
++#include <stdint.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include "xbox_ggl.h"
+@@ -33,11 +34,14 @@
+ static struct { DWORD tid; int prio; unsigned long long seq; } g_wait[GGL_MAX_WAITERS];
+ static int g_nwait;
+ static volatile LONG g_best_waiting_prio = -1000;
++/* Read by translated function entries. Publish only interrupt-priority
++ * contention, so normal calls do not churn the guest lock or read the clock. */
++volatile int32_t g_xbox_ggl_interrupt_waiting;
+ static XBOX_THREAD_LOCAL int t_prio;
+ static volatile DWORD g_owner;
+ static volatile LONGLONG g_owner_since;      /* QPC when the owner got the lock */
+-static volatile LONGLONG g_owner_last_point; /* QPC of its last kernel call */
+-static volatile unsigned int g_owner_last_site; /* guest return address of that call */
++static volatile LONGLONG g_owner_last_point; /* QPC of its last scheduling point */
++static volatile unsigned int g_owner_last_site; /* kernel return site or translated entry */
+ static LONGLONG g_qpc_freq, g_quantum_ticks;
+
+ static XBOX_THREAD_LOCAL int t_depth;
+@@ -165,7 +169,7 @@
+             if (total == last_total && g_waiters > 0) {
+                 if (++stalled_s == 10) {
+                     fprintf(stderr, "  [GGL] STALL: no grants for 10 s; owner=%lu waiters=%ld "
+-                                    "best waiting prio=%ld last kernel call returned to guest 0x%08X\n",
++                                    "best waiting prio=%ld last scheduling point at guest 0x%08X\n",
+                             g_owner, g_waiters, g_best_waiting_prio, g_owner_last_site);
+                     fflush(stderr);
+                     if (g_owner) ggl_report_owner_pc(g_owner);
+@@ -182,7 +186,7 @@
+         LONGLONG ms = (qpc_now() - last) * 1000 / g_qpc_freq;
+         if (ms >= 2000 && owner != reported) {
+             fprintf(stderr, "  [GGL] thread %lu has held the guest CPU for %lld ms "
+-                            "without a kernel call (last one returned to guest 0x%08X); "
++                            "without a scheduling point (last guest site 0x%08X); "
+                             "%ld thread(s) waiting -- a guest spin loop the lock cannot preempt?\n",
+                     owner, ms, g_owner_last_site, g_waiters);
+             fflush(stderr);
+@@ -230,6 +234,11 @@
+     for (int i = 0; i < g_nwait; i++)
+         if (g_wait[i].prio > best) best = g_wait[i].prio;
+     g_best_waiting_prio = best;
++#ifdef _MSC_VER
++    InterlockedExchange((volatile LONG *)&g_xbox_ggl_interrupt_waiting, best >= 100);
++#else
++    __atomic_store_n(&g_xbox_ggl_interrupt_waiting, best >= 100, __ATOMIC_RELEASE);
++#endif
+ }
+
+ /* Caller holds g_lock: is this waiter the one the lock should go to? */
+@@ -254,8 +263,8 @@
+         unsigned long long seq = g_next_seq++;
+         int me = g_nwait < GGL_MAX_WAITERS ? g_nwait++ : GGL_MAX_WAITERS - 1;
+         g_wait[me].tid = tid; g_wait[me].prio = t_prio; g_wait[me].seq = seq;
++        InterlockedIncrement(&g_waiters);
+         ggl_update_best();
+-        InterlockedIncrement(&g_waiters);
+         while (g_owner != 0 || !ggl_is_next(seq, t_prio))
+             SleepConditionVariableSRW(&g_turn, &g_lock, INFINITE, 0);
+         InterlockedDecrement(&g_waiters);
+diff --git a/src/kernel/xbox_ggl.h b/src/kernel/xbox_ggl.h
+--- a/src/kernel/xbox_ggl.h
++++ b/src/kernel/xbox_ggl.h
+@@ -21,10 +21,12 @@
+  *   - at kernel-call boundaries once the holder has run for a quantum and
+  *     someone is waiting (xbox_ggl_preempt_point), standing in for the
+  *     scheduler's timer preemption.
+- * A guest loop that spins on memory without ever calling the kernel cannot be
++ * Interrupt-priority waiters also request preemption at translated function
++ * entries, so long sequences of guest calls do not defer IRQs until a syscall.
++ * A guest loop that spins without a kernel or function call cannot be
+  * preempted here; the watchdog reports it (RECOMP_GGL_WATCHDOG, default on).
+  *
+- * The lock is a FIFO ticket lock so round-robin between ready threads is fair.
++ * The lock chooses the highest priority waiter, FIFO among equal priorities.
+  * It is recursive per thread: the bridge sometimes runs guest callbacks from
+  * inside a kernel call on a thread that already holds it.
+  */
+@@ -40,7 +42,7 @@
+ void xbox_ggl_leave(void);          /* drop one level */
+ int  xbox_ggl_release_all(void);    /* drop every level, return the depth */
+ void xbox_ggl_reacquire(int depth); /* restore a depth from release_all */
+-void xbox_ggl_preempt_point(unsigned int guest_site); /* kernel-call boundary: maybe yield */
++void xbox_ggl_preempt_point(unsigned int guest_site); /* kernel/function-entry boundary: maybe yield */
+ void xbox_ggl_set_priority(int prio); /* this thread; higher wins, default 0 */
+
+ #if !defined(XBOX_GGL_IMPL)
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
