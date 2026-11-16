@@ -1042,3 +1042,49 @@ worklet underrun blocks. Five-second averages after 150 seconds range from
 original-Xbox matching and continuous audio remain unfinished. The shader
 audit also identifies unimplemented clip-plane and bump-environment texture
 stage behavior as remaining fidelity work.
+
+
+## Texture shader clip-plane comparisons
+
+The transformed 3D paths now decode `NV097_SET_SHADER_CLIP_PLANE_MODE`
+(`0x17F8`) and implement texture-shader mode 5. Each stage checks all four
+perspective-interpolated raw texture coordinates. A clear comparison bit
+rejects a negative coordinate; a set bit rejects a nonnegative coordinate,
+including either signed zero. Kept fragments provide a zero RGBA stage result.
+These semantics follow the primary [xemu texture-stage implementation](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/psh.c).
+
+SDL/WebGPU and D3D11 carry the four comparison nibbles in previously unused
+uniform words, retaining their existing layouts. Clip-plane stages request no
+texture. GPU rejection follows stage sampling so derivatives remain available.
+The software 3D rasterizer checks the same coordinates before committing depth
+or stencil operations, including when final alpha testing is disabled. D3D11
+shader specialization keys include only comparison nibbles belonging to active
+clip-plane stages, avoiding variants for unused comparison state.
+
+The pre-fix hardware WebGPU fixture reproduced 384 clipping failures, and the
+native fixture confirmed that the comparison register was ignored. The fixed
+suite checks 576 WebGPU, 448 native Vulkan and 448 software pixel outcomes,
+covering every stage/component, both comparisons, signed zero, every comparison
+nibble and single-component violations. Valid bound textures and enabled
+alpha-kill cannot change the non-sampling clip-plane behavior. Software checks
+also verify untouched depth/stencil on rejection. A separate production-code
+fixture checks all 65,536 register values, ignored upper register bits and
+1,024 active/inactive shader-cache bit cases, with undefined-behavior checks.
+
+The browser game and actual native kernel build. The native renderer suite also
+passes address/undefined-behavior sanitizers with driver leak checking disabled.
+All three D3D11 shader stages compile; D3D11 pixel readback remains untested.
+A fresh pinned runtime tree reproduces all 77 patched files. This change covers
+the transformed 3D pipeline; the simplified flat 2D texture/combiners path and
+bump-environment mapping still require broader fidelity work. Component
+conformance does not establish original-Xbox scene or audio parity.
+
+The 246-second retail check (`clip-plane-gameplay/report.json`) uses Chrome
+157 on the Intel hardware WebGPU adapter and reaches St. Louis at Pittsburgh.
+Examined captures show Marshall Faulk's sideline intro, the coin-toss referee,
+crowd tiers, banners, sideline staff/equipment and active first-quarter play
+with readable broadcast text. No browser/GPU/DSP fault was recorded. The run
+records 142 worklet underrun blocks; five-second frame averages after 150
+seconds range from 27.4 to 30.1 FPS. It does not establish uninterrupted
+audio, a sustained 30 FPS floor or that these retail scenes use clip-plane
+texture stages. Original-Xbox scene matching remains unfinished.
