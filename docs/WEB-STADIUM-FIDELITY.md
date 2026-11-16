@@ -1211,3 +1211,49 @@ software-performance result or proof of original-Xbox graphics/audio parity.
 Software filtering, presentation/widescreen behavior and complete texture-
 stage conformance remain unfinished. The final polish skips reflection-helper
 calls on unrelated modes and rejects an unrepresentable cube-face stride.
+
+
+## Consistent software presentation and no-device frame pacing
+
+The framebuffer's SDL software presenter previously stretched the entire
+scanout into its output. It ignored the video crop, widescreen, aspect and
+presentation-filter selection, producing a different picture shape from the
+GPU presenter. Both paths, plus the alternate SDL GPU scanout uploader, now
+use one shared presentation-layout implementation. The kernel publishes
+crop/wide/aspect/filter choices in one atomic word for the framebuffer thread;
+the fallback publishes its computed display aspect back for camera widening.
+Unconfigured generic framebuffer clients retain their previous behavior.
+
+The actual SDL software renderer reproduces four crop/aspect failures before
+the fix. Its final pixel checks verify black bars for a 16:9 picture in a
+1280x900 output, removal of horizontal/vertical overscan, 4:3 pillarboxing
+without vertical source cropping, stretch after cropping, display-aspect
+feedback and linear-filter selection. These checks include the real
+`fb_present.c` implementation, rather than a duplicate presentation formula.
+The existing shared-layout test retains its 10,000 viewport bounds cases.
+
+Camera updates and browser frame pacing now run even when no SDL GPU device
+exists. The no-device camera check follows framebuffer aspect and current
+guest dimensions, rather than stale GPU presentation dimensions. A real
+flip-dispatch fixture checks 120 variable-work frames at the selected 30 Hz
+limit without a GPU; existing lock handoff, slow-frame recovery, uncapped and
+cap-toggle checks pass. This preserves the cap; it cannot make an expensive
+software frame finish within 33.3 milliseconds.
+
+The 245-second `software-shared-layout/report.json` browser run displays
+Seattle crowd models/clothing and stadium intro views with the corrected
+letterboxing in the 1280x900 viewport. It records no browser/GPU/DSP fault and
+11 worklet underrun blocks. Five-second averages after 90 seconds are
+0.7–1.3 FPS, and this slow run does not establish live-game performance,
+full software texture filtering or original-Xbox scene/audio parity.
+
+The preceding commit's web CI failed at its fixed 120-second suite deadline
+while still reporting passing cube-mip samples. Its maximum interval between
+logged checks was 1.46 seconds, with no pixel/validation failure. The expanded
+SwiftShader suite now has a five-minute total bound and a 30-second progress-
+inactivity bound, measured with a monotonic clock. Deterministic tests verify
+completion beyond the old deadline, failure on a stalled/missing startup,
+and failure at the total bound despite continuing output. Terminal failures
+remain available to the runner's existing failure checks. Hardware WebGPU
+checks pass with the new wait policy. Publication CI remains an additional
+gate for this change.

@@ -393,7 +393,7 @@ index 101118c..19c7c01 100644
 diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
 --- a/src/kernel/nv2a_gpu_sdl3.inc.c
 +++ b/src/kernel/nv2a_gpu_sdl3.inc.c
-@@ -5,8 +5,13 @@
+@@ -5,8 +5,14 @@
   */
 
  #include <SDL3/SDL.h>
@@ -404,11 +404,31 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
 +#endif
  #include "../input/xinput_xbox.h"
 -#if defined(__linux__)
++#include "../video/present_layout.h"
 +#if defined(__linux__) || defined(__EMSCRIPTEN__)
  #include "../platform/guest_memory.h"
  #endif
 
-@@ -49,7 +54,8 @@
+@@ -14,6 +20,8 @@
+ extern void  xbox_FramebufferSetGpuPresent(int on);
+ extern void  xbox_FramebufferSetKeyHook(void (*hook)(unsigned vk));
+ extern void  xbox_FramebufferApplyMode(int mode, int w, int h);
++extern void  xbox_FramebufferSetPresentation(int crop,int wide,int aspect,int nearest);
++extern uint32_t xbox_FramebufferDisplayAspect(void);
+ extern char *xbox_user_path(const char *rel, char *out, size_t n);
+
+ int  xbox_ggl_release_all(void);
+@@ -30,6 +38,9 @@
+ /* ---- Video settings & F1 menu state (matches nv2a_gpu_present.inc.c) --- */
+ enum { VM_WINDOWED, VM_BORDERLESS, VM_FULLSCREEN };
+ enum { AR_ORIGINAL, AR_STRETCH, AR_16_9, AR_21_9, AR_32_9, AR_ZOOM };
++_Static_assert(AR_ORIGINAL==XBOX_PRESENT_ORIGINAL && AR_STRETCH==XBOX_PRESENT_STRETCH &&
++               AR_16_9==XBOX_PRESENT_16_9 && AR_21_9==XBOX_PRESENT_21_9 &&
++               AR_32_9==XBOX_PRESENT_32_9 && AR_ZOOM==XBOX_PRESENT_ZOOM,"shared presentation mode values");
+ enum { SF_BILINEAR, SF_SHARP, SF_NEAREST, SF_ENHANCED };
+
+ typedef struct {
+@@ -49,7 +60,8 @@
      int lighting;
  } VideoSettings;
 
@@ -418,7 +438,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
  static SDL_AtomicInt s_vs_dirty = { 1 };
  static const char *k_vs_file = "nfl2k5_video.ini";
 
-@@ -64,7 +70,29 @@
+@@ -64,7 +76,29 @@
  static XboxHudCallback s_hud_cb = NULL;
 
  void xbox_PresentSetHudCallback(XboxHudCallback cb) { s_hud_cb = cb; }
@@ -449,7 +469,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
 
  static void vs_load(void)
  {
-@@ -84,7 +112,7 @@
+@@ -84,7 +118,7 @@
          else if (!strcmp(key, "vsync")) s_vs.vsync = v;
          else if (!strcmp(key, "brightness")) s_vs.brightness = v;
          else if (!strcmp(key, "gamma")) s_vs.gamma = v;
@@ -458,7 +478,15 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
          else if (!strcmp(key, "show_fps")) s_vs.show_fps = v;
          else if (!strcmp(key, "aniso")) s_vs.aniso = v;
          else if (!strcmp(key, "fps_limit")) s_vs.fps_limit = v;
-@@ -175,7 +203,8 @@
+@@ -119,6 +153,7 @@
+     static SDL_AtomicInt once;
+     if (SDL_CompareAndSwapAtomicInt(&once, 0, 1))
+         vs_load();
++    xbox_FramebufferSetPresentation(s_vs.crop,s_vs.widescreen,s_vs.aspect,s_vs.filter==SF_NEAREST);
+ }
+
+ enum { MI_MODE, MI_RES, MI_WIDE, MI_ASPECT, MI_SCALE, MI_LIGHTING, MI_FILTER, MI_VSYNC, MI_BRIGHT, MI_GAMMA, MI_CROP,
+@@ -175,7 +210,8 @@
      case MI_LIGHTING: return 3;
      case MI_VSYNC: case MI_FPS: case MI_WIDE: return 2;
      case MI_BRIGHT: case MI_GAMMA: return 21;
@@ -468,7 +496,15 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      case MI_LIMIT: return FPS_LIMITS;
      }
      return 1;
-@@ -288,7 +317,7 @@
+@@ -275,6 +311,7 @@
+     if (idx >= n) idx = n - 1;
+     item = k_vm_items[i];
+     vm_set(&s_vs, item, idx);
++    xbox_FramebufferSetPresentation(s_vs.crop,s_vs.widescreen,s_vs.aspect,s_vs.filter==SF_NEAREST);
+     if (item == MI_LIMIT && g_xbox_fps_limit_changed) g_xbox_fps_limit_changed();
+     if (item == MI_MODE || item == MI_RES) SDL_SetAtomicInt(&s_vs_dirty, 1);
+     vs_save();
+@@ -288,7 +325,7 @@
      SDL_GPUTexture       *fb_tex;
      SDL_GPUTransferBuffer*fb_tbuf;
      uint32_t              fb_w, fb_h;
@@ -477,7 +513,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      uint8_t              *fb_staging;
      size_t                fb_staging_capacity;
  #endif
-@@ -350,7 +379,7 @@
+@@ -350,7 +387,7 @@
       * allocation or guest-address arithmetic can wrap. */
      if (row_bytes > pitch || height > UINT32_MAX / row_bytes) return;
      size_t frame_bytes = (size_t)(row_bytes * height);
@@ -486,7 +522,7 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      if (s_sdl_pr.fb_staging_capacity < frame_bytes) {
          uint8_t *replacement = (uint8_t *)realloc(s_sdl_pr.fb_staging, frame_bytes);
          if (!replacement) return;
-@@ -396,7 +425,7 @@
+@@ -396,7 +433,7 @@
 
      uint8_t *mapped = (uint8_t *)SDL_MapGPUTransferBuffer(s_sdl_pr.gpu, s_sdl_pr.fb_tbuf, true);
      if (!mapped) return;
@@ -495,6 +531,42 @@ diff --git a/src/kernel/nv2a_gpu_sdl3.inc.c b/src/kernel/nv2a_gpu_sdl3.inc.c
      memcpy(mapped, s_sdl_pr.fb_staging, frame_bytes);
  #else
      {
+@@ -430,17 +467,31 @@
+         SDL_EndGPUCopyPass(cpass);
+     }
+
++#ifdef __EMSCRIPTEN__
++    float display=s_vs.widescreen?16.0f/9.0f:4.0f/3.0f;
++    if(s_vs.aspect==AR_16_9)display=16.0f/9.0f;
++    else if(s_vs.aspect==AR_21_9)display=21.0f/9.0f;
++    else if(s_vs.aspect==AR_32_9)display=32.0f/9.0f;
++    else if(s_vs.aspect==AR_STRETCH || s_vs.aspect==AR_ZOOM)display=0;
++    wg_set_present_aspect(display);
++#endif
+     SDL_GPUTexture *swap_tex = NULL;
+     Uint32 sw_w = 0, sw_h = 0;
+     if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, s_sdl_pr.win, &swap_tex, &sw_w, &sw_h) && swap_tex) {
+         SDL_GPUBlitInfo blit;
+         SDL_zero(blit);
+         blit.source.texture      = s_sdl_pr.fb_tex;
+-        blit.source.w            = w;
+-        blit.source.h            = h;
++        XboxPresentLayout layout=xbox_present_layout(w,h,sw_w,sw_h,s_vs.crop,s_vs.widescreen,s_vs.aspect);
++        blit.source.x            = layout.sx;
++        blit.source.y            = layout.sy;
++        blit.source.w            = layout.sw;
++        blit.source.h            = layout.sh;
+         blit.destination.texture = swap_tex;
+-        blit.destination.w       = sw_w;
+-        blit.destination.h       = sw_h;
++        blit.destination.x       = layout.dx;
++        blit.destination.y       = layout.dy;
++        blit.destination.w       = layout.dw;
++        blit.destination.h       = layout.dh;
++        blit.clear_color         = (SDL_FColor){0,0,0,1};
+         blit.load_op             = SDL_GPU_LOADOP_CLEAR;
+         blit.filter              = (s_vs.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+         SDL_BlitGPUTexture(cmd, &blit);
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
@@ -1964,11 +2036,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_vpcache.inc.c"
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
-@@ -306,12 +364,15 @@
+@@ -306,12 +364,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
-+        sg_present_anamorphic_update();
++    }
++    sg_present_anamorphic_update();
++    if(s_sg.dev) {
          if (sg_present_active())
              sg_present_flip();
          else
@@ -1977,10 +2051,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
          sg_stats_tick();
          s_sg_frame++;
          sg_probe_flip();
--    }
+     }
 -}
-+        sg_frame_pace();
-+    }
++    sg_frame_pace();
 +}
 diff --git a/src/kernel/sdlgpu/sdlgpu_clip.h b/src/kernel/sdlgpu/sdlgpu_clip.h
 new file mode 100644
@@ -4167,7 +4240,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +uint32_t g_xbox_image_lo, g_xbox_image_hi, g_xbox_contig_size;
 +ptrdiff_t xbox_GetMemoryOffset(void) { return (ptrdiff_t)g_ram; }
 +uint32_t xbox_ContiguousAllocatedBytes(void) { return 0; }
-+void *xbox_FramebufferWindowHwnd(void) { return (void *)1; }
++#include "video/fb_present.c"
 +
  typedef struct { float p[3][2], uv[3][2]; uint32_t argb; int textured; } Tri;
  static Tri g_tris[8];
@@ -4263,7 +4336,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,579 @@
+@@ -231,34 +220,615 @@
      return bad == 0;
  }
 
@@ -4774,10 +4847,40 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    CHECK(snapshot_textures(),"restoring direction texture snapshots failed");
 +}
 +
++static void test_software_presentation(void)
++{
++    SDL_Surface *output=SDL_CreateSurface(1280,900,SDL_PIXELFORMAT_ARGB8888);
++    CHECK(output!=NULL,"software presentation output surface failed");if(!output)return;
++    g_fb.width=720;g_fb.height=480;g_fb.rgb=calloc(720*480,4);g_fb.rgb_lock=SDL_CreateRWLock();
++    g_fb.fallback_renderer=SDL_CreateSoftwareRenderer(output);
++    g_fb.fallback_texture=SDL_CreateTexture(g_fb.fallback_renderer,SDL_PIXELFORMAT_BGRX32,SDL_TEXTUREACCESS_STREAMING,720,480);
++    CHECK(g_fb.rgb && g_fb.rgb_lock && g_fb.fallback_renderer && g_fb.fallback_texture,"software presentation fixture failed");
++    fb_texture_opaque(g_fb.fallback_texture);SDL_SetAtomicU32(&g_fb.va,0x400000);SDL_SetAtomicU32(&g_fb.pitch,720*4);SDL_SetAtomicU32(&g_fb.snap_ms,0);
++    for(unsigned y=0;y<480;y++)for(unsigned x=0;x<720;x++) {
++        uint32_t color=x<40 || x>=680?0xFFFF0000u:y<16 || y>=464?0xFF0000FFu:0xFF00FF00u;
++        memcpy(g_ram+0x400000+(y*720+x)*4,&color,4);
++    }
++    xbox_FramebufferSetPresentation(40,1,XBOX_PRESENT_ORIGINAL,1);fb_draw_sdl_fallback();
++    uint32_t *pixels=output->pixels;unsigned stride=(unsigned)output->pitch/4;
++    CHECK(pixels[640]==0xFF000000u && pixels[450*stride+640]==0xFF00FF00u && pixels[899*stride+640]==0xFF000000u,"software widescreen must retain black bars above/below");
++    CHECK(pixels[450*stride]==0xFF00FF00u && pixels[100*stride+640]==0xFF00FF00u,"software widescreen must crop horizontal and vertical overscan");
++    xbox_FramebufferSetPresentation(40,0,XBOX_PRESENT_ORIGINAL,1);fb_draw_sdl_fallback();
++    CHECK(pixels[450*stride]==0xFF000000u && pixels[640]==0xFF0000FFu && pixels[450*stride+640]==0xFF00FF00u,"software 4:3 must pillarbox while retaining vertical source pixels");
++    xbox_FramebufferSetPresentation(40,1,XBOX_PRESENT_STRETCH,1);fb_draw_sdl_fallback();
++    CHECK(pixels[640]==0xFF00FF00u && pixels[450*stride]==0xFF00FF00u,"software stretch must fill output after cropping");
++    CHECK(xbox_FramebufferDisplayAspect()==1777778u,"software presentation did not publish display aspect");
++    xbox_FramebufferSetPresentation(40,1,XBOX_PRESENT_ORIGINAL,0);fb_draw_sdl_fallback();
++    SDL_ScaleMode filter;CHECK(SDL_GetTextureScaleMode(g_fb.fallback_texture,&filter) && filter==SDL_SCALEMODE_LINEAR,"software filter setting did not select linear presentation");
++    SDL_DestroyTexture(g_fb.fallback_texture);SDL_DestroyRenderer(g_fb.fallback_renderer);SDL_DestroyRWLock(g_fb.rgb_lock);free(g_fb.rgb);SDL_DestroySurface(output);
++    g_fb.fallback_texture=NULL;g_fb.fallback_renderer=NULL;g_fb.rgb_lock=NULL;g_fb.rgb=NULL;SDL_SetAtomicU32(&g_fb.presentation,0);SDL_SetAtomicU32(&g_fb.display_aspect,0);
++}
++
 +static int test_match_view(void) { return 1; }
 +static void test_widescreen_camera(void)
 +{
 +    VideoSettings saved = s_vs;
++    int saved_registered=s_sgp.registered;s_sgp.registered=1;
++    uint32_t saved_width=s_gpu.clip_w,saved_height=s_gpu.clip_h;
 +    float block[9] = {1.1851852f,0.84375f,56.25f,40,680,720,2,360,1};
 +    float *k = (float *)(g_ram + 0x10254);
 +    memcpy(k, block, sizeof block);
@@ -4799,8 +4902,12 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    k[3]=39; k[0]=1.5f; s_frame_vp_draws=1;
 +    sg_present_anamorphic_update();
 +    CHECK(k[0]==1.5f, "unrecognized executable header was modified");
++    memcpy(k,block,sizeof block);s_sgp.registered=0;s_gpu.clip_w=640;s_gpu.clip_h=480;
++    SDL_SetAtomicU32(&g_fb.display_aspect,2370370u);s_frame_vp_draws=1;sg_flip();
++    CHECK(fabsf(k[0]-16.0f/9.0f)<1e-5f,"software camera must follow current framebuffer aspect without a GPU device");
 +    memset(k,0,sizeof block); xbox_present_in_match_fn=NULL;
-+    SDL_SetAtomicInt(&s_sgp.aspect,0); s_vs=saved;
++    SDL_SetAtomicInt(&s_sgp.aspect,0);SDL_SetAtomicU32(&g_fb.display_aspect,0);s_sgp.registered=saved_registered;
++    s_gpu.clip_w=saved_width;s_gpu.clip_h=saved_height;s_vs=saved;
 +}
 +
  int main(void)
@@ -4809,6 +4916,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    unsetenv("RECOMP_CULL");
 +    test_guest_culling();
      if (!SDL_Init(SDL_INIT_VIDEO)) { printf("SDL_Init: %s\n", SDL_GetError()); return 2; }
++    g_fb.window=(SDL_Window *)1; /* GPU fixture never claims a real window. */
      g_ram = calloc(1, 16u << 20);
      g_ref = calloc(1, 16u << 20);
 +    test_widescreen_camera();
@@ -4836,6 +4944,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    test_texture_clip_plane();
 +    test_bump_environment();
 +    test_direction_texture_stages();
++    test_software_presentation();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
      target(0x400000, 320, 240, 1536);              /* padded rows, like the title */
@@ -4847,7 +4956,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,8 +801,8 @@
+@@ -267,8 +837,8 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -4858,7 +4967,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      g_ntris = 2; quad(0, 0, 0, 64, 48, -3.5f, 0, 28.5f, 24, 0xC0FFFFFFu, 1);
      run_scene("textured, wrapped, modulated, negative u clamps", 0);
 
-@@ -308,7 +842,10 @@
+@@ -308,7 +878,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -4870,7 +4979,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +859,32 @@
+@@ -322,6 +895,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -19727,38 +19836,41 @@ diff --git a/src/kernel/nv2a_gpu_ps.inc.c b/src/kernel/nv2a_gpu_ps.inc.c
      if (!k->alpha[0]) k->alpha[1] = k->alpha[2] = 0;     /* no alpha test */
      else if (k->alpha[1] == 0x200u || k->alpha[1] == 0x207u) k->alpha[2] = 0;   /* never / always */
      if (c->alpha[3]) {                                    /* combiners active */
-diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
---- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
-+++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
-@@ -1,6 +1,80 @@
-
- void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
--uint32_t xbox_FramebufferWindowVa(void);
-+
+diff --git a/src/video/present_layout.h b/src/video/present_layout.h
+new file mode 100644
+index 0000000..a3ffcc0
+--- /dev/null
++++ b/src/video/present_layout.h
+@@ -0,0 +1,57 @@
++#ifndef XBOXRECOMP_PRESENT_LAYOUT_H
++#define XBOXRECOMP_PRESENT_LAYOUT_H
++#include <stdint.h>
++enum { XBOX_PRESENT_ORIGINAL, XBOX_PRESENT_STRETCH, XBOX_PRESENT_16_9,
++       XBOX_PRESENT_21_9, XBOX_PRESENT_32_9, XBOX_PRESENT_ZOOM };
 +/* Presentation geometry. Guest scanout pixels are anamorphic; their numeric
 + * width/height is not the display aspect of the widescreen picture. */
 +typedef struct {
 +    uint32_t sx, sy, sw, sh, dx, dy, dw, dh;
 +    float aspect;
-+} SgPresentLayout;
++} XboxPresentLayout;
 +
-+static SgPresentLayout sg_present_layout(uint32_t fw, uint32_t fh,
++static XboxPresentLayout xbox_present_layout(uint32_t fw, uint32_t fh,
 +        uint32_t ww, uint32_t wh, int crop, int wide, int mode)
 +{
-+    SgPresentLayout r = {0};
++    XboxPresentLayout r = {0};
 +    if (!fw || !fh || !ww || !wh) return r;
 +    r.sx = fw == 720 && fh == 480 ? (uint32_t)(crop < 0 ? 0 : crop > 40 ? 40 : crop) : 0;
 +    r.sy = r.sx == 40 && wide ? 16 : 0;
 +    r.sw = fw - 2 * r.sx; r.sh = fh - 2 * r.sy;
 +    float window = (float)ww / wh;
 +    r.aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
-+    if (mode == AR_16_9) r.aspect = 16.0f / 9.0f;
-+    else if (mode == AR_21_9) r.aspect = 21.0f / 9.0f;
-+    else if (mode == AR_32_9) r.aspect = 32.0f / 9.0f;
-+    else if (mode == AR_ORIGINAL && wide && window > r.aspect)
++    if (mode == XBOX_PRESENT_16_9) r.aspect = 16.0f / 9.0f;
++    else if (mode == XBOX_PRESENT_21_9) r.aspect = 21.0f / 9.0f;
++    else if (mode == XBOX_PRESENT_32_9) r.aspect = 32.0f / 9.0f;
++    else if (mode == XBOX_PRESENT_ORIGINAL && wide && window > r.aspect)
 +        r.aspect = window > 32.0f / 9.0f ? 32.0f / 9.0f : window;
-+    if (mode == AR_STRETCH || mode == AR_ZOOM) {
-+        if (mode == AR_ZOOM) {
++    if (mode == XBOX_PRESENT_STRETCH || mode == XBOX_PRESENT_ZOOM) {
++        if (mode == XBOX_PRESENT_ZOOM) {
 +            if (window > r.aspect) {
 +                uint32_t h = (uint32_t)(r.sh * r.aspect / window + 0.5f);
 +                if (!h) h = 1;
@@ -19784,6 +19896,41 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +    r.dx = (ww - r.dw) / 2; r.dy = (wh - r.dh) / 2;
 +    return r;
 +}
++
++
++#endif
+diff --git a/tests/sdlgpu_web/test_wait.cjs b/tests/sdlgpu_web/test_wait.cjs
+new file mode 100644
+index 0000000..e2a694a
+--- /dev/null
++++ b/tests/sdlgpu_web/test_wait.cjs
+@@ -0,0 +1,17 @@
++// Bound the whole suite while distinguishing a slow software GPU from a stall.
++'use strict';
++const {performance}=require('node:perf_hooks');
++async function waitForSuiteProgress(readState,{idleMs=30000,totalMs=300000,pollMs=250,
++  now=()=>performance.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
++  const started=now();let lastProgress=started,lastCount=-1;
++  for(;;) {
++    const state=await readState(),time=now();
++    if(state?.done)return state;
++    const count=state?.count||0;
++    if(count>lastCount){lastCount=count;lastProgress=time;}
++    if(time-started>=totalMs)throw Error(`WebGPU suite exceeded total time ${totalMs} ms (${count} log entries)`);
++    if(time-lastProgress>=idleMs)throw Error(`WebGPU suite made no progress for ${idleMs} ms (${count} log entries)`);
++    await sleep(Math.max(1,Math.min(pollMs,totalMs-(time-started),idleMs-(time-lastProgress))));
++  }
++}
++module.exports={waitForSuiteProgress};
+diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
+--- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
++++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
+@@ -1,6 +1,32 @@
+
+ void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
+-uint32_t xbox_FramebufferWindowVa(void);
++
++#include "../../video/present_layout.h"
 +
 +/* Pace completed game frames, not just repeated scanout of the last texture.
 + * Keep an absolute fractional deadline and never catch up in a burst after
@@ -19812,7 +19959,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static struct {
      SDL_Mutex      *lock;             /* tex, w, h: replaced on the flip thread */
-@@ -9,7 +83,36 @@
+@@ -9,7 +35,39 @@
      int             registered;
      SDL_AtomicInt   failed;           /* the window could not be claimed */
      int             claimed;          /* fb_thread only */
@@ -19832,10 +19979,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +    static int flat_frames;
 +    if (!InterlockedExchange(&s_frame_vp_draws, 0)) { if (flat_frames < 6) flat_frames++; }
 +    else flat_frames = 0;
-+    int encoded = SDL_GetAtomicInt(&s_sgp.aspect);
++    int gpu_layout=s_sgp.registered && !SDL_GetAtomicInt(&s_sgp.failed);
++    int encoded=gpu_layout?SDL_GetAtomicInt(&s_sgp.aspect):(int)xbox_FramebufferDisplayAspect();
 +    float ar = encoded ? encoded / 1000000.0f : 16.0f / 9.0f;
-+    SgPresentLayout visible = sg_present_layout(s_sgp.w ? s_sgp.w : 720,
-+        s_sgp.h ? s_sgp.h : 480, 1, 1, s_vs.crop, s_vs.widescreen, AR_STRETCH);
++    uint32_t width=gpu_layout && s_sgp.w?s_sgp.w:s_gpu.clip_x+s_gpu.clip_w;
++    uint32_t height=gpu_layout && s_sgp.h?s_sgp.h:s_gpu.clip_y+s_gpu.clip_h;
++    XboxPresentLayout visible = xbox_present_layout(width?width:720,height?height:480,
++        1,1,s_vs.crop,s_vs.widescreen,AR_STRETCH);
 +    float source = (float)visible.sw / visible.sh;
 +    float f = s_vs.widescreen && flat_frames < 6 && xbox_present_in_match_fn && xbox_present_in_match_fn()
 +        ? ar / source : 1.0f;
@@ -19849,7 +19999,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static int sg_present_wanted(void)
  {
-@@ -40,6 +143,14 @@
+@@ -40,6 +98,14 @@
          s_sgp.claimed = 0;
          return 1;
      }
@@ -19864,12 +20014,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s_sgp.claimed) {
          if (!SDL_ClaimWindowForGPUDevice(s_sg.dev, win)) {
              fprintf(stderr, "  [SDLGPU] cannot present on the window (%s); frames go through guest RAM\n",
-@@ -65,22 +176,20 @@
+@@ -65,22 +131,20 @@
          SDL_LockMutex(s_sgp.lock);
          if (s_sgp.tex) {
              SDL_GPUBlitInfo blit;
 -            float dw = (float)sw, dh = (float)sh;
-+            SgPresentLayout layout = sg_present_layout(s_sgp.w, s_sgp.h, sw, sh,
++            XboxPresentLayout layout = xbox_present_layout(s_sgp.w, s_sgp.h, sw, sh,
 +                s_vs.crop, s_vs.widescreen, s_vs.aspect);
 +            SDL_SetAtomicInt(&s_sgp.aspect, (int)(layout.aspect * 1000000.0f + 0.5f));
              SDL_zero(blit);
@@ -19898,7 +20048,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
              blit.load_op = SDL_GPU_LOADOP_CLEAR;  /* black outside the frame */
              blit.clear_color = (SDL_FColor){ 0.0f, 0.0f, 0.0f, 1.0f };
              blit.filter = (s_vs.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-@@ -92,9 +201,14 @@
+@@ -92,9 +156,14 @@
              };
              SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
          }
@@ -19915,7 +20065,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      return 1;
  }
 
-@@ -103,15 +217,22 @@
+@@ -103,15 +172,22 @@
   * renderer holds (the previous frame stays). */
  static void sg_present_flip(void)
  {
@@ -19941,7 +20091,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -178,4 +299,4 @@
+@@ -178,4 +254,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);
@@ -25823,12 +25973,13 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      struct sysinfo si;
      if (sysinfo(&si) != 0) return FALSE;
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 605a947..2bd0a55 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
-@@ -12,10 +12,22 @@
+@@ -11,11 +11,24 @@
+ #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
++#include "present_layout.h"
  #include "video_player.h"   /* xbox_FramebufferDumpBmp */
 +#ifdef __EMSCRIPTEN__
 +#include <emscripten/em_js.h>
@@ -25838,21 +25989,67 @@ index 605a947..2bd0a55 100644
 + * nothing linked it in: "Browser is not defined" on the first present. */
 +EM_JS_DEPS(xbox_fb_present, "$Browser");
 +#endif
- 
+
  extern ptrdiff_t xbox_GetMemoryOffset(void);
- 
+
 +#ifdef __EMSCRIPTEN__
 +#define FB_TITLE          "ESPN NFL 2K5 Web"   /* SDL sets the page's title */
 +#else
  #define FB_TITLE          "ESPN NFL 2K5 - LINUX V0.5"
 +#endif
  #define FB_GUEST_RAM_SIZE 0x04000000u
- 
+
  enum {
-@@ -260,6 +272,18 @@ static int SDLCALL fb_thread_sdl(void *data) {
- 
+@@ -58,6 +71,8 @@
+
+     /* Presenter handoff & hooks */
+     SDL_AtomicInt gpu_present;
++    SDL_AtomicU32 presentation; /* one coherent crop/wide/mode/filter setting */
++    SDL_AtomicU32 display_aspect; /* fallback display aspect, scaled by 1e6 */
+
+     void * volatile  presenter;
+
+@@ -73,6 +88,15 @@
+ };
+
+
++
++/* Settings are written by the command thread and read by the framebuffer
++ * thread. Publish the whole selection atomically, including validity. */
++void xbox_FramebufferSetPresentation(int crop,int wide,int aspect,int nearest) {
++    uint32_t value=0x80000000u|(uint32_t)(crop<0?0:crop>40?40:crop)
++        |(wide?64u:0u)|((uint32_t)(aspect<0 || aspect>5?0:aspect)<<7)|(nearest?1024u:0u);
++    SDL_SetAtomicU32(&g_fb.presentation,value);
++}
++uint32_t xbox_FramebufferDisplayAspect(void) { return SDL_GetAtomicU32(&g_fb.display_aspect); }
+
+ static void fb_texture_opaque(SDL_Texture *t)
+ {
+@@ -219,7 +243,19 @@
+     SDL_SetRenderDrawColor(g_fb.fallback_renderer, 0, 0, 0, 255);
+     SDL_RenderClear(g_fb.fallback_renderer);
+
+-    if (g_fb.ultrawide) {
++    uint32_t presentation=SDL_GetAtomicU32(&g_fb.presentation);
++    if(presentation&0x80000000u) {
++        int out_w=0,out_h=0;SDL_GetRenderOutputSize(g_fb.fallback_renderer,&out_w,&out_h);
++        if(out_w>0 && out_h>0) {
++            XboxPresentLayout layout=xbox_present_layout(g_fb.width,g_fb.height,(uint32_t)out_w,(uint32_t)out_h,
++                (int)(presentation&63u),(presentation&64u)!=0,(int)((presentation>>7)&7u));
++            SDL_SetAtomicU32(&g_fb.display_aspect,(uint32_t)(layout.aspect*1000000.0f+0.5f));
++            SDL_SetTextureScaleMode(g_fb.fallback_texture,(presentation&1024u)?SDL_SCALEMODE_NEAREST:SDL_SCALEMODE_LINEAR);
++            SDL_FRect source={(float)layout.sx,(float)layout.sy,(float)layout.sw,(float)layout.sh};
++            SDL_FRect destination={(float)layout.dx,(float)layout.dy,(float)layout.dw,(float)layout.dh};
++            SDL_RenderTexture(g_fb.fallback_renderer,g_fb.fallback_texture,&source,&destination);
++        }
++    } else if (g_fb.ultrawide) {
+         int out_w = 0, out_h = 0;
+         SDL_GetRenderOutputSize(g_fb.fallback_renderer, &out_w, &out_h);
+         if (out_w > 0 && out_h > 0) {
+@@ -260,6 +296,18 @@
+
      g_fb.ultrawide = getenv("RECOMP_ULTRAWIDE") && *getenv("RECOMP_ULTRAWIDE") != '0';
- 
+
 +#ifdef __EMSCRIPTEN__
 +    /* This thread is a worker (pthread), not the page's main thread:
 +     *  - WebGL cannot be created here without handing the canvas over to
@@ -25868,8 +26065,8 @@ index 605a947..2bd0a55 100644
      if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
          fprintf(stderr, "  [FBWIN] SDL_Init failed: %s\n", SDL_GetError());
          SDL_SetAtomicInt(&g_fb.running, 0);
-@@ -303,6 +327,13 @@ static int SDLCALL fb_thread_sdl(void *data) {
- 
+@@ -303,6 +351,13 @@
+
      while (SDL_GetAtomicInt(&g_fb.running)) {
          SDL_Event ev;
 +#ifdef __EMSCRIPTEN__
@@ -25882,7 +26079,7 @@ index 605a947..2bd0a55 100644
          while (SDL_PollEvent(&ev)) {
              if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                  fprintf(stderr, "[WINDOW] SDL quit requested -- shutting down game\n");
-@@ -351,12 +382,9 @@ static int SDLCALL fb_thread_sdl(void *data) {
+@@ -351,12 +406,9 @@
                      );
                      fb_texture_opaque(g_fb.fallback_texture);
                  }
@@ -25996,10 +26193,10 @@ index 0000000..277a811
 +</body></html>
 diff --git a/tests/sdlgpu_web/test_page.js b/tests/sdlgpu_web/test_page.js
 new file mode 100644
-index 0000000..4691e41
+index 0000000..be9bf1b
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_page.js
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,81 @@
 +// Runs test_web.c's build in headless Chromium with WebGPU (SwiftShader):
 +//   node test_page.js <build dir>
 +// Fails on any "FAIL:" line, on WebGPU validation errors the shim reports,
@@ -26009,6 +26206,7 @@ index 0000000..4691e41
 +const http = require('http');
 +const fs = require('fs');
 +const path = require('path');
++const {waitForSuiteProgress}=require('./test_wait.cjs');
 +
 +const DIR = path.resolve(process.argv[2] || 'build');
 +const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
@@ -26039,8 +26237,8 @@ index 0000000..4691e41
 +    page.on('requestfailed', (r) => console.log('request failed:', r.url(), r.failure()?.errorText));
 +    page.on('pageerror', (e) => { failures++; console.log('pageerror:', e.message); });
 +    await page.goto(url);
-+    await page.waitForFunction(() => window.L && L.some((l) => /^PRESENTED|SDLGPU-WEB DONE|^FAILED/.test(l)),
-+                               null, { timeout: 120000 });
++    await waitForSuiteProgress(()=>page.evaluate(()=>({count:window.L?.length||0,
++      done:!!window.L?.some(l=>/^PRESENTED|SDLGPU-WEB DONE|^FAILED/.test(l))})));
 +    // Queue completion and OffscreenCanvas presentation are asynchronous.
 +    // Wait for the observable frame instead of guessing a compositor delay.
 +    await page.waitForFunction(() => {

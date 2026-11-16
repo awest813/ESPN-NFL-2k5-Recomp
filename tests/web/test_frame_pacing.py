@@ -11,6 +11,8 @@ present = (kernel / "sdlgpu_present.inc.c").read_text(encoding="utf-8")
 pacer = present[present.index("static void sg_frame_pace("):present.index("static struct {")]
 video = (kernel.parent / "nv2a_gpu_sdl3.inc.c").read_text(encoding="utf-8")
 cap = video[video.index("#ifdef __EMSCRIPTEN__\nstatic SDL_AtomicInt s_web_fps_override"):video.index("static void vs_load(")]
+core=(kernel / "sdlgpu.inc.c").read_text(encoding="utf-8")
+flip=core[core.index("static void sg_flip(void)"):]
 out = root / "build-web-tests/frame-pacing"
 out.mkdir(parents=True, exist_ok=True)
 source = r'''
@@ -36,6 +38,19 @@ static void SDL_DelayNS(uint64_t n) { clock_ns+=n; waited+=n; }
 static int xbox_ggl_release_all(void) { releases++; return 3; }
 static void xbox_ggl_reacquire(int depth) { assert(depth==3); reacquires++; }
 /* PRODUCTION */
+static struct {void *dev;} s_sg;
+static struct {unsigned frames;} s_sg_stats;
+static unsigned s_sg_frame;
+static int camera_updates,queue_flushes;
+static void sg_queue_flush(void) {queue_flushes++;}
+static void sg_present_register(void) {}
+static void sg_present_anamorphic_update(void) {camera_updates++;}
+static int sg_present_active(void) {return 0;}
+static void sg_present_flip(void) {}
+static void sg_download_all(void) {}
+static void sg_stats_tick(void) {}
+static void sg_probe_flip(void) {}
+/* FLIP */
 int main(void) {
     setenv("NFL2K5_FPS_LIMIT","30",1);
     assert(xbox_VideoFpsLimit()==30);
@@ -68,8 +83,13 @@ int main(void) {
     assert(xbox_WebSetFpsLimit(30)); sg_frame_pace();
     assert(waited==previous);
     puts("ok: uncapped mode and re-enabling the cap reset timing");
+    assert(xbox_WebSetFpsLimit(0));sg_frame_pace();assert(xbox_WebSetFpsLimit(30));
+    sg_flip();
+    for(unsigned i=0;i<120;i++) {uint64_t previous=clock_ns;clock_ns+=10000000u;sg_flip();assert(clock_ns-previous==33333333u);}
+    assert(camera_updates==121 && queue_flushes==0 && s_sg_stats.frames==0);
+    puts("ok: real flip dispatch retains 30 Hz and camera updates without a GPU device");
 }
-'''.replace("/* PRODUCTION */", lookup + cap + pacer)
+'''.replace("/* PRODUCTION */", lookup + cap + pacer).replace("/* FLIP */",flip)
 (out / "test.c").write_text(source, encoding="utf-8")
 subprocess.run([shutil.which("emcc") or "emcc", str(out / "test.c"), "-O2", "-sENVIRONMENT=node", "-o", str(out / "test.js")],check=True)
 subprocess.run([shutil.which("node") or "node", str(out / "test.js")],check=True)

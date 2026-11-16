@@ -49,6 +49,7 @@ python3 -I "$ROOT/tests/web/test_audio_submission.py"
 python3 -I "$ROOT/tests/web/test_voice_attenuation.py"
 python3 -I "$ROOT/tests/web/test_audio_diagnostics.py"
 node "$ROOT/tests/web/test_audit_diagnostics.cjs"
+node "$ROOT/tests/web/test_sdlgpu_wait.cjs"
 node "$ROOT/tests/web/test_audio_worklet.cjs"
 node "$ROOT/tests/web/test_audio_bridge.cjs"
 
