@@ -82,9 +82,55 @@ static int zero_product_check(void) {
         }
     }
     puts("PASS NV2A zero times infinity/NaN and positive-zero MUL/MAD results");
+    for(unsigned mac=5;mac<=8;mac++) {
+        uint32_t *t=s_vp.prog[0];t[1]=(mac<<21)|(2u<<13)|0x1bu;
+        t[2]=(2u<<26)|(1u<<11)|0x6cu;s_vp_cgen++;vp_run(input,output);
+        float expected[4]={0};if(mac==8){expected[0]=1;expected[2]=-0.0f;}
+        if(memcmp(output[3],expected,sizeof expected)) {puts("FAIL zero-product dot/distance");return 1;}
+    }
+    puts("PASS dot and distance instructions suppress exceptional zero products");
     return 0;
 }
+static int reciprocal_check(void) {
+    const uint32_t values[]={0,0x80000000u,0x7f800000u,0xff800000u,0x3f800000u,0xbf800000u,0x40000000u,0xc0000000u,0x7fc00000u};
+    const uint32_t expected[3][9]={
+        {0x7f800000u,0xff800000u,0,0x80000000u,0x3f800000u,0xbf800000u,0x3f000000u,0xbf000000u,0x7fc00000u},
+        {0x5f800000u,0xdf800000u,0x1f800000u,0x9f800000u,0x3f800000u,0xbf800000u,0x3f000000u,0xbf000000u,0x7fc00000u},
+        {0x7f800000u,0x7f800000u,0,0,0x3f800000u,0x3f800000u,0,0,0x7fc00000u}};
+    float input[16][4]={{0}},output[16][4];s_vp.start=0;
+    for(unsigned ilu=2;ilu<=4;ilu++) {
+        uint32_t *t=s_vp.prog[0];memset(s_vp.prog,0,sizeof s_vp.prog);
+        t[1]=ilu<<25;t[3]=(2u<<28)|(15u<<16)|(15u<<12)|(1u<<11)|(3u<<3)|5u;
+        s_vp_cgen++;
+        for(unsigned j=0;j<9;j++) {
+            if(ilu==4 && (j==6 || j==7))continue;
+            memcpy(&input[0][0],&values[j],4);vp_run(input,output);
+            uint32_t actual;memcpy(&actual,&output[3][0],4);
+            if(j==8 ? !isnan(output[3][0]) : actual!=expected[ilu-2][j]) {
+                printf("FAIL reciprocal ILU %u input %08X actual %08X expected %08X\n",ilu,values[j],actual,expected[ilu-2][j]);return 1;
+            }
+        }
+    }
+    puts("PASS reciprocal signs, exceptional values and exact RCC bounds");
+    uint32_t *t=s_vp.prog[0];t[1]=7u<<25;t[2]=0x6cu;s_vp_cgen++;
+    input[0][0]=1;input[0][1]=1.25f;
+    for(unsigned negative=0;negative<2;negative++) {
+        input[0][3]=negative?-128.0f:128.0f;vp_run(input,output);
+        float want=exp2f((negative?-127.99609375f:127.99609375f)*log2f(1.25f));
+        if(memcmp(&want,&output[3][2],4)) {puts("FAIL exact LIT exponent limit");return 1;}
+    }
+    puts("PASS LIT exponent limit is exactly 128 minus 1/256");
+    input[0][3]=0;
+    for(unsigned j=0;j<3;j++) {
+        input[0][1]=(float[]){0,-1,NAN}[j];vp_run(input,output);
+        if(output[3][2]!=1) {puts("FAIL LIT zero exponent");return 1;}
+    }
+    input[0][0]=-0.0f;vp_run(input,output);
+    if(!signbit(output[3][1]) || output[3][2]!=0) {puts("FAIL LIT signed zero");return 1;}
+    puts("PASS LIT zero exponent and signed diffuse zero");return 0;
+}
 int main(void) {
+    if(reciprocal_check()) return 1;
     if(zero_product_check()) return 1;
     if(parity_check()) return 1;
     s_vp.start=13;

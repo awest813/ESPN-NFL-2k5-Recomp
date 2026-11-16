@@ -359,3 +359,38 @@ equipment, players/referee and stadium tiers without recorded browser/GPU
 exceptions. Its worklet reports one underrun, and runtime queue drops remain.
 This does not prove original-Xbox audio parity, resolution of the earlier
 coach geometry fault, or a sustained 30 FPS floor.
+
+## Reciprocal signs, exact bounds and complete zero products
+
+The next bit-pattern regression fails on the preceding interpreter:
+`RCP(-0)` returns `7F800000` instead of `FF800000`
+(`build-web-tests/vp-reciprocal-before.log`). Reciprocal signs are now preserved.
+RCC uses the exact signed IEEE bounds specified in
+[NVIDIA's vertex-program 1.1 specification](https://registry.khronos.org/OpenGL/extensions/NV/NV_vertex_program1_1.txt),
+including the distinction between positive and negative zero.
+
+The [base NVIDIA specification](https://registry.khronos.org/OpenGL/extensions/NV/NV_vertex_program.txt)
+also applies the zero-product rule to dot, distance and lighting operations.
+Those paths now share the corrected multiplication behavior. LIT uses the
+exact exponent limit of 128 minus 1/256, preserves diffuse signed zero, and
+returns one for a zero exponent, including a zero base. This corrects the
+earlier LIT zero-exponent behavior. CPU, WGSL, GLSL and HLSL translations were
+updated together.
+
+The baseline decoder implements these rules independently. Explicit expected
+values cover reciprocal signs, RCC bounds, exceptional zero products and LIT
+limits. Selected GPU cases use exact comparisons, so a loose absolute tolerance
+cannot accept a wrong tiny bound or zero sign. NaN payloads are not compared.
+The expanded suite passes 40,000 interpreter comparisons and 2,560 vertex
+executions across 80 programs on hardware WebGPU and Linux SwiftShader
+(`vp-precision-cpu.log`, `vp-precision-hardware.log`, `vp-precision-linux.log`).
+The native Vulkan renderer suite, actual generated GLSL-to-SPIR-V compilation,
+and browser audio/video/controller integration pass. All 52 patched runtime
+files reproduce from the pinned checkout.
+
+The retail capture in `build-web-tests/vp-precision-retail/report.json` renders
+Houston at Cleveland, stadium tiers/lights, sideline staff/equipment and readable
+Gerard Warren/Gary Walker intro overlays without recorded browser/GPU exceptions.
+Audio queue drops and five worklet underruns remain in this run. Full NV2A
+comparison ordering, denormal handling and rounding conformance remain
+incomplete, as do controlled original-Xbox scene matching and sustained 30 FPS.

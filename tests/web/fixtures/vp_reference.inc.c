@@ -109,16 +109,16 @@ static void reference_vp_run(const float V[16][4], float O[16][4]) {
             case 4: for (i = 0; i < 4; i++) mres[i] = ((A[i] == 0.0f || B[i] == 0.0f) ? 0.0f : A[i] * B[i]) + C[i];
                 break; /* MAD */
             case 5: mres[0] = mres[1] = mres[2] = mres[3] = /* DP3 */
-                                                  A[0] * B[0] + A[1] * B[1] + A[2] * B[2];
+                                                  (A[0]==0 || B[0]==0?0:A[0]*B[0]) + (A[1]==0 || B[1]==0?0:A[1]*B[1]) + (A[2]==0 || B[2]==0?0:A[2]*B[2]);
                 break;
             case 6: mres[0] = mres[1] = mres[2] = mres[3] = /* DPH */
-                                                  A[0] * B[0] + A[1] * B[1] + A[2] * B[2] + B[3];
+                                                  (A[0]==0 || B[0]==0?0:A[0]*B[0]) + (A[1]==0 || B[1]==0?0:A[1]*B[1]) + (A[2]==0 || B[2]==0?0:A[2]*B[2]) + B[3];
                 break;
             case 7: mres[0] = mres[1] = mres[2] = mres[3] = /* DP4 */
-                                                  A[0] * B[0] + A[1] * B[1] + A[2] * B[2] + A[3] * B[3];
+                                                  (A[0]==0 || B[0]==0?0:A[0]*B[0]) + (A[1]==0 || B[1]==0?0:A[1]*B[1]) + (A[2]==0 || B[2]==0?0:A[2]*B[2]) + (A[3]==0 || B[3]==0?0:A[3]*B[3]);
                 break;
             case 8: mres[0] = 1.0f;
-                mres[1] = A[1] * B[1];
+                mres[1] = (A[1]==0 || B[1]==0)?0:A[1]*B[1];
                 mres[2] = A[2];
                 mres[3] = B[3];
                 break; /* DST */
@@ -161,20 +161,14 @@ static void reference_vp_run(const float V[16][4], float O[16][4]) {
                 break; /* MOV */
             case 2: {
                 float x = C[0]; /* RCP */
-                float r = x == 1.0f ? 1.0f : (x == 0.0f ? INFINITY : 1.0f / x);
+                float r = 1.0f / x;
                 ires[0] = ires[1] = ires[2] = ires[3] = r;
                 break;
             }
             case 3: {
                 float x = C[0], r; /* RCC */
-                r = x == 0.0f ? 1.8446743e19f : 1.0f / x;
-                if (r > 0) {
-                    if (r < 5.42101e-20f) r = 5.42101e-20f;
-                    if (r > 1.8446743e19f) r = 1.8446743e19f;
-                } else {
-                    if (r > -5.42101e-20f) r = -5.42101e-20f;
-                    if (r < -1.8446743e19f) r = -1.8446743e19f;
-                }
+                r = 1.0f / x;
+                if (!isnan(r)) r = copysignf(fminf(fmaxf(fabsf(r),0x1p-64f),0x1p64f),r);
                 ires[0] = ires[1] = ires[2] = ires[3] = r;
                 break;
             }
@@ -207,13 +201,14 @@ static void reference_vp_run(const float V[16][4], float O[16][4]) {
                 break;
             }
             case 7: {
-                float sx = C[0] > 0 ? C[0] : 0, sy = C[1] > 0 ? C[1] : 0; /* LIT */
+                float sx = C[0] < 0 ? 0 : C[0], sy = C[1] < 0 ? 0 : C[1]; /* LIT */
                 float sw = C[3];
-                if (sw < -127.996f) sw = -127.996f;
-                if (sw > 127.996f) sw = 127.996f;
+                if (sw < -127.99609375f) sw = -127.99609375f;
+                if (sw > 127.99609375f) sw = 127.99609375f;
                 ires[0] = 1.0f;
                 ires[1] = sx;
-                ires[2] = sx > 0 ? exp2f(sw * log2f(sy)) : 0.0f;
+                float logarithm=log2f(sy);
+                ires[2] = sx > 0 ? exp2f(sw==0 || logarithm==0 ? 0 : sw*logarithm) : 0.0f;
                 ires[3] = 1.0f;
                 break;
             }

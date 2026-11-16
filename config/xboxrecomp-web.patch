@@ -905,7 +905,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,46 +2739,32 @@
+@@ -2634,58 +2739,44 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -966,8 +966,65 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +            case 4: for (i = 0; i < 4; i++) mres[i] = vp_mul(A[i], B[i]) + C[i];
                  break; /* MAD */
              case 5: mres[0] = mres[1] = mres[2] = mres[3] = /* DP3 */
-                                                   A[0] * B[0] + A[1] * B[1] + A[2] * B[2];
-@@ -2823,11 +2914,18 @@
+-                                                  A[0] * B[0] + A[1] * B[1] + A[2] * B[2];
++                                                  vp_mul(A[0],B[0]) + vp_mul(A[1],B[1]) + vp_mul(A[2],B[2]);
+                 break;
+             case 6: mres[0] = mres[1] = mres[2] = mres[3] = /* DPH */
+-                                                  A[0] * B[0] + A[1] * B[1] + A[2] * B[2] + B[3];
++                                                  vp_mul(A[0],B[0]) + vp_mul(A[1],B[1]) + vp_mul(A[2],B[2]) + B[3];
+                 break;
+             case 7: mres[0] = mres[1] = mres[2] = mres[3] = /* DP4 */
+-                                                  A[0] * B[0] + A[1] * B[1] + A[2] * B[2] + A[3] * B[3];
++                                                  vp_mul(A[0],B[0]) + vp_mul(A[1],B[1]) + vp_mul(A[2],B[2]) + vp_mul(A[3],B[3]);
+                 break;
+             case 8: mres[0] = 1.0f;
+-                mres[1] = A[1] * B[1];
++                mres[1] = vp_mul(A[1],B[1]);
+                 mres[2] = A[2];
+                 mres[3] = B[3];
+                 break; /* DST */
+@@ -2728,20 +2819,12 @@
+                 break; /* MOV */
+             case 2: {
+                 float x = C[0]; /* RCP */
+-                float r = x == 1.0f ? 1.0f : (x == 0.0f ? INFINITY : 1.0f / x);
++                float r = 1.0f / x; /* preserves the sign of zero and infinity */
+                 ires[0] = ires[1] = ires[2] = ires[3] = r;
+                 break;
+             }
+             case 3: {
+-                float x = C[0], r; /* RCC */
+-                r = x == 0.0f ? 1.8446743e19f : 1.0f / x;
+-                if (r > 0) {
+-                    if (r < 5.42101e-20f) r = 5.42101e-20f;
+-                    if (r > 1.8446743e19f) r = 1.8446743e19f;
+-                } else {
+-                    if (r > -5.42101e-20f) r = -5.42101e-20f;
+-                    if (r < -1.8446743e19f) r = -1.8446743e19f;
+-                }
++                float r = vp_clamp_w(1.0f / C[0]); /* RCC, exact signed 2^-64..2^64 */
+                 ires[0] = ires[1] = ires[2] = ires[3] = r;
+                 break;
+             }
+@@ -2774,13 +2857,13 @@
+                 break;
+             }
+             case 7: {
+-                float sx = C[0] > 0 ? C[0] : 0, sy = C[1] > 0 ? C[1] : 0; /* LIT */
++                float sx = C[0] < 0 ? 0 : C[0], sy = C[1] < 0 ? 0 : C[1]; /* LIT */
+                 float sw = C[3];
+-                if (sw < -127.996f) sw = -127.996f;
+-                if (sw > 127.996f) sw = 127.996f;
++                if (sw < -127.99609375f) sw = -127.99609375f;
++                if (sw > 127.99609375f) sw = 127.99609375f;
+                 ires[0] = 1.0f;
+                 ires[1] = sx;
+-                ires[2] = sx > 0 ? exp2f(sw * log2f(sy)) : 0.0f;
++                ires[2] = sx > 0 ? exp2f(vp_mul(sw,log2f(sy))) : 0.0f;
+                 ires[3] = 1.0f;
+                 break;
+             }
+@@ -2823,11 +2906,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -991,7 +1048,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +2945,29 @@
+@@ -2847,7 +2937,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1021,7 +1078,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +2984,9 @@
+@@ -2864,8 +2976,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1033,7 +1090,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3133,17 @@
+@@ -3012,6 +3125,17 @@
      }
  }
 
@@ -1051,7 +1108,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3057,26 +3189,15 @@
+@@ -3057,26 +3181,15 @@
          }
          return;
      }
@@ -1081,7 +1138,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3253,7 +3374,7 @@
+@@ -3253,7 +3366,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1090,7 +1147,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3383,34 @@
+@@ -3262,32 +3375,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1137,7 +1194,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,27 +3457,41 @@
+@@ -3334,27 +3449,41 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -1192,7 +1249,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* The triangles of the current vertex-program batch, after the vertex
-@@ -3605,7 +3742,7 @@
+@@ -3605,7 +3734,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -1201,7 +1258,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +3980,7 @@
+@@ -3843,7 +3972,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -1210,7 +1267,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4003,7 @@
+@@ -3866,7 +3995,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -1219,7 +1276,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4442,7 @@
+@@ -4305,7 +4434,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -1228,7 +1285,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +4893,7 @@
+@@ -4756,7 +4885,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -1237,7 +1294,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5011,7 @@
+@@ -4874,7 +5003,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1246,7 +1303,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5019,7 @@
+@@ -4882,7 +5011,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -1255,7 +1312,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5071,7 @@
+@@ -4934,7 +5063,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1264,7 +1321,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5079,7 @@
+@@ -4942,7 +5071,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -2402,16 +2459,36 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_vp.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_vp.inc.c
-@@ -54,6 +54,8 @@
-     "    return r > 0.0 ? clamp(r, 5.42101e-20, 1.8446743e19) : clamp(r, -1.8446743e19, -5.42101e-20);\n"
+@@ -49,11 +49,15 @@
+     "    vec4 c[192]; vec4 info; vec4 clipr; vec4 fogp; vec4 lightp;\n"
+     "};\n"
+     "float vrcp(float x) { return x == 1.0 ? 1.0 : 1.0 / x; }\n"
++    "float vclampw(float w);\n"
+     "float vrcc(float x) {\n"
+-    "    float r = x == 0.0 ? 1.8446743e19 : 1.0 / x;\n"
+-    "    return r > 0.0 ? clamp(r, 5.42101e-20, 1.8446743e19) : clamp(r, -1.8446743e19, -5.42101e-20);\n"
++    "    float r = 1.0 / x; if (isnan(r)) return r; return vclampw(r);\n"
      "}\n"
      "float vrsq(float x) { x = abs(x); return x == 1.0 ? 1.0 : inversesqrt(x); }\n"
 +    "float vmul1(float a, float b) { if (a == 0.0 || b == 0.0) return 0.0; return a * b; }\n"
 +    "vec4 vmul(vec4 a, vec4 b) { return vec4(vmul1(a.x,b.x), vmul1(a.y,b.y), vmul1(a.z,b.z), vmul1(a.w,b.w)); }\n"
++    "float vdot3(vec4 a, vec4 b) { vec4 p=vmul(a,b); return (p.x+p.y)+p.z; }\n"
++    "float vdot4(vec4 a, vec4 b) { vec4 p=vmul(a,b); return ((p.x+p.y)+p.z)+p.w; }\n"
      "float vclampw(float w) {\n"
      "    if (w > 0.0 || floatBitsToUint(w) == 0u)\n"
      "        return clamp(w, uintBitsToFloat(0x1F800000u), uintBitsToFloat(0x5F800000u));\n"
-@@ -145,8 +147,19 @@
+@@ -67,8 +71,8 @@
+     "    return vec4(e, x / exp2(e), log2(x), 1.0);\n"
+     "}\n"
+     "vec4 vlit(vec4 s) {\n"
+-    "    float sx = max(s.x, 0.0), sy = max(s.y, 0.0), sw = clamp(s.w, -127.996, 127.996);\n"
+-    "    return vec4(1.0, sx, sx > 0.0 ? exp2(sw * log2(sy)) : 0.0, 1.0);\n"
++    "    float sx = s.x < 0.0 ? 0.0 : s.x, sy = s.y < 0.0 ? 0.0 : s.y, sw = clamp(s.w, -127.99609375, 127.99609375);\n"
++    "    return vec4(1.0, sx, sx > 0.0 ? exp2(vmul1(sw,log2(sy))) : 0.0, 1.0);\n"
+     "}\n"
+     "void main() {\n"
+     "    vec4 v[16] = vec4[16](in_v0, in_v1, in_v2, in_v3, in_v4, in_v5, in_v6, in_v7,\n"
+@@ -145,8 +149,19 @@
      va_start(ap, fmt);
      len = vsnprintf(b->p + b->n, b->cap - b->n, fmt, ap);
      va_end(ap);
@@ -2433,7 +2510,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
  }
 
  /* One source operand: register / input / constant (relative to a0 or not),
-@@ -229,9 +242,9 @@
+@@ -229,13 +244,13 @@
                  A, B, C);
          switch (mac) {                                  /* the multiply-add unit */
          case 1:  sg_text(&b, "      m = A;\n"); break;                                   /* MOV */
@@ -2441,11 +2518,19 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
 +        case 2:  sg_text(&b, "      m = vmul(A, B);\n"); break;                         /* MUL */
          case 3:  sg_text(&b, "      m = A + C;\n"); break;                               /* ADD */
 -        case 4:  sg_text(&b, "      m = A * B + C;\n"); break;                           /* MAD */
+-        case 5:  sg_text(&b, "      m = vec4(dot(A.xyz, B.xyz));\n"); break;             /* DP3 */
+-        case 6:  sg_text(&b, "      m = vec4(dot(A.xyz, B.xyz) + B.w);\n"); break;       /* DPH */
+-        case 7:  sg_text(&b, "      m = vec4(dot(A, B));\n"); break;                     /* DP4 */
+-        case 8:  sg_text(&b, "      m = vec4(1.0, A.y * B.y, A.z, B.w);\n"); break;      /* DST */
 +        case 4:  sg_text(&b, "      m = vmul(A, B) + C;\n"); break;                     /* MAD */
-         case 5:  sg_text(&b, "      m = vec4(dot(A.xyz, B.xyz));\n"); break;             /* DP3 */
-         case 6:  sg_text(&b, "      m = vec4(dot(A.xyz, B.xyz) + B.w);\n"); break;       /* DPH */
-         case 7:  sg_text(&b, "      m = vec4(dot(A, B));\n"); break;                     /* DP4 */
-@@ -313,4 +326,4 @@
++        case 5:  sg_text(&b, "      m = vec4(vdot3(A, B));\n"); break;                  /* DP3 */
++        case 6:  sg_text(&b, "      m = vec4(vdot3(A, B) + B.w);\n"); break;            /* DPH */
++        case 7:  sg_text(&b, "      m = vec4(vdot4(A, B));\n"); break;                  /* DP4 */
++        case 8:  sg_text(&b, "      m = vec4(1.0, vmul1(A.y, B.y), A.z, B.w);\n"); break; /* DST */
+         case 9:  sg_text(&b, "      m = min(A, B);\n"); break;                           /* MIN */
+         case 10: sg_text(&b, "      m = max(A, B);\n"); break;                           /* MAX */
+         case 11: sg_text(&b, "      m = vec4(lessThan(A, B));\n"); break;                /* SLT */
+@@ -313,4 +328,4 @@
      }
      fprintf(stderr, "  [VPCHECK] so far: %u ok, %u stay on CPU, %u failed\n", ok, refused, failed);
  #endif
@@ -2454,7 +2539,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
 +}
 diff --git a/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
 new file mode 100644
-index 0000000..daa8ec3
+index 0000000..ce3c2f2
 --- /dev/null
 +++ b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
 @@ -0,0 +1,105 @@
@@ -2523,10 +2608,10 @@ index 0000000..daa8ec3
 +        case 2: sg_text(&b, "      m = vmul(A, B);\n"); break;
 +        case 3: sg_text(&b, "      m = A + C;\n"); break;
 +        case 4: sg_text(&b, "      m = vmul(A, B) + C;\n"); break;
-+        case 5: sg_text(&b, "      m = vec4f(dot(A.xyz, B.xyz));\n"); break;
-+        case 6: sg_text(&b, "      m = vec4f(dot(A.xyz, B.xyz) + B.w);\n"); break;
-+        case 7: sg_text(&b, "      m = vec4f(dot(A, B));\n"); break;
-+        case 8: sg_text(&b, "      m = vec4f(1.0, A.y * B.y, A.z, B.w);\n"); break;
++        case 5: sg_text(&b, "      m = vec4f(vdot3(A, B));\n"); break;
++        case 6: sg_text(&b, "      m = vec4f(vdot3(A, B) + B.w);\n"); break;
++        case 7: sg_text(&b, "      m = vec4f(vdot4(A, B));\n"); break;
++        case 8: sg_text(&b, "      m = vec4f(1.0, vmul1(A.y, B.y), A.z, B.w);\n"); break;
 +        case 9: sg_text(&b, "      m = select(B, A, A < B);\n"); break;
 +        case 10: sg_text(&b, "      m = select(B, A, A > B);\n"); break;
 +        case 11: sg_text(&b, "      m = select(vec4f(0.0), vec4f(1.0), A < B);\n"); break;
@@ -2565,10 +2650,10 @@ index 0000000..daa8ec3
 +}
 diff --git a/src/kernel/sdlgpu/shaders/vp.wgsl b/src/kernel/sdlgpu/shaders/vp.wgsl
 new file mode 100644
-index 0000000..e5c12e8
+index 0000000..9b2b253
 --- /dev/null
 +++ b/src/kernel/sdlgpu/shaders/vp.wgsl
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,136 @@
 +// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the
 +// two halves; the C translator inserts straight-line instructions between them.
 +struct VpUniforms {
@@ -2611,21 +2696,30 @@ index 0000000..e5c12e8
 +fn vmul(a: vec4f, b: vec4f) -> vec4f {
 +    return vec4f(vmul1(a.x,b.x), vmul1(a.y,b.y), vmul1(a.z,b.z), vmul1(a.w,b.w));
 +}
++fn vdot3(a: vec4f, b: vec4f) -> f32 {
++    let p = vmul(a,b); return (p.x + p.y) + p.z;
++}
++fn vdot4(a: vec4f, b: vec4f) -> f32 {
++    let p = vmul(a,b); return ((p.x + p.y) + p.z) + p.w;
++}
 +fn vrcp(x: f32) -> f32 {
 +    if (x == 1.0) { return 1.0; }
-+    if (x == 0.0) { return vexception(0x7f800000u); }
++    let sign = bitcast<u32>(x) & 0x80000000u;
++    if (x == 0.0) { return vexception(0x7f800000u | sign); }
++    if (vinf(x)) { return vexception(sign); }
++    if (vnan(x)) { return vexception(0x7fc00000u); }
 +    return 1.0 / x;
 +}
 +fn vrcc(x: f32) -> f32 {
-+    var r = 1.8446743e19;
-+    if (x != 0.0) { r = 1.0 / x; }
-+    if (r > 0.0) { return clamp(r, 5.42101e-20, 1.8446743e19); }
-+    return clamp(r, -1.8446743e19, -5.42101e-20);
++    if (vnan(x)) { return vexception(0x7fc00000u); }
++    return vclampw(vrcp(x));
 +}
 +fn vrsq(x: f32) -> f32 {
 +    let a = abs(x);
 +    if (a == 1.0) { return 1.0; }
 +    if (a == 0.0) { return vexception(0x7f800000u); }
++    if (vinf(a)) { return 0.0; }
++    if (vnan(a)) { return vexception(0x7fc00000u); }
 +    return inverseSqrt(a);
 +}
 +fn vexp(x: f32) -> vec4f { let f = floor(x); return vec4f(exp2(f), x - f, exp2(x), 1.0); }
@@ -2636,16 +2730,18 @@ index 0000000..e5c12e8
 +    return vec4f(e, a / exp2(e), log2(a), 1.0);
 +}
 +fn vlit(s: vec4f) -> vec4f {
-+    let sx = max(s.x, 0.0); let sy = max(s.y, 0.0);
-+    let sw = clamp(s.w, -127.996, 127.996);
++    let sx = select(s.x, 0.0, s.x < 0.0);
++    let sy = select(s.y, 0.0, s.y < 0.0);
++    let sw = clamp(s.w, -127.99609375, 127.99609375);
 +    var z = 0.0;
 +    if (sx > 0.0) {
 +        // log2(0) is not portable WGSL arithmetic. Preserve NV2A's zero-base
 +        // outcomes explicitly, including negative and zero exponents.
 +        if (sy == 0.0) {
 +            if (sw < 0.0) { z = vexception(0x7f800000u); }
-+            else if (sw == 0.0) { z = vexception(0x7fc00000u); }
-+        } else { z = exp2(sw * log2(sy)); }
++            else if (sw == 0.0) { z = 1.0; }
++            else if (vnan(sw)) { z = vexception(0x7fc00000u); }
++        } else { z = exp2(vmul1(sw, log2(sy))); }
 +    }
 +    return vec4f(1.0, sx, z, 1.0);
 +}
@@ -3436,16 +3532,34 @@ diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
 diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
 --- a/src/kernel/nv2a_gpu_vp.inc.c
 +++ b/src/kernel/nv2a_gpu_vp.inc.c
-@@ -89,6 +89,8 @@
-     "float vrcc(float x) { float r = x == 0.0 ? 1.8446743e19 : 1.0 / x;\n"
-     "  if (r > 0) r = clamp(r, 5.42101e-20, 1.8446743e19); else r = clamp(r, -1.8446743e19, -5.42101e-20); return r; }\n"
+@@ -86,9 +86,13 @@
+     "  nointerpolation float4 tri0:TEXCOORD6; nointerpolation float4 tri1:TEXCOORD7; nointerpolation float4 tri2:TEXCOORD8;\n"
+     "  nointerpolation float2 depthmeta:TEXCOORD9; };\n"
+     "float vrcp(float x) { return x == 1.0 ? 1.0 : 1.0 / x; }\n"
+-    "float vrcc(float x) { float r = x == 0.0 ? 1.8446743e19 : 1.0 / x;\n"
+-    "  if (r > 0) r = clamp(r, 5.42101e-20, 1.8446743e19); else r = clamp(r, -1.8446743e19, -5.42101e-20); return r; }\n"
++    "float vclampw(float w);\n"
++    "float vrcc(float x) { float r = 1.0 / x; if (isnan(r)) return r; return vclampw(r); }\n"
      "float vrsq(float x) { x = abs(x); return x == 1.0 ? 1.0 : rsqrt(x); }\n"
 +    "float vmul1(float a, float b) { if (a == 0.0 || b == 0.0) return 0.0; return a * b; }\n"
 +    "float4 vmul(float4 a, float4 b) { return float4(vmul1(a.x,b.x), vmul1(a.y,b.y), vmul1(a.z,b.z), vmul1(a.w,b.w)); }\n"
++    "float vdot3(float4 a, float4 b) { float4 p=vmul(a,b); return (p.x+p.y)+p.z; }\n"
++    "float vdot4(float4 a, float4 b) { float4 p=vmul(a,b); return ((p.x+p.y)+p.z)+p.w; }\n"
      "float vclampw(float w) {\n"
      "  if (w > 0.0 || asuint(w) == 0u) return clamp(w, asfloat(0x1F800000u), asfloat(0x5F800000u));\n"
      "  return clamp(w, asfloat(0xDF800000u), asfloat(0x9F800000u));\n"
-@@ -302,9 +304,9 @@
+@@ -96,8 +100,8 @@
+     "float4 vexp(float x) { float f = floor(x); return float4(exp2(f), x - f, exp2(x), 1.0); }\n"
+     "float4 vlog(float x) { x = abs(x); if (x == 0.0) return float4(-asfloat(0x7F800000u), 1.0, -asfloat(0x7F800000u), 1.0);\n"
+     "  float e = floor(log2(x)); return float4(e, x / exp2(e), log2(x), 1.0); }\n"
+-    "float4 vlit(float4 s) { float sx = max(s.x, 0.0), sy = max(s.y, 0.0), sw = clamp(s.w, -127.996, 127.996);\n"
+-    "  return float4(1.0, sx, sx > 0 ? exp2(sw * log2(sy)) : 0.0, 1.0); }\n"
++    "float4 vlit(float4 s) { float sx = s.x < 0.0 ? 0.0 : s.x, sy = s.y < 0.0 ? 0.0 : s.y, sw = clamp(s.w, -127.99609375, 127.99609375);\n"
++    "  return float4(1.0, sx, sx > 0 ? exp2(vmul1(sw,log2(sy))) : 0.0, 1.0); }\n"
+     "PIn vs_main(VSIn i) {\n"
+     "  float4 v[16] = { i.a0, i.a1, i.a2, i.a3, i.a4, i.a5, i.a6, i.a7, i.a8, i.a9, i.a10, i.a11, i.a12, i.a13, i.a14, i.a15 };\n"
+     "  float4 R[13]; float4 O[16]; int a0 = 0; int k;\n"
+@@ -302,13 +306,13 @@
              A, B, C);
          switch (mac) {
          case 1:  vpb(&b, "    m = A;\n"); break;
@@ -3453,10 +3567,18 @@ diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
 +        case 2:  vpb(&b, "    m = vmul(A, B);\n"); break;
          case 3:  vpb(&b, "    m = A + C;\n"); break;
 -        case 4:  vpb(&b, "    m = A * B + C;\n"); break;
+-        case 5:  vpb(&b, "    m = dot(A.xyz, B.xyz).xxxx;\n"); break;
+-        case 6:  vpb(&b, "    m = (dot(A.xyz, B.xyz) + B.w).xxxx;\n"); break;
+-        case 7:  vpb(&b, "    m = dot(A, B).xxxx;\n"); break;
+-        case 8:  vpb(&b, "    m = float4(1.0, A.y * B.y, A.z, B.w);\n"); break;
 +        case 4:  vpb(&b, "    m = vmul(A, B) + C;\n"); break;
-         case 5:  vpb(&b, "    m = dot(A.xyz, B.xyz).xxxx;\n"); break;
-         case 6:  vpb(&b, "    m = (dot(A.xyz, B.xyz) + B.w).xxxx;\n"); break;
-         case 7:  vpb(&b, "    m = dot(A, B).xxxx;\n"); break;
++        case 5:  vpb(&b, "    m = vdot3(A, B).xxxx;\n"); break;
++        case 6:  vpb(&b, "    m = (vdot3(A, B) + B.w).xxxx;\n"); break;
++        case 7:  vpb(&b, "    m = vdot4(A, B).xxxx;\n"); break;
++        case 8:  vpb(&b, "    m = float4(1.0, vmul1(A.y, B.y), A.z, B.w);\n"); break;
+         case 9:  vpb(&b, "    m = min(A, B);\n"); break;
+         case 10: vpb(&b, "    m = max(A, B);\n"); break;
+         case 11: vpb(&b, "    m = (float4)(A < B);\n"); break;
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -6521,10 +6643,10 @@ index 0000000..f1e7f28
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..411e07f
+index 0000000..3e6473b
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,2012 @@
+@@ -0,0 +1,2023 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -8453,21 +8575,30 @@ index 0000000..411e07f
 +    "fn vmul(a: vec4f, b: vec4f) -> vec4f {\n"
 +    "    return vec4f(vmul1(a.x,b.x), vmul1(a.y,b.y), vmul1(a.z,b.z), vmul1(a.w,b.w));\n"
 +    "}\n"
++    "fn vdot3(a: vec4f, b: vec4f) -> f32 {\n"
++    "    let p = vmul(a,b); return (p.x + p.y) + p.z;\n"
++    "}\n"
++    "fn vdot4(a: vec4f, b: vec4f) -> f32 {\n"
++    "    let p = vmul(a,b); return ((p.x + p.y) + p.z) + p.w;\n"
++    "}\n"
 +    "fn vrcp(x: f32) -> f32 {\n"
 +    "    if (x == 1.0) { return 1.0; }\n"
-+    "    if (x == 0.0) { return vexception(0x7f800000u); }\n"
++    "    let sign = bitcast<u32>(x) & 0x80000000u;\n"
++    "    if (x == 0.0) { return vexception(0x7f800000u | sign); }\n"
++    "    if (vinf(x)) { return vexception(sign); }\n"
++    "    if (vnan(x)) { return vexception(0x7fc00000u); }\n"
 +    "    return 1.0 / x;\n"
 +    "}\n"
 +    "fn vrcc(x: f32) -> f32 {\n"
-+    "    var r = 1.8446743e19;\n"
-+    "    if (x != 0.0) { r = 1.0 / x; }\n"
-+    "    if (r > 0.0) { return clamp(r, 5.42101e-20, 1.8446743e19); }\n"
-+    "    return clamp(r, -1.8446743e19, -5.42101e-20);\n"
++    "    if (vnan(x)) { return vexception(0x7fc00000u); }\n"
++    "    return vclampw(vrcp(x));\n"
 +    "}\n"
 +    "fn vrsq(x: f32) -> f32 {\n"
 +    "    let a = abs(x);\n"
 +    "    if (a == 1.0) { return 1.0; }\n"
 +    "    if (a == 0.0) { return vexception(0x7f800000u); }\n"
++    "    if (vinf(a)) { return 0.0; }\n"
++    "    if (vnan(a)) { return vexception(0x7fc00000u); }\n"
 +    "    return inverseSqrt(a);\n"
 +    "}\n"
 +    "fn vexp(x: f32) -> vec4f { let f = floor(x); return vec4f(exp2(f), x - f, exp2(x), 1.0); }\n"
@@ -8478,16 +8609,18 @@ index 0000000..411e07f
 +    "    return vec4f(e, a / exp2(e), log2(a), 1.0);\n"
 +    "}\n"
 +    "fn vlit(s: vec4f) -> vec4f {\n"
-+    "    let sx = max(s.x, 0.0); let sy = max(s.y, 0.0);\n"
-+    "    let sw = clamp(s.w, -127.996, 127.996);\n"
++    "    let sx = select(s.x, 0.0, s.x < 0.0);\n"
++    "    let sy = select(s.y, 0.0, s.y < 0.0);\n"
++    "    let sw = clamp(s.w, -127.99609375, 127.99609375);\n"
 +    "    var z = 0.0;\n"
 +    "    if (sx > 0.0) {\n"
 +    "        // log2(0) is not portable WGSL arithmetic. Preserve NV2A's zero-base\n"
 +    "        // outcomes explicitly, including negative and zero exponents.\n"
 +    "        if (sy == 0.0) {\n"
 +    "            if (sw < 0.0) { z = vexception(0x7f800000u); }\n"
-+    "            else if (sw == 0.0) { z = vexception(0x7fc00000u); }\n"
-+    "        } else { z = exp2(sw * log2(sy)); }\n"
++    "            else if (sw == 0.0) { z = 1.0; }\n"
++    "            else if (vnan(sw)) { z = vexception(0x7fc00000u); }\n"
++    "        } else { z = exp2(vmul1(sw, log2(sy))); }\n"
 +    "    }\n"
 +    "    return vec4f(1.0, sx, z, 1.0);\n"
 +    "}\n"

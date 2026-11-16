@@ -53,7 +53,7 @@ static void compact_vertex_case(void) {
     save("compact.uniforms.bin", uniforms, sizeof uniforms);
 }
 int main(void) {
-    enum { CASES = 71, VERTICES = 32 };
+    enum { CASES = 80, VERTICES = 32 };
     for (unsigned test = 0; test < CASES; test++) {
         s_vp.start = test >= 64 ? 0 : test % 5;
         unsigned length = test >= 64 ? 0 : test < 22 ? 1 : 12;
@@ -86,13 +86,27 @@ int main(void) {
                 (2u << 28) | (15u << 16) | (15u << 12) | (1u << 11) | (3u << 3) | 5u};
             memcpy(s_vp.prog[0], lit, sizeof lit);
         }
-        if (test >= 67) {
+        if (test >= 67 && test <= 70) {
             uint32_t mac=test&1?2u:4u,reverse=test>=69;
             uint32_t *t=s_vp.prog[0];
             t[0]=0;t[1]=(mac<<21)|(2u<<13)|0x1bu;
             t[2]=((reverse?1u:2u)<<26)|((reverse?2u:1u)<<11)
                 |(1u<<21)|(2u<<19)|(3u<<17)|0x6cu;
             t[3]=(3u<<28)|(15u<<12)|(1u<<11)|(3u<<3)|1u;
+        }
+        if (test >= 71 && test <= 74) {
+            uint32_t ilu=test==74?7u:test-69u;
+            uint32_t *t=s_vp.prog[0];t[0]=0;t[1]=ilu<<25;t[2]=0x6cu;
+            t[3]=(2u<<28)|(15u<<16)|(15u<<12)|(1u<<11)|(3u<<3)|5u;
+        }
+        if(test>=75 && test<=78) {
+            uint32_t *t=s_vp.prog[0];t[0]=0;t[1]=((test-70u)<<21)|(2u<<13)|0x1bu;
+            t[2]=(2u<<26)|(1u<<11)|0x6cu;
+            t[3]=(3u<<28)|(15u<<12)|(1u<<11)|(3u<<3)|1u;
+        }
+        if(test==79) {
+            uint32_t *t=s_vp.prog[0];t[0]=0;t[1]=7u<<25;t[2]=0x6cu;
+            t[3]=(2u<<28)|(15u<<16)|(15u<<12)|(1u<<11)|(3u<<3)|5u;
         }
         for (unsigned i = 0; i < 192; i++)
             for (unsigned k = 0; k < 4; k++) s_vp.c[i][k] = random_float();
@@ -105,14 +119,36 @@ int main(void) {
                 inputs[i][0][1] = (float[]){0.0f,-1.0f,0.5f,1.0f}[(i / 2) % 4];
                 inputs[i][0][3] = (float[]){-1.0f,0.0f,1.0f,127.0f}[i / 8];
             }
-            if (test >= 67) {
+            if (test >= 67 && test <= 70) {
                 inputs[i][0][0]=i&1?-INFINITY:INFINITY;inputs[i][0][1]=NAN;
                 inputs[i][0][2]=-0.0f;inputs[i][0][3]=1.0f;
             }
+            if (test >= 71 && test <= 73) {
+                const float scalars[]={0.0f,-0.0f,INFINITY,-INFINITY,1.0f,-1.0f,2.0f,-2.0f,NAN};
+                unsigned at=i%9;
+                if(test==73) {at=i%7;if(at==6)at=8;}
+                inputs[i][0][0]=scalars[at];
+            }
+            if (test == 74) {
+                inputs[i][0][0]=1;inputs[i][0][1]=1.25f;
+                inputs[i][0][3]=(float[]){128,-128,INFINITY,-INFINITY}[i%4];
+            }
+            if(test>=75 && test<=78) {
+                inputs[i][0][0]=INFINITY;inputs[i][0][1]=NAN;inputs[i][0][2]=-0.0f;inputs[i][0][3]=1;
+            }
+            if(test==79) {
+                inputs[i][0][0]=1;inputs[i][0][1]=(float[]){0,-1,NAN,1}[i%4];inputs[i][0][3]=0;
+            }
             vp_run(inputs[i], outputs[i]);
-            if (test >= 67) for(unsigned k=0;k<4;k++) {
+            if (test >= 67 && test <= 70) for(unsigned k=0;k<4;k++) {
                 float expected=test&1?0.0f:s_vp.c[2][k];
                 if(outputs[i][3][k]!=expected || ((test&1) && signbit(outputs[i][3][k]))) abort();
+            }
+            if(test>=75) {
+                float expected[4]={0};
+                if(test==78){expected[0]=1;expected[2]=-0.0f;}
+                if(test==79)for(unsigned k=0;k<4;k++)expected[k]=1;
+                if(memcmp(outputs[i][3],expected,sizeof expected))abort();
             }
             memcpy(outputs[i][16], s_vp_dbg_r, sizeof s_vp_dbg_r);
         }
@@ -123,6 +159,7 @@ int main(void) {
         snprintf(name, sizeof name, "case-%03u.constants.bin", test); save(name, s_vp.c, sizeof s_vp.c);
         snprintf(name, sizeof name, "case-%03u.inputs.bin", test); save(name, inputs, sizeof inputs);
         snprintf(name, sizeof name, "case-%03u.expected.bin", test); save(name, outputs, sizeof outputs);
+        if((test>=71 && test<=73) || test>=75) {snprintf(name,sizeof name,"case-%03u.strict",test);save(name,"",0);}
     }
     compact_vertex_case();
     s_vp.start = 0;
@@ -131,6 +168,6 @@ int main(void) {
     s_vp.prog[0][3] = (15u << 12) | 1u; /* MOV writes c0 */
     if (sg_vp_translate_wgsl(0)) return 2;
     if (sg_vp_translate_wgsl(VP_PROG_LEN)) return 3;
-    puts("Generated 71 WGSL programs with CPU references; constant writes correctly refused");
+    puts("Generated 80 WGSL programs with CPU references; constant writes correctly refused");
     return 0;
 }

@@ -24,7 +24,7 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
       console.log('Checking', file);
       const base = path.join(dir, file.replace('.wgsl', ''));
       const floats = suffix => Array.from(new Float32Array(Uint8Array.from(fs.readFileSync(base + suffix)).buffer));
-      const result = await page.evaluate(async ({source, constants, inputs, expected}) => {
+      const result = await page.evaluate(async ({source, constants, inputs, expected, strict}) => {
         const check = async code => {
           const module = device.createShaderModule({code});
           const info = await module.getCompilationInfo();
@@ -75,13 +75,14 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
         for (let i = 0; i < expected.length; i++) {
           const a = actual[i], e = expected[i];
           if (Object.is(a, e) || (Number.isNaN(a) && Number.isNaN(e))) continue;
-          if (Number.isFinite(a) && Number.isFinite(e) && Math.abs(a - e) <= 2e-5 + 3e-4 * Math.abs(e)) continue;
+          if (!strict && Number.isFinite(a) && Number.isFinite(e) && Math.abs(a - e) <= 2e-5 + 3e-4 * Math.abs(e)) continue;
           throw Error(`value ${i}: GPU ${a}, CPU ${e}`);
         }
         read.unmap(); [input, output, uniform, read].forEach(b => b.destroy());
         if (window.gpuError) throw Error(window.gpuError);
         return inputs.length / 64;
-      }, {source: fs.readFileSync(base + '.wgsl', 'utf8'), constants: floats('.constants.bin'), inputs: floats('.inputs.bin'), expected: floats('.expected.bin')});
+      }, {source: fs.readFileSync(base + '.wgsl', 'utf8'), constants: floats('.constants.bin'), inputs: floats('.inputs.bin'),
+        expected: floats('.expected.bin'), strict: fs.existsSync(base + '.strict')});
       count += result;
     }
     if (!count) throw Error('No cases found; run test_vp_wgsl.py first');
