@@ -2997,7 +2997,37 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
  /* Forward declarations for software mixer */
  static void mixer_init(void);
-@@ -494,12 +496,25 @@
+@@ -105,7 +107,9 @@
+
+     switch (addr) {
+     case NV_PAPU_XGSCNT:
+-        r = (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 100);
++        /* DirectSoundGetSampleTime reads 48 kHz sequencer samples, not
++         * host time in 100 ns units. Idle output must not advance it. */
++        r = (uint32_t)InterlockedCompareExchange(&d->sample_count, 0, 0);
+         break;
+     default:
+         if (addr < 0x20000) {
+@@ -134,6 +138,10 @@
+     (void)size;
+
+     switch (addr) {
++    case NV_PAPU_XGSCNT:
++        qatomic_set(&d->regs[addr], (uint32_t)val);
++        InterlockedExchange(&d->sample_count, (LONG)(uint32_t)val);
++        break;
+     case NV_PAPU_ISTS:
+         qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
+         update_irq(d);
+@@ -486,6 +494,7 @@
+     mcpx_apu_monitor_frame(d);
+
+     d->ep_frame_div++;
++    InterlockedExchangeAdd(&d->sample_count, NUM_SAMPLES_PER_FRAME);
+
+     mcpx_debug_end_frame();
+ }
+@@ -494,12 +503,25 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -3023,7 +3053,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          if (d->pause_requested && !g_test_tone.active && !g_mixer_active_count) {
              d->is_idle = true;
              qemu_cond_signal(&d->idle_cond);
-@@ -571,7 +586,24 @@
+@@ -571,7 +593,24 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -3048,7 +3078,15 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -648,6 +680,7 @@
+@@ -621,6 +660,7 @@
+ static void mcpx_apu_reset_locked(MCPXAPUState *d)
+ {
+     memset(d->regs, 0, sizeof(d->regs));
++    InterlockedExchange(&d->sample_count, 0);
+     mcpx_apu_vp_reset(d);
+
+     if (d->gp.dsp) {
+@@ -648,6 +688,7 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
@@ -3056,7 +3094,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -766,9 +799,33 @@
+@@ -766,9 +807,33 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -3101,6 +3139,14 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
      QemuCond cond;
      QemuCond idle_cond;
      bool pause_requested;
+@@ -476,6 +477,7 @@
+     uint32_t regs[0x20000];
+
+     int ep_frame_div;
++    volatile LONG sample_count; /* 32-bit sequencer sample time, separate from host output */
+     int sleep_acc_us;
+     int frame_count;
+     int64_t frame_count_time_ms;
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c

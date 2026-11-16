@@ -478,3 +478,54 @@ first full run timed out on SDL fallback output, while an isolated fallback
 probe and the repeated full sequence render the expected tone. Failure
 diagnostics were added; an underlying SDL fallback fault has not been proven
 or fixed. Full fidelity and sustained frame-rate guarantees remain unverified.
+
+## Sequencer sample time and remaining producer stalls
+
+The next profiled retail run (`build-web-tests/audio-stalls-profile/report.json`)
+keeps the consumer clock steady and drops zero submissions, but records 35
+worklet underrun blocks. Existing APU profiles record a 25.9 ms maximum pipeline
+frame and an ISR wait as long as 307.1 ms, including the current 40 ms fallback.
+These observations identify producer/interrupt-service delays beyond the former
+silent-consumer-clock fault. The fallback can also submit zero PCM while the
+front end remains trapped, so worklet underrun counts alone cannot prove audio
+continuity. Interrupt latency and that fallback remain open fidelity work.
+
+The counter audit finds a separate, deterministic error. `NV_PAPU_XGSCNT`
+returns host nanoseconds divided by 100: at one second of host uptime, even a
+reset sequencer returns 10,000,000. The real MMIO regression fails with that
+value (`build-web-tests/apu-sample-counter-before.log`). NFL 2K5's generated
+`sub_00443679` reads this register directly at guest address `0xFE80200C`.
+
+[Xemu's APU implementation](https://raw.githubusercontent.com/xemu-project/xemu/master/hw/xbox/mcpx/apu/apu.c)
+derives the register from 32-sample sequencer frames. The updated
+[upstream xboxrecomp implementation](https://raw.githubusercontent.com/sp00nznet/xboxrecomp/main/src/apu/apu_core.c)
+also corrects the former host-clock division and supports counter writes.
+The local runtime now maintains a separate 32-bit sample counter, advances it
+for each executed sequencer frame, and honors register writes and device reset.
+Host time and monitor-only output do not advance that counter. Interlocked
+operations keep its frame-thread updates and MMIO reads atomic.
+
+The regression executes the production MMIO read/write, pipeline frame and reset
+functions. It verifies 48,000 samples after 1,500 frames, independence from host
+clock changes, register writes, both signed and unsigned rollover boundaries,
+and device reset. The old clock test incorrectly described a scaled host clock
+as XGSCNT; that assertion was removed while retaining the actual QPC conversion
+and overflow tests. The sample-counter, host-clock and 10,000-write APU locking
+tests pass, as do the game build and native renderer suite. All 52 runtime patch
+files reproduce from the pinned checkout. This does not establish full MCPX
+conformance or resolve the interrupt-service stalls.
+
+The actual native APU library also builds (`apu-sample-counter-native-apu-build.log`),
+and the counter regression passes under the native compiler with undefined-behavior
+sanitization. The initial retail run ends during the St. Louis/Miami transition
+with 34 worklet underrun blocks and zero dropped submissions. An extended run
+(`build-web-tests/apu-sample-counter-extended/report.json`) reaches the Washington
+at Oakland stadium intro and sideline players/equipment, with 12 underrun blocks,
+zero dropped submissions and no recorded browser/GPU/audio processor failures.
+The changing attract scenes do not support an overall-underrun comparison.
+
+The extended run also records renderer intervals below 30 FPS, including 4 FPS.
+Other native compiler processes were active during that capture. Their presence
+does not establish the sole cause of the slowdown; the requested frame-rate
+floor is still unmet in this environment. These captures establish progression,
+not full gameplay or original-Xbox scene/audio parity.

@@ -47,16 +47,9 @@ int main(void) {
         int64_t now = qemu_clock_get_ns(0);
         assert(now - last == 1000); last = now;
     }
-    /* XGSCNT exposes the ns clock in 100 ns units, wrapping at 32 bits. */
-    counter = 1794100000000000000LL;
-    uint32_t tick = (uint32_t)(qemu_clock_get_ns(0) / 100);
-    counter += 1000000;
-    assert((uint32_t)((uint32_t)(qemu_clock_get_ns(0) / 100) - tick) == 10000u);
-    counter = ((int64_t)UINT32_MAX - 10) * 100;
-    tick = (uint32_t)(qemu_clock_get_ns(0) / 100);
-    counter += 2000;
-    assert((uint32_t)((uint32_t)(qemu_clock_get_ns(0) / 100) - tick) == 20u);
-    puts("PASS QEMU device clocks: epoch QPC, 3 frequencies, ns overflow boundary and 32-bit APU timer wrap");
+    /* The APU's XGSCNT is a separate 48 kHz sample counter; its actual
+     * MMIO behavior is checked by test_apu_sample_counter.py. */
+    puts("PASS QEMU device clocks: epoch QPC, 3 frequencies and ns overflow boundary");
 }
 '''.replace('/* CLOCKS */', '\n'.join([
     function('external/xboxrecomp/src/nv2a/qemu_shim.h', 'qemu_clock_get_ns'),
