@@ -1579,3 +1579,81 @@ worklet records 190 underrun blocks. Different scenes prevent a controlled
 performance comparison. The component tests establish the smooth-colour fix;
 this run establishes integrated stability, not a sustained 30 FPS floor,
 continuous audio or complete stadium/staff fidelity.
+
+### Flat colours and original provoking vertices
+
+Flat selection now follows the pinned Xbox 1.0
+[shade-model captures](https://github.com/abaire/nxdk_pgraph_tests_golden_results/tree/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Shade_model)
+and their [test geometry](https://github.com/abaire/nxdk_pgraph_tests/blob/2cfe6073d59ab2a69f98cf4c6ca003c1a02c8c6d/src/tests/shade_model_tests.cpp).
+`SET_PROVOKING_VERTEX` (`09FC`) is handled and masks its one-bit setting.
+Positions below refer to the original index stream, before winding changes.
+
+| Primitive | First setting | Last setting |
+| --- | --- | --- |
+| Triangles | group start | group start + 2 |
+| Triangle strip | triangle start | triangle start + 2 |
+| Triangle fan | first rim vertex | next rim vertex |
+| Quads | quad start + 3 | quad start + 3 |
+| Quad strip | pair start + 3 | pair start + 3 |
+| Polygon | polygon vertex 0 | polygon vertex 0 |
+
+Both triangles of a split quad retain its original selected vertex, including
+when that vertex is absent from one host triangle. Pre-transformed GPU and
+software draws now fetch its floating RGBA directly; the former packed-colour
+helper is no longer needed. This avoids premature truncation. Smooth draws
+retain independent vertex colours.
+
+For vertex-program draws, diffuse and specular outputs are copied into local
+triangle vertices before clipping. Original cached vertices, position,
+texture coordinates and fog stay independent. The near/eye-plane checks
+confirm that the selected colour survives even when its original vertex is
+clipped away. SDL GPU and software share this preparation. Native D3D11
+assembly also duplicates the selected diffuse/specular outputs before the
+host GPU clips the triangle.
+
+Flat draws currently use CPU vertex processing, including on the SDL GPU
+and native D3D11 paths. Shared indexed GPU VP outputs cannot hold different
+flat colours for different primitives using the same vertex. Smooth draws
+retain GPU vertex processing. A native GPU flat-output implementation and
+its performance cost remain work; the fallback is an accuracy decision,
+not a claim that flat-draw performance is solved. Points/lines and two-sided
+colour handling are outside these triangle-based checks.
+
+The [reference manifest](references/nv2a-flat-shading.json) pins all 12 image
+hashes, the source revision, palette interpretation, projected geometry and
+208 interior RGB probes. The PNG files remain local ignored inputs. Recheck
+them with `python tools/audit-flat-shade-reference.py <capture-directory>`
+(Pillow required); `--write-header` regenerates the runtime fixture header.
+These are projected-geometry replays, not execution of the original Xbox test
+vertex program or a matched retail scene.
+They establish flat colour selection at those probes, not quad depth/texture
+interpolation or complete vertex-program arithmetic.
+
+Native rendering compares all 208 probes through both 2D and 3D paths, on
+GPU and software: 832 pixel comparisons. Hardware WebGPU and SwiftShader
+each compare 416 shader-pipeline pixels against the same captures. A separate
+24-state native assembly matrix checks the original selected index, raw
+diffuse/specular outputs, smooth preservation and unchanged texture
+coordinates. Additional pixel and clipping checks cover non-unit W and
+clipped-away selected vertices.
+
+The Wasm regression compiles the actual primitive selector, 2D assembler
+and D3D11 triangle macro, checking 23,296 index/vertex cases with shuffled
+indices, both modes/settings and capacity guards. The previously published
+D3D11 macro fails its new flat-colour check. Native Vulkan, address/undefined
+sanitizers (driver leak checks disabled), native kernel/video builds and the
+actual browser game build pass. The existing VP-cache regression also passes.
+A fresh pinned runtime reproduces all 89 patched files. Native D3D11 driver
+rendering still needs direct validation. Windows CI currently compiles the
+pinned native variant, so it does not validate the full web-patched Windows
+runtime; the D3D11 logic above is checked through the Wasm macro fixture.
+Publication `fe38b5e` passed both Build and Pages workflows.
+The final 246-second `flat-shade-retail/report.json` run reaches Dallas at
+Tampa Bay live play, with player uniforms, field markings and stadium scenes
+visible and no recorded browser/GPU/DSP fault. Five-second averages after
+150 seconds range from 26.0 to 30.1 FPS, with 200 audio worklet underrun
+blocks. The sampled logs do not identify which retail draws used the flat
+CPU VP fallback; the replay fixtures provide the positive flat-path evidence.
+Different teams/scenes prevent a controlled performance comparison. Full
+stadium/staff fidelity, continuous audio and a sustained 30 FPS floor remain
+unfinished.
