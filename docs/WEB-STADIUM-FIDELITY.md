@@ -738,3 +738,38 @@ The path stays opt-in. Full DSP instruction/effects conformance, original-Xbox
 audio matching, continuity and a sustained 30 FPS floor remain open.
 Legacy bed/commentary gain controls also still need mapping to the executable
 DSP's routing; this path currently outputs the guest program's PCM directly.
+
+## DSP multiplication cost and exact replacement
+
+A retail worker CPU capture (`build-web-tests/dsp-worker-profiles`) samples the
+workers for about 40 seconds at a 1 ms interval. Wasm function IDs are decoded
+with the matching `NFL2K5.js.symbols`, retained beside the profiles. Interpreter
+dispatch dominates; multiply/MAC wrappers account for about 2.9 seconds of
+sampled self attribution. Sampling and host scheduling affect these values;
+they are not a hardware instruction timing model.
+
+The fractional multiply helper now forms one signed 64-bit product instead
+of four 12-bit partial products and carry/negation steps. Both signed 24-bit
+operands, their product shifted once, and its negation fit in 64 bits,
+including the most-negative operands. The same 8/24/24-bit accumulator words
+are written, preserving the input to existing rounding and flag updates.
+
+`tests/web/test_dsp_multiply.py` generates 17,000 exact Python-integer vectors
+covering sign combinations, extrema, bit boundaries and randomized operands.
+The compiled production helper also matches the original limb implementation
+in two million additional cases. Wasm undefined-behavior checks, native Linux
+address/undefined-behavior checks and native Windows/MSVC pass. Uploaded DSP
+program and GP/EP bridge regressions pass, and the complete browser game links.
+
+The optional `--benchmark` builds without sanitizer instrumentation. Five
+alternating measurements of two million multiplies have median times of
+20.911 ms for the original routine and 7.886 ms for the replacement, about
+2.7x for this isolated workload. Instrumented timings are recorded separately
+and are not used as the release performance estimate.
+
+The follow-up retail capture (`build-web-tests/dsp-mul64-retail/report.json`)
+records no browser/GPU/DSP faults, but still has 737 worklet underrun blocks
+in 132 seconds. The preceding profiled capture recorded 4,445 blocks; attract
+scenes, host contention and profiling effects are uncontrolled, so that change
+is not a proven retail speedup. The executable DSP stays opt-in. This does not
+establish uninterrupted audio, full original-Xbox fidelity or a 30 FPS floor.

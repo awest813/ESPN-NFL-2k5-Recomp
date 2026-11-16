@@ -4502,10 +4502,10 @@ index 0000000..8095135
 +Public License instead of this License.
 diff --git a/src/apu/dsp/README.md b/src/apu/dsp/README.md
 new file mode 100644
-index 0000000..3da7b79
+index 0000000..e603136
 --- /dev/null
 +++ b/src/apu/dsp/README.md
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,55 @@
 +# Standalone DSP56300 core
 +
 +Source: [xemu a34bb0f8c229a9aabda46ac69184285112f65841](https://github.com/xemu-project/xemu/tree/a34bb0f8c229a9aabda46ac69184285112f65841/hw/xbox/mcpx/apu/dsp),
@@ -4519,6 +4519,14 @@ index 0000000..3da7b79
 +instead of maintaining a second, incomplete copy. `dsp_init` handles allocation
 +failure. Bootstrap cache clearing has the same explicit cast as the existing
 +APU reset path for MSVC. Trailing whitespace in the imported code is normalized.
++
++Fractional multiplication uses a signed 64-bit product instead of four 12-bit
++partial products. Signed 24-bit operands multiplied and shifted once fit in
++64 bits, including the most-negative operand squared. The result is split
++back into the same 8/24/24-bit accumulator words. `test_dsp_multiply.py` checks
++17,000 exact Python-integer vectors and two million comparisons against the
++original limb algorithm. Its optional `--benchmark` builds an unsanitized
++Wasm executable separately from the correctness instrumentation.
 +
 +DMA transfer storage is owned by each processor and freed by `dsp_destroy`.
 +The original signed `-1` capacity compares as an unsigned maximum on Wasm32,
@@ -4953,10 +4961,10 @@ index 0000000..56c5da2
 +}
 diff --git a/src/apu/dsp/dsp_cpu.c b/src/apu/dsp/dsp_cpu.c
 new file mode 100644
-index 0000000..6cc3410
+index 0000000..ab9044a
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1393 @@
+@@ -0,0 +1,1345 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -6243,64 +6251,16 @@ index 0000000..6cc3410
 +
 +static void dsp_mul56(uint32_t source1, uint32_t source2, uint32_t *dest, uint8_t signe)
 +{
-+    uint32_t part[4], zerodest[3], value;
-+
-+    /* Multiply: D = S1*S2 */
-+    if (source1 & (1<<23)) {
-+        signe ^= 1;
-+        source1 = (1<<24) - source1;
-+    }
-+    if (source2 & (1<<23)) {
-+        signe ^= 1;
-+        source2 = (1<<24) - source2;
-+    }
-+
-+    /* bits 0-11 * bits 0-11 */
-+    part[0]=(source1 & BITMASK(12))*(source2 & BITMASK(12));
-+    /* bits 12-23 * bits 0-11 */
-+    part[1]=((source1>>12) & BITMASK(12))*(source2 & BITMASK(12));
-+    /* bits 0-11 * bits 12-23 */
-+    part[2]=(source1 & BITMASK(12))*((source2>>12)  & BITMASK(12));
-+    /* bits 12-23 * bits 12-23 */
-+    part[3]=((source1>>12) & BITMASK(12))*((source2>>12) & BITMASK(12));
-+
-+    /* Calc dest 2 */
-+    dest[2] = part[0];
-+    dest[2] += (part[1] & BITMASK(12)) << 12;
-+    dest[2] += (part[2] & BITMASK(12)) << 12;
-+
-+    /* Calc dest 1 */
-+    dest[1] = (part[1]>>12) & BITMASK(12);
-+    dest[1] += (part[2]>>12) & BITMASK(12);
-+    dest[1] += part[3];
-+
-+    /* Calc dest 0 */
-+    dest[0] = 0;
-+
-+    /* Add carries */
-+    value = (dest[2]>>24) & BITMASK(8);
-+    if (value) {
-+        dest[1] += value;
-+        dest[2] &= BITMASK(24);
-+    }
-+    value = (dest[1]>>24) & BITMASK(8);
-+    if (value) {
-+        dest[0] += value;
-+        dest[1] &= BITMASK(24);
-+    }
-+
-+    /* Get rid of extra sign bit */
-+    dsp_asl56(dest, 1);
-+
-+    if (signe) {
-+        zerodest[0] = zerodest[1] = zerodest[2] = 0;
-+
-+        dsp_sub56(dest, zerodest);
-+
-+        dest[0] = zerodest[0];
-+        dest[1] = zerodest[1];
-+        dest[2] = zerodest[2];
-+    }
++    /* Signed Q1.23 operands produce a fractional 48-bit product, shifted
++     * once into the 56-bit accumulator. The full range fits in int64_t,
++     * including (-1)*(-1); avoid the four 12-bit partial products. */
++    int64_t a = (int64_t)(source1 & 0x7fffffu) - (int64_t)(source1 & 0x800000u);
++    int64_t b = (int64_t)(source2 & 0x7fffffu) - (int64_t)(source2 & 0x800000u);
++    int64_t product = a * b * 2;
++    uint64_t bits = (uint64_t)(signe ? -product : product);
++    dest[0] = (uint32_t)(bits >> 48) & 0xffu;
++    dest[1] = (uint32_t)(bits >> 24) & 0xffffffu;
++    dest[2] = (uint32_t)bits & 0xffffffu;
 +}
 +
 +static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
