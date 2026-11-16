@@ -907,3 +907,49 @@ comparison. The corrected producer diagnostic now also reports starved
 submissions at four queued bytes, confirming the former zero-only counter
 missed that dry state. Uninterrupted audio, original-Xbox matching and the
 sustained 30 FPS floor remain unfinished.
+
+## PASSTHRU texture-stage bounds
+
+The GPU shaders previously forwarded texture `PASSTHRU` coordinates directly
+to the register combiners. NV2A clamps these values to 0–1 after interpolation;
+this behavior is documented by the hardware-tested correction in
+[xemu issue 2523](https://github.com/xemu-project/xemu/issues/2523).
+Out-of-range values can change later signed combiner mappings even when the
+final framebuffer color is clamped. The WebGPU/SDL shader and D3D11 shader
+now clamp at the texture-stage boundary. D3D11 also honors PASSTHRU at stage
+zero when no texture is enabled. The generated WGSL and HLSL artifacts are
+updated; after generated identifier normalization, the WGSL change is solely
+the new clamp operation.
+
+The software rasterizer also previously ignored PASSTHRU, using a texture or
+white instead of all four original coordinates. It now interpolates the raw
+coordinates with perspective weights and clamps them before combiner input
+mapping, without an unused texture lookup. This keeps the fallback consistent
+with the GPU paths for this mode.
+
+Hardware WebGPU reproduced the old shader result `FFFF0040` where the expected
+ARGB value is `80800040`, plus an incorrect red result from negative input.
+All four texture stages failed these cases before the fix. The final suite
+passes 40 exact-pixel PASSTHRU cases across stages, texture-sampling flags,
+signed mappings, in-range inputs, affine interpolation and unequal vertex W.
+The native Vulkan suite passes 16 equivalent cases through the actual render
+queue and 16 through the actual software rasterizer. The software tests
+reproduced eight failures before its correction. The existing renderer scenes
+and failure-recovery tests also pass.
+
+D3D11 vertex, pixel and geometry shaders compile with the Windows shader
+compiler; D3D11 pixel readback is outside this check. The full browser game
+and actual native graphics runtime build successfully, and a fresh pinned
+tree reproduces all 76 patched files. Local SwiftShader attempts failed to
+obtain an adapter; the successful WebGPU checks used the Intel hardware
+adapter, with no recorded WebGPU validation errors.
+
+The 132-second GPU-shader retail check (`passthru-retail/report.json`) reaches
+Indianapolis at Kansas City. Examined captures show players/uniforms, sideline
+figures and equipment, crowd tiers and readable Mike Doss intro graphics,
+with no recorded browser/GPU/DSP faults. It records 148 worklet underrun blocks
+and some five-second averages below 30 FPS. This capture precedes the separate
+software-fallback correction; its sampled rendering logs report no software
+3D draws. An ESPN scene specifically exercising out-of-range PASSTHRU input
+has not been isolated, so this is shader conformance and stability evidence,
+not proof of a visible stadium correction or complete original-Xbox parity.
