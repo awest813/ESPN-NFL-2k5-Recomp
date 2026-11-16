@@ -1,4 +1,11 @@
-/* Frozen pre-optimization interpreter for differential testing. */
+/* Baseline decoder with documented NV arithmetic corrections. */
+static int reference_vp_less(float a,float b) {
+    if(isnan(a) && isnan(b))return signbit(a) && !signbit(b);
+    if(isnan(a))return !!signbit(a);
+    if(isnan(b))return !signbit(b);
+    if(a==0 && b==0)return signbit(a) && !signbit(b);
+    return a<b;
+}
 static uint32_t reference_vp_field(const uint32_t *t, int word, int bit, int len) {
     return (t[word] >> bit) & ((1u << len) - 1u);
 }
@@ -124,11 +131,11 @@ static void reference_vp_run(const float V[16][4], float O[16][4]) {
                 break; /* DST */
             case 9: for (i = 0; i < 4; i++) mres[i] = A[i] < B[i] ? A[i] : B[i];
                 break; /* MIN */
-            case 10: for (i = 0; i < 4; i++) mres[i] = A[i] > B[i] ? A[i] : B[i];
+            case 10: for (i = 0; i < 4; i++) mres[i] = A[i] >= B[i] ? A[i] : B[i];
                 break; /* MAX */
-            case 11: for (i = 0; i < 4; i++) mres[i] = A[i] < B[i] ? 1.0f : 0.0f;
+            case 11: for (i = 0; i < 4; i++) mres[i] = reference_vp_less(A[i],B[i]) ? 1.0f : 0.0f;
                 break; /* SLT */
-            case 12: for (i = 0; i < 4; i++) mres[i] = A[i] >= B[i] ? 1.0f : 0.0f;
+            case 12: for (i = 0; i < 4; i++) mres[i] = !reference_vp_less(A[i],B[i]) ? 1.0f : 0.0f;
                 break; /* SGE */
             case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                 a0_written = 1; /* ARL */

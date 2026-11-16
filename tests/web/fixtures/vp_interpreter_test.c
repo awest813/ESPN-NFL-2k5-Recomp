@@ -129,7 +129,32 @@ static int reciprocal_check(void) {
     if(!signbit(output[3][1]) || output[3][2]!=0) {puts("FAIL LIT signed zero");return 1;}
     puts("PASS LIT zero exponent and signed diffuse zero");return 0;
 }
+static int comparison_check(void) {
+    const uint32_t values[]={0xffc00000u,0xff800000u,0xc0000000u,0x80000000u,0,0x40000000u,0x7f800000u,0x7fc00000u};
+    float input[16][4]={{0}},output[16][4];s_vp.start=0;
+    memset(s_vp.prog,0,sizeof s_vp.prog);
+    s_vp.prog[0][1]=(1u<<21)|(1u<<9)|0x1bu;
+    s_vp.prog[0][2]=2u<<26;s_vp.prog[0][3]=15u<<24; /* MOV v1 -> R0 */
+    for(unsigned neg=0;neg<2;neg++)for(unsigned mac=11;mac<=12;mac++) {
+        uint32_t *t=s_vp.prog[1];t[1]=(mac<<21)|(neg<<8)|0x1bu;
+        t[2]=(2u<<26)|(1u<<11)|(1u<<21)|(2u<<19)|(3u<<17);
+        t[3]=(15u<<12)|(1u<<11)|(3u<<3)|1u;s_vp_cgen++;
+        for(unsigned a=0;a<8;a++)for(unsigned b=0;b<8;b++) {
+            unsigned arank=neg?7-a:a;
+            if(arank==b && (b==0 || b==7))continue; /* NaN self-order is not asserted. */
+            for(unsigned k=0;k<4;k++) {memcpy(&input[0][k],&values[a],4);memcpy(&input[1][k],&values[b],4);}
+            vp_run(input,output);
+            float expected=mac==11?(arank<b):(arank>=b);
+            if(output[3][0]!=expected) {
+                printf("FAIL comparison MAC %u negate %u A %08X B %08X actual %g expected %g\n",mac,neg,values[a],values[b],output[3][0],expected);return 1;
+            }
+        }
+    }
+    puts("PASS ordered SLT/SGE signed zero, NaN classes and operand negation");
+    return 0;
+}
 int main(void) {
+    if(comparison_check()) return 1;
     if(reciprocal_check()) return 1;
     if(zero_product_check()) return 1;
     if(parity_check()) return 1;

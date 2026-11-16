@@ -53,7 +53,7 @@ static void compact_vertex_case(void) {
     save("compact.uniforms.bin", uniforms, sizeof uniforms);
 }
 int main(void) {
-    enum { CASES = 80, VERTICES = 32 };
+    enum { CASES = 86, VERTICES = 32 };
     for (unsigned test = 0; test < CASES; test++) {
         s_vp.start = test >= 64 ? 0 : test % 5;
         unsigned length = test >= 64 ? 0 : test < 22 ? 1 : 12;
@@ -108,6 +108,15 @@ int main(void) {
             uint32_t *t=s_vp.prog[0];t[0]=0;t[1]=7u<<25;t[2]=0x6cu;
             t[3]=(2u<<28)|(15u<<16)|(15u<<12)|(1u<<11)|(3u<<3)|5u;
         }
+        if(test>=80) {
+            memset(s_vp.prog,0,sizeof s_vp.prog);
+            s_vp.prog[0][1]=(1u<<21)|(1u<<9)|0x1bu;
+            s_vp.prog[0][2]=2u<<26;s_vp.prog[0][3]=15u<<24;
+            unsigned mac=test<84?11+(test&1):test-75;
+            s_vp.prog[1][1]=(mac<<21)|((test==82 || test==83)?1u<<8:0)|0x1bu;
+            s_vp.prog[1][2]=(2u<<26)|(1u<<11)|(1u<<21)|(2u<<19)|(3u<<17);
+            s_vp.prog[1][3]=(15u<<12)|(1u<<11)|(3u<<3)|1u;
+        }
         for (unsigned i = 0; i < 192; i++)
             for (unsigned k = 0; k < 4; k++) s_vp.c[i][k] = random_float();
         float inputs[VERTICES][16][4], outputs[VERTICES][29][4];
@@ -139,16 +148,38 @@ int main(void) {
             if(test==79) {
                 inputs[i][0][0]=1;inputs[i][0][1]=(float[]){0,-1,NAN,1}[i%4];inputs[i][0][3]=0;
             }
+            if(test>=80) {
+                const uint32_t classes[]={0xffc00000u,0xff800000u,0xc0000000u,0x80000000u,0,0x40000000u,0x7f800000u,0x7fc00000u};
+                unsigned n=test<84?8:6;
+                for(unsigned k=0;k<4;k++) {
+                    unsigned pair=(i*4+k)%(n*n),a=pair/n,b=pair%n;
+                    /* Exclude unspecified NaN self-order. */
+                    unsigned rank=(test==82 || test==83)?7-a:a;
+                    if(test<84 && rank==b && (b==0 || b==7))b=3;
+                    memcpy(&inputs[i][0][k],&classes[a+(test>=84)],4);
+                    memcpy(&inputs[i][1][k],&classes[b+(test>=84)],4);
+                }
+            }
             vp_run(inputs[i], outputs[i]);
             if (test >= 67 && test <= 70) for(unsigned k=0;k<4;k++) {
                 float expected=test&1?0.0f:s_vp.c[2][k];
                 if(outputs[i][3][k]!=expected || ((test&1) && signbit(outputs[i][3][k]))) abort();
             }
-            if(test>=75) {
+            if(test>=75 && test<=79) {
                 float expected[4]={0};
                 if(test==78){expected[0]=1;expected[2]=-0.0f;}
                 if(test==79)for(unsigned k=0;k<4;k++)expected[k]=1;
                 if(memcmp(outputs[i][3],expected,sizeof expected))abort();
+            }
+            if(test>=80)for(unsigned k=0;k<4;k++) {
+                float a=inputs[i][0][k],b=inputs[i][1][k],expected;
+                if(test<84) {
+                    unsigned pair=(i*4+k)%64,arank=pair/8,brank=pair%8;
+                    if(test==82 || test==83)arank=7-arank;
+                    if(arank==brank && (brank==0 || brank==7))brank=3;
+                    expected=test&1?arank>=brank:arank<brank;
+                } else expected=test==84?(a<b?a:b):(a>=b?a:b);
+                if(memcmp(&outputs[i][3][k],&expected,4))abort();
             }
             memcpy(outputs[i][16], s_vp_dbg_r, sizeof s_vp_dbg_r);
         }
@@ -168,6 +199,6 @@ int main(void) {
     s_vp.prog[0][3] = (15u << 12) | 1u; /* MOV writes c0 */
     if (sg_vp_translate_wgsl(0)) return 2;
     if (sg_vp_translate_wgsl(VP_PROG_LEN)) return 3;
-    puts("Generated 80 WGSL programs with CPU references; constant writes correctly refused");
+    puts("Generated 86 WGSL programs with CPU references; constant writes correctly refused");
     return 0;
 }

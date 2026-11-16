@@ -891,7 +891,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2723,12 @@
+@@ -2623,7 +2723,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -901,11 +901,18 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +    return (a == 0.0f || b == 0.0f) ? 0.0f : a * b;
 +}
 +
++/* SLT/SGE order signed zeros and signed NaN classes as NV vertex programs do. */
++static uint32_t vp_compare_key(float value) {
++    uint32_t bits; memcpy(&bits,&value,sizeof bits);
++    if ((bits & 0x7fffffffu) > 0x7f800000u) bits=(bits & 0x80000000u)|0x7fc00000u;
++    return bits & 0x80000000u ? ~bits : bits ^ 0x80000000u;
++}
++
 +static void vp_run_prepared(const float V[16][4], float O[16][4], int diagnostics) {
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,58 +2739,44 @@
+@@ -2634,68 +2746,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -983,7 +990,20 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  mres[2] = A[2];
                  mres[3] = B[3];
                  break; /* DST */
-@@ -2728,20 +2819,12 @@
+             case 9: for (i = 0; i < 4; i++) mres[i] = A[i] < B[i] ? A[i] : B[i];
+                 break; /* MIN */
+-            case 10: for (i = 0; i < 4; i++) mres[i] = A[i] > B[i] ? A[i] : B[i];
++            case 10: for (i = 0; i < 4; i++) mres[i] = A[i] >= B[i] ? A[i] : B[i];
+                 break; /* MAX */
+-            case 11: for (i = 0; i < 4; i++) mres[i] = A[i] < B[i] ? 1.0f : 0.0f;
++            case 11: for (i = 0; i < 4; i++) mres[i] = vp_compare_key(A[i]) < vp_compare_key(B[i]) ? 1.0f : 0.0f;
+                 break; /* SLT */
+-            case 12: for (i = 0; i < 4; i++) mres[i] = A[i] >= B[i] ? 1.0f : 0.0f;
++            case 12: for (i = 0; i < 4; i++) mres[i] = vp_compare_key(A[i]) >= vp_compare_key(B[i]) ? 1.0f : 0.0f;
+                 break; /* SGE */
+             case 13: new_a0 = (int) floorf(A[0] + 0.001f);
+                 a0_written = 1; /* ARL */
+@@ -2728,20 +2826,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1006,7 +1026,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +2857,13 @@
+@@ -2774,13 +2864,13 @@
                  break;
              }
              case 7: {
@@ -1024,7 +1044,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +2906,18 @@
+@@ -2823,11 +2913,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1048,7 +1068,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +2937,29 @@
+@@ -2847,7 +2944,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1078,7 +1098,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +2976,9 @@
+@@ -2864,8 +2983,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1090,7 +1110,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3125,17 @@
+@@ -3012,6 +3132,17 @@
      }
  }
 
@@ -1108,7 +1128,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3057,26 +3181,15 @@
+@@ -3057,26 +3188,15 @@
          }
          return;
      }
@@ -1138,7 +1158,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3253,7 +3366,7 @@
+@@ -3253,7 +3373,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1147,7 +1167,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3375,34 @@
+@@ -3262,32 +3382,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1194,7 +1214,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,27 +3449,41 @@
+@@ -3334,27 +3456,41 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -1249,7 +1269,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* The triangles of the current vertex-program batch, after the vertex
-@@ -3605,7 +3734,7 @@
+@@ -3605,7 +3741,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -1258,7 +1278,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +3972,7 @@
+@@ -3843,7 +3979,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -1267,7 +1287,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +3995,7 @@
+@@ -3866,7 +4002,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -1276,7 +1296,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4434,7 @@
+@@ -4305,7 +4441,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -1285,7 +1305,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +4885,7 @@
+@@ -4756,7 +4892,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -1294,7 +1314,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5003,7 @@
+@@ -4874,7 +5010,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1303,7 +1323,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5011,7 @@
+@@ -4882,7 +5018,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -1312,7 +1332,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5063,7 @@
+@@ -4934,7 +5070,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -1321,7 +1341,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5071,7 @@
+@@ -4942,7 +5078,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -2459,9 +2479,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_vp.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_vp.inc.c
-@@ -49,11 +49,15 @@
+@@ -48,12 +48,21 @@
+     "layout(set = 1, binding = 0, std140) uniform VC {\n"
      "    vec4 c[192]; vec4 info; vec4 clipr; vec4 fogp; vec4 lightp;\n"
      "};\n"
++    "uint vcompare_key(float x) { uint b=floatBitsToUint(x); if ((b&0x7fffffffu)>0x7f800000u) b=(b&0x80000000u)|0x7fc00000u; return (b&0x80000000u)!=0u ? ~b : b^0x80000000u; }\n"
++    "bvec4 vlt(vec4 a,vec4 b) { return bvec4(vcompare_key(a.x)<vcompare_key(b.x),vcompare_key(a.y)<vcompare_key(b.y),vcompare_key(a.z)<vcompare_key(b.z),vcompare_key(a.w)<vcompare_key(b.w)); }\n"
++    "bvec4 vge(vec4 a,vec4 b) { return bvec4(vcompare_key(a.x)>=vcompare_key(b.x),vcompare_key(a.y)>=vcompare_key(b.y),vcompare_key(a.z)>=vcompare_key(b.z),vcompare_key(a.w)>=vcompare_key(b.w)); }\n"
++    "vec4 vmin(vec4 a,vec4 b) { return vec4(a.x<b.x?a.x:b.x,a.y<b.y?a.y:b.y,a.z<b.z?a.z:b.z,a.w<b.w?a.w:b.w); }\n"
++    "vec4 vmax(vec4 a,vec4 b) { return vec4(a.x>=b.x?a.x:b.x,a.y>=b.y?a.y:b.y,a.z>=b.z?a.z:b.z,a.w>=b.w?a.w:b.w); }\n"
      "float vrcp(float x) { return x == 1.0 ? 1.0 : 1.0 / x; }\n"
 +    "float vclampw(float w);\n"
      "float vrcc(float x) {\n"
@@ -2477,7 +2503,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
      "float vclampw(float w) {\n"
      "    if (w > 0.0 || floatBitsToUint(w) == 0u)\n"
      "        return clamp(w, uintBitsToFloat(0x1F800000u), uintBitsToFloat(0x5F800000u));\n"
-@@ -67,8 +71,8 @@
+@@ -67,8 +76,8 @@
      "    return vec4(e, x / exp2(e), log2(x), 1.0);\n"
      "}\n"
      "vec4 vlit(vec4 s) {\n"
@@ -2488,7 +2514,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
      "}\n"
      "void main() {\n"
      "    vec4 v[16] = vec4[16](in_v0, in_v1, in_v2, in_v3, in_v4, in_v5, in_v6, in_v7,\n"
-@@ -145,8 +149,19 @@
+@@ -145,8 +154,19 @@
      va_start(ap, fmt);
      len = vsnprintf(b->p + b->n, b->cap - b->n, fmt, ap);
      va_end(ap);
@@ -2510,7 +2536,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
  }
 
  /* One source operand: register / input / constant (relative to a0 or not),
-@@ -229,13 +244,13 @@
+@@ -229,17 +249,17 @@
                  A, B, C);
          switch (mac) {                                  /* the multiply-add unit */
          case 1:  sg_text(&b, "      m = A;\n"); break;                                   /* MOV */
@@ -2522,15 +2548,23 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
 -        case 6:  sg_text(&b, "      m = vec4(dot(A.xyz, B.xyz) + B.w);\n"); break;       /* DPH */
 -        case 7:  sg_text(&b, "      m = vec4(dot(A, B));\n"); break;                     /* DP4 */
 -        case 8:  sg_text(&b, "      m = vec4(1.0, A.y * B.y, A.z, B.w);\n"); break;      /* DST */
+-        case 9:  sg_text(&b, "      m = min(A, B);\n"); break;                           /* MIN */
+-        case 10: sg_text(&b, "      m = max(A, B);\n"); break;                           /* MAX */
+-        case 11: sg_text(&b, "      m = vec4(lessThan(A, B));\n"); break;                /* SLT */
+-        case 12: sg_text(&b, "      m = vec4(greaterThanEqual(A, B));\n"); break;        /* SGE */
 +        case 4:  sg_text(&b, "      m = vmul(A, B) + C;\n"); break;                     /* MAD */
 +        case 5:  sg_text(&b, "      m = vec4(vdot3(A, B));\n"); break;                  /* DP3 */
 +        case 6:  sg_text(&b, "      m = vec4(vdot3(A, B) + B.w);\n"); break;            /* DPH */
 +        case 7:  sg_text(&b, "      m = vec4(vdot4(A, B));\n"); break;                  /* DP4 */
 +        case 8:  sg_text(&b, "      m = vec4(1.0, vmul1(A.y, B.y), A.z, B.w);\n"); break; /* DST */
-         case 9:  sg_text(&b, "      m = min(A, B);\n"); break;                           /* MIN */
-         case 10: sg_text(&b, "      m = max(A, B);\n"); break;                           /* MAX */
-         case 11: sg_text(&b, "      m = vec4(lessThan(A, B));\n"); break;                /* SLT */
-@@ -313,4 +328,4 @@
++        case 9:  sg_text(&b, "      m = vmin(A, B);\n"); break;                          /* MIN */
++        case 10: sg_text(&b, "      m = vmax(A, B);\n"); break;                          /* MAX */
++        case 11: sg_text(&b, "      m = vec4(vlt(A, B));\n"); break;                     /* SLT */
++        case 12: sg_text(&b, "      m = vec4(vge(A, B));\n"); break;                     /* SGE */
+         case 13: sg_text(&b, "      na0 = int(floor(A.x + 0.001));\n"); break;           /* ARL */
+         default: break;
+         }
+@@ -313,4 +333,4 @@
      }
      fprintf(stderr, "  [VPCHECK] so far: %u ok, %u stay on CPU, %u failed\n", ok, refused, failed);
  #endif
@@ -2539,7 +2573,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
 +}
 diff --git a/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
 new file mode 100644
-index 0000000..ce3c2f2
+index 0000000..28bb6e7
 --- /dev/null
 +++ b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
 @@ -0,0 +1,105 @@
@@ -2552,14 +2586,14 @@ index 0000000..ce3c2f2
 +                        int neg, const int swz[4], int scalar)
 +{
 +    char source[96];
-+    sg_vp_src(source, sizeof source, t, mux, reg, neg, swz, scalar);
-+    /* The only language difference in a source operand is the constant
-+     * buffer's qualified name. Relative addressing and swizzles carry over. */
++    sg_vp_src(source, sizeof source, t, mux, reg, 0, swz, scalar);
++    /* Qualify constants and apply negation as a sign-bit flip. Floating-point
++     * unary minus may canonicalize NaNs on some browser GPU backends. */
 +    const char *c = strstr(source, "c[");
 +    if (c)
-+        snprintf(out, n, "%.*svc.%s", (int)(c - source), source, c);
++        snprintf(out, n, "%s%.*svc.%s%s", neg ? "vneg(" : "", (int)(c - source), source, c, neg ? ")" : "");
 +    else
-+        snprintf(out, n, "%s", source);
++        snprintf(out, n, "%s%s%s", neg ? "vneg(" : "", source, neg ? ")" : "");
 +}
 +
 +static void sg_wgsl_write(SgText *b, const char *dst, const char *src, uint32_t mask)
@@ -2613,9 +2647,9 @@ index 0000000..ce3c2f2
 +        case 7: sg_text(&b, "      m = vec4f(vdot4(A, B));\n"); break;
 +        case 8: sg_text(&b, "      m = vec4f(1.0, vmul1(A.y, B.y), A.z, B.w);\n"); break;
 +        case 9: sg_text(&b, "      m = select(B, A, A < B);\n"); break;
-+        case 10: sg_text(&b, "      m = select(B, A, A > B);\n"); break;
-+        case 11: sg_text(&b, "      m = select(vec4f(0.0), vec4f(1.0), A < B);\n"); break;
-+        case 12: sg_text(&b, "      m = select(vec4f(0.0), vec4f(1.0), A >= B);\n"); break;
++        case 10: sg_text(&b, "      m = select(B, A, A >= B);\n"); break;
++        case 11: sg_text(&b, "      m = select(vec4f(0.0), vec4f(1.0), vlt(A, B));\n"); break;
++        case 12: sg_text(&b, "      m = select(vec4f(0.0), vec4f(1.0), vge(A, B));\n"); break;
 +        case 13: sg_text(&b, "      na0 = i32(floor(A.x + 0.001));\n"); break;
 +        default: break;
 +        }
@@ -2650,10 +2684,10 @@ index 0000000..ce3c2f2
 +}
 diff --git a/src/kernel/sdlgpu/shaders/vp.wgsl b/src/kernel/sdlgpu/shaders/vp.wgsl
 new file mode 100644
-index 0000000..9b2b253
+index 0000000..f0555f5
 --- /dev/null
 +++ b/src/kernel/sdlgpu/shaders/vp.wgsl
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,151 @@
 +// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the
 +// two halves; the C translator inserts straight-line instructions between them.
 +struct VpUniforms {
@@ -2686,6 +2720,21 @@ index 0000000..9b2b253
 +// WGSL rejects NaN/Inf in constant expressions. A function parameter keeps
 +// the bitcast a runtime expression, as required for NV2A exceptional math.
 +fn vexception(bits: u32) -> f32 { return bitcast<f32>(bits); }
++// Preserve signed zeros and NaN signs through driver optimizations.
++fn vneg(x: vec4f) -> vec4f { return bitcast<vec4f>(bitcast<vec4u>(x) ^ vec4u(0x80000000u)); }
++fn vcompare_key(x: f32) -> u32 {
++    var bits = bitcast<u32>(x);
++    if ((bits & 0x7fffffffu) > 0x7f800000u) { bits = (bits & 0x80000000u) | 0x7fc00000u; }
++    return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
++}
++fn vlt(a: vec4f, b: vec4f) -> vec4<bool> {
++    return vec4<bool>(vcompare_key(a.x)<vcompare_key(b.x), vcompare_key(a.y)<vcompare_key(b.y),
++                      vcompare_key(a.z)<vcompare_key(b.z), vcompare_key(a.w)<vcompare_key(b.w));
++}
++fn vge(a: vec4f, b: vec4f) -> vec4<bool> {
++    return vec4<bool>(vcompare_key(a.x)>=vcompare_key(b.x), vcompare_key(a.y)>=vcompare_key(b.y),
++                      vcompare_key(a.z)>=vcompare_key(b.z), vcompare_key(a.w)>=vcompare_key(b.w));
++}
 +fn vmul1(a: f32, b: f32) -> f32 {
 +    // NV2A MUL/MAD return positive zero for any product with a zero operand,
 +    // including infinity and NaN. Handle this before propagating NaNs.
@@ -3532,9 +3581,15 @@ diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
 diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
 --- a/src/kernel/nv2a_gpu_vp.inc.c
 +++ b/src/kernel/nv2a_gpu_vp.inc.c
-@@ -86,9 +86,13 @@
+@@ -85,10 +85,19 @@
+     "  float4 t0:TEXCOORD0; float4 t1:TEXCOORD1; float4 t2:TEXCOORD2; float4 t3:TEXCOORD3; float4 wz:TEXCOORD4; float4 rawscreen:TEXCOORD5;\n"
      "  nointerpolation float4 tri0:TEXCOORD6; nointerpolation float4 tri1:TEXCOORD7; nointerpolation float4 tri2:TEXCOORD8;\n"
      "  nointerpolation float2 depthmeta:TEXCOORD9; };\n"
++    "uint vcompare_key(float x) { uint b=asuint(x); if ((b&0x7fffffffu)>0x7f800000u) b=(b&0x80000000u)|0x7fc00000u; return (b&0x80000000u)!=0u ? ~b : b^0x80000000u; }\n"
++    "bool4 vlt(float4 a,float4 b) { return bool4(vcompare_key(a.x)<vcompare_key(b.x),vcompare_key(a.y)<vcompare_key(b.y),vcompare_key(a.z)<vcompare_key(b.z),vcompare_key(a.w)<vcompare_key(b.w)); }\n"
++    "bool4 vge(float4 a,float4 b) { return bool4(vcompare_key(a.x)>=vcompare_key(b.x),vcompare_key(a.y)>=vcompare_key(b.y),vcompare_key(a.z)>=vcompare_key(b.z),vcompare_key(a.w)>=vcompare_key(b.w)); }\n"
++    "float4 vmin(float4 a,float4 b) { return float4(a.x<b.x?a.x:b.x,a.y<b.y?a.y:b.y,a.z<b.z?a.z:b.z,a.w<b.w?a.w:b.w); }\n"
++    "float4 vmax(float4 a,float4 b) { return float4(a.x>=b.x?a.x:b.x,a.y>=b.y?a.y:b.y,a.z>=b.z?a.z:b.z,a.w>=b.w?a.w:b.w); }\n"
      "float vrcp(float x) { return x == 1.0 ? 1.0 : 1.0 / x; }\n"
 -    "float vrcc(float x) { float r = x == 0.0 ? 1.8446743e19 : 1.0 / x;\n"
 -    "  if (r > 0) r = clamp(r, 5.42101e-20, 1.8446743e19); else r = clamp(r, -1.8446743e19, -5.42101e-20); return r; }\n"
@@ -3548,7 +3603,7 @@ diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
      "float vclampw(float w) {\n"
      "  if (w > 0.0 || asuint(w) == 0u) return clamp(w, asfloat(0x1F800000u), asfloat(0x5F800000u));\n"
      "  return clamp(w, asfloat(0xDF800000u), asfloat(0x9F800000u));\n"
-@@ -96,8 +100,8 @@
+@@ -96,8 +105,8 @@
      "float4 vexp(float x) { float f = floor(x); return float4(exp2(f), x - f, exp2(x), 1.0); }\n"
      "float4 vlog(float x) { x = abs(x); if (x == 0.0) return float4(-asfloat(0x7F800000u), 1.0, -asfloat(0x7F800000u), 1.0);\n"
      "  float e = floor(log2(x)); return float4(e, x / exp2(e), log2(x), 1.0); }\n"
@@ -3559,7 +3614,7 @@ diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
      "PIn vs_main(VSIn i) {\n"
      "  float4 v[16] = { i.a0, i.a1, i.a2, i.a3, i.a4, i.a5, i.a6, i.a7, i.a8, i.a9, i.a10, i.a11, i.a12, i.a13, i.a14, i.a15 };\n"
      "  float4 R[13]; float4 O[16]; int a0 = 0; int k;\n"
-@@ -302,13 +306,13 @@
+@@ -302,17 +311,17 @@
              A, B, C);
          switch (mac) {
          case 1:  vpb(&b, "    m = A;\n"); break;
@@ -3571,14 +3626,22 @@ diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
 -        case 6:  vpb(&b, "    m = (dot(A.xyz, B.xyz) + B.w).xxxx;\n"); break;
 -        case 7:  vpb(&b, "    m = dot(A, B).xxxx;\n"); break;
 -        case 8:  vpb(&b, "    m = float4(1.0, A.y * B.y, A.z, B.w);\n"); break;
+-        case 9:  vpb(&b, "    m = min(A, B);\n"); break;
+-        case 10: vpb(&b, "    m = max(A, B);\n"); break;
+-        case 11: vpb(&b, "    m = (float4)(A < B);\n"); break;
+-        case 12: vpb(&b, "    m = (float4)(A >= B);\n"); break;
 +        case 4:  vpb(&b, "    m = vmul(A, B) + C;\n"); break;
 +        case 5:  vpb(&b, "    m = vdot3(A, B).xxxx;\n"); break;
 +        case 6:  vpb(&b, "    m = (vdot3(A, B) + B.w).xxxx;\n"); break;
 +        case 7:  vpb(&b, "    m = vdot4(A, B).xxxx;\n"); break;
 +        case 8:  vpb(&b, "    m = float4(1.0, vmul1(A.y, B.y), A.z, B.w);\n"); break;
-         case 9:  vpb(&b, "    m = min(A, B);\n"); break;
-         case 10: vpb(&b, "    m = max(A, B);\n"); break;
-         case 11: vpb(&b, "    m = (float4)(A < B);\n"); break;
++        case 9:  vpb(&b, "    m = vmin(A, B);\n"); break;
++        case 10: vpb(&b, "    m = vmax(A, B);\n"); break;
++        case 11: vpb(&b, "    m = (float4)vlt(A, B);\n"); break;
++        case 12: vpb(&b, "    m = (float4)vge(A, B);\n"); break;
+         case 13: vpb(&b, "    na0 = (int)floor(A.x + 0.001);\n"); break;
+         default: break;
+         }
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -6643,10 +6706,10 @@ index 0000000..f1e7f28
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..3e6473b
+index 0000000..b969d7d
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,2023 @@
+@@ -0,0 +1,2038 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -8565,6 +8628,21 @@ index 0000000..3e6473b
 +    "// WGSL rejects NaN/Inf in constant expressions. A function parameter keeps\n"
 +    "// the bitcast a runtime expression, as required for NV2A exceptional math.\n"
 +    "fn vexception(bits: u32) -> f32 { return bitcast<f32>(bits); }\n"
++    "// Preserve signed zeros and NaN signs through driver optimizations.\n"
++    "fn vneg(x: vec4f) -> vec4f { return bitcast<vec4f>(bitcast<vec4u>(x) ^ vec4u(0x80000000u)); }\n"
++    "fn vcompare_key(x: f32) -> u32 {\n"
++    "    var bits = bitcast<u32>(x);\n"
++    "    if ((bits & 0x7fffffffu) > 0x7f800000u) { bits = (bits & 0x80000000u) | 0x7fc00000u; }\n"
++    "    return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);\n"
++    "}\n"
++    "fn vlt(a: vec4f, b: vec4f) -> vec4<bool> {\n"
++    "    return vec4<bool>(vcompare_key(a.x)<vcompare_key(b.x), vcompare_key(a.y)<vcompare_key(b.y),\n"
++    "                      vcompare_key(a.z)<vcompare_key(b.z), vcompare_key(a.w)<vcompare_key(b.w));\n"
++    "}\n"
++    "fn vge(a: vec4f, b: vec4f) -> vec4<bool> {\n"
++    "    return vec4<bool>(vcompare_key(a.x)>=vcompare_key(b.x), vcompare_key(a.y)>=vcompare_key(b.y),\n"
++    "                      vcompare_key(a.z)>=vcompare_key(b.z), vcompare_key(a.w)>=vcompare_key(b.w));\n"
++    "}\n"
 +    "fn vmul1(a: f32, b: f32) -> f32 {\n"
 +    "    // NV2A MUL/MAD return positive zero for any product with a zero operand,\n"
 +    "    // including infinity and NaN. Handle this before propagating NaNs.\n"

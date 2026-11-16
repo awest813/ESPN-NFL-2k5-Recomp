@@ -24,6 +24,9 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
       console.log('Checking', file);
       const base = path.join(dir, file.replace('.wgsl', ''));
       const floats = suffix => Array.from(new Float32Array(Uint8Array.from(fs.readFileSync(base + suffix)).buffer));
+      // Numeric serialization can canonicalize NaNs and erase their sign.
+      // Preserve the input and uniform bit patterns across Playwright's boundary.
+      const bytes = suffix => Array.from(fs.readFileSync(base + suffix));
       const result = await page.evaluate(async ({source, constants, inputs, expected, strict}) => {
         const check = async code => {
           const module = device.createShaderModule({code});
@@ -54,21 +57,22 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
         const pipeline = await device.createComputePipelineAsync({
           layout: device.createPipelineLayout({bindGroupLayouts: [ioLayout, uniformLayout]}),
           compute: {module, entryPoint: 'test'}});
-        const buffer = (data, usage, minSize = 0) => {
-          const b = device.createBuffer({size: Math.max(minSize, data.length * 4), usage: usage | GPUBufferUsage.COPY_DST});
-          if (data.length) device.queue.writeBuffer(b, 0, new Float32Array(data));
+        const buffer = (data, usage, minSize = 0, raw = false) => {
+          const values = raw ? new Uint8Array(data) : new Float32Array(data);
+          const b = device.createBuffer({size: Math.max(minSize, values.byteLength), usage: usage | GPUBufferUsage.COPY_DST});
+          if (values.length) device.queue.writeBuffer(b, 0, values);
           return b;
         };
-        const input = buffer(inputs, GPUBufferUsage.STORAGE);
+        const input = buffer(inputs, GPUBufferUsage.STORAGE, 0, true);
         const output = buffer([], GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, expected.length * 4);
-        const uniform = buffer(constants, GPUBufferUsage.UNIFORM, 3136);
+        const uniform = buffer(constants, GPUBufferUsage.UNIFORM, 3136, true);
         const read = device.createBuffer({size: expected.length * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
         const io = device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: [
           {binding: 0, resource: {buffer: input}}, {binding: 1, resource: {buffer: output}}]});
         const u = device.createBindGroup({layout: pipeline.getBindGroupLayout(1), entries: [{binding: 0, resource: {buffer: uniform}}]});
         const enc = device.createCommandEncoder(); const pass = enc.beginComputePass();
         pass.setPipeline(pipeline); pass.setBindGroup(0, io); pass.setBindGroup(1, u);
-        pass.dispatchWorkgroups(Math.ceil(inputs.length / 64 / 32)); pass.end();
+        pass.dispatchWorkgroups(Math.ceil(inputs.length / 256 / 32)); pass.end();
         enc.copyBufferToBuffer(output, 0, read, 0, expected.length * 4); device.queue.submit([enc.finish()]);
         await read.mapAsync(GPUMapMode.READ);
         const actual = new Float32Array(read.getMappedRange());
@@ -80,8 +84,8 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
         }
         read.unmap(); [input, output, uniform, read].forEach(b => b.destroy());
         if (window.gpuError) throw Error(window.gpuError);
-        return inputs.length / 64;
-      }, {source: fs.readFileSync(base + '.wgsl', 'utf8'), constants: floats('.constants.bin'), inputs: floats('.inputs.bin'),
+        return inputs.length / 256;
+      }, {source: fs.readFileSync(base + '.wgsl', 'utf8'), constants: bytes('.constants.bin'), inputs: bytes('.inputs.bin'),
         expected: floats('.expected.bin'), strict: fs.existsSync(base + '.strict')});
       count += result;
     }

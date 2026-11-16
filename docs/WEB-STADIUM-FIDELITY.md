@@ -394,3 +394,38 @@ Gerard Warren/Gary Walker intro overlays without recorded browser/GPU exceptions
 Audio queue drops and five worklet underruns remain in this run. Full NV2A
 comparison ordering, denormal handling and rounding conformance remain
 incomplete, as do controlled original-Xbox scene matching and sustained 30 FPS.
+
+## Ordered comparisons and portable operand negation
+
+The next regression fails on the preceding interpreter: `SLT(-NaN, -Infinity)`
+returns zero instead of one (`build-web-tests/vp-comparison-before.log`). The
+[NVIDIA vertex-program specification](https://registry.khronos.org/OpenGL/extensions/NV/NV_vertex_program.txt)
+orders negative NaNs below negative infinity, positive NaNs above positive
+infinity, and negative zero below positive zero for SLT/SGE. CPU, WGSL, GLSL
+and HLSL translations now implement that ordering. NaN payloads are collapsed
+to signed classes; the tests do not assert same-class NaN self-order.
+
+MIN/MAX use their specified operand selection, including MAX choosing the
+first operand on equal values. Signed-zero tie cases check the selected bits.
+GPU fixture inputs and constants cross the Playwright boundary as raw bytes,
+preserving negative NaNs that numeric serialization can canonicalize.
+
+The first Linux run then exposes an additional issue in negated operands:
+case 82 differs from the CPU despite passing hardware Chrome. WGSL operand
+negation now flips the sign bit explicitly, preserving zero and NaN signs
+through that backend. Both hardware WebGPU and Linux SwiftShader pass all
+2,752 executions across 86 programs after this correction
+(`vp-comparison-final-hardware.log`, `vp-comparison-final-linux.log`).
+The 40,000-case interpreter suite, vertex cache checks, native Vulkan suite,
+generated GLSL-to-SPIR-V validation, game build and browser integration pass.
+All 52 runtime patch files reproduce from a fresh pinned checkout.
+
+The final retail run (`build-web-tests/vp-comparison-final-retail/report.json`)
+reaches Baltimore at Oakland sideline players, field markings and the coin toss
+with players/referee rendered and no recorded browser/GPU exceptions. This run
+reports 201 worklet underruns; it remains a partial fidelity check. Its scenes
+do not provide a controlled check of the earlier coach geometry fault.
+
+These arithmetic checks do not establish full NV2A conformance. Denormal and
+rounding behavior, original-Xbox scene/audio matching, all-mode gameplay
+coverage and a sustained 30 FPS floor remain open.
