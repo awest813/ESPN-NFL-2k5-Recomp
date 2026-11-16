@@ -1,5 +1,10 @@
 # Stadium and staff rendering checks
 
+Original-Xbox scene/audio matching, complete game-mode fidelity and a sustained
+30 FPS floor remain unfinished. The current APU GP/EP implementation bypasses
+DSP programs; original effects processing is still missing. The chronological
+checks below document specific behavior and limitations.
+
 November 8, 2026. Retail USA disc in Chrome 156 on Windows, hardware WebGPU
 on Intel `gen-12hp`, development O1 link and the default 30 FPS cap. The
 renderer under test is the published `e410571` runtime. This records observed
@@ -574,3 +579,81 @@ remaining spikes are computation, locking, scheduling or diagnostic overhead.
 This is not evidence of resolved audio continuity or a sustained 30 FPS floor.
 The function-entry change fixes the deterministic scheduling gap demonstrated
 by the regression; remaining producer stalls require separate diagnosis.
+
+## Audio stage timing and diagnostic-induced stalls
+
+Opt-in `RECOMP_APU_LOCK_PROFILE=1` now records VP, DSP and output wall time,
+plus voice-lock wait time/count, for the same worst pipeline frame in each
+five-second interval. These correlated values avoid adding independent stage
+maxima that might belong to different frames. Normal playback does not take
+these extra timing samples.
+
+The stage-only retail run (`build-web-tests/apu-stages-retail/report.json`)
+reaches gameplay with five worklet underrun blocks, zero dropped submissions
+and no recorded browser/GPU/audio processor failures. Its largest logged
+pipeline frame is 6.7 ms, attributed to VP, with no voice-lock wait in that
+frame. This does not support the initial hypothesis that accumulated voice
+waits alone caused the previous 184.5 ms observation.
+
+The source audit then finds expensive diagnostics under
+`RECOMP_APU_VOICE_LOG`: each ADPCM voice can scan its full buffer and search
+36 byte alignments while holding the APU frame lock. Those scans are a source
+of measurement overhead in the previous verbose captures. A regression fails
+on the old code because ordinary metadata logging reads ADPCM payload
+locations (`build-web-tests/audio-diagnostics-before.log`).
+
+Pitch/rate/format/cursor and initial-page metadata remain under
+`RECOMP_APU_VOICE_LOG=1`. Full-buffer validation, alignment searches and full
+scatter-gather inspection now require `RECOMP_APU_VOICE_SCAN=1`, which also
+enables metadata logging. Explicit scan mode can still stall playback and is
+unsuitable for real-time timing measurements. The regression verifies zero
+payload scan reads with metadata logging and retained scan reads with the
+explicit flag. The actual native APU builds; sample-counter and 10,000-write
+frame-boundary locking tests pass. All 55 runtime patch files reproduce from
+the pinned checkout.
+
+The GP/EP code remains a DSP bypass rather than a DSP56300 program executor.
+Transport continuity and tone tests therefore cannot establish original-Xbox
+effects, reverb or complete audio parity. That implementation gap remains
+part of the full fidelity goal.
+
+The follow-up metadata-log capture with scan mode disabled
+(`build-web-tests/audio-light-log-retail/report.json`) still records 2,256
+worklet underrun blocks, zero dropped producer submissions and no recorded
+browser/GPU/audio processor failures. VP intervals still spike while measured
+voice-lock waits are zero. Separating the scans removes verified diagnostic
+work; it does not resolve all stalls. Different attract scenes and host load
+also prevent interpreting the five-versus-2,256 block counts as a controlled
+performance comparison. Metadata logging remains unsuitable as proof of
+normal-playback timing.
+
+## Fractional audio pacing
+
+The sequencer throttles every eight 32-sample frames. At 48 kHz those 256
+samples take 5,333 1/3 microseconds, but the old deadline increment discarded
+the fraction every batch. Its nominal clock therefore ran 62.5 ppm fast,
+accumulating 225 ms of deadline error per hour. The deadline now carries the
+fraction between batches and clears that phase when resynchronizing after a
+long stall. Catch-up limits and voice/PCM processing are unchanged.
+
+`tests/web/test_apu_pacing.py` executes the production throttle against a
+deterministic clock. The old interval fails at batch three with a one-microsecond
+deadline error; the correction produces exact aggregate deadlines across an
+hour and also exercises the eight-frame divisor, bounded catch-up, resync and
+timed waiting. This establishes arithmetic pacing accuracy, not a guarantee
+against host scheduling jitter. Browser and actual native APU targets build,
+and sample-counter, diagnostic scan isolation and 10,000-write frame-boundary
+locking regressions pass.
+
+The four-minute follow-up (`build-web-tests/audio-fractional-pacing-retail/report.json`)
+reaches San Francisco at Tampa Bay, the stadium introduction, coin toss and
+active gameplay. The sampled views retain stadium tiers, flags, sideline
+figures, player/referee models and readable intro/scoreboard text. No
+browser/GPU/audio processor failures are recorded. The final worklet count is
+935 underrun blocks, with zero dropped producer submissions and a largest
+logged pipeline interval of 86.3 ms. Three independent `ps2EntryRunner`
+processes were consuming substantial CPU during this run. These wall-time
+results are contaminated by host contention and do not establish a performance
+improvement, uninterrupted audio, original-Xbox parity or a sustained 30 FPS
+floor. The fractional-deadline correction is established independently by the
+deterministic regression.

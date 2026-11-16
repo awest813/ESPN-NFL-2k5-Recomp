@@ -30,6 +30,7 @@ typedef struct {
     bool set_irq;
     int cond,ep_frame_div,sleep_acc_us,frame_count;
     int64_t frame_count_time_ms;
+    struct { bool enabled; int64_t vp_us,dsp_us,output_us,voice_wait_us; unsigned voice_wait_count; } profile;
     struct { bool realtime; struct DSP *dsp; } gp,ep;
 } MCPXAPUState;
 static struct { bool gp_realtime,ep_realtime; float utilization; int frames_processed; } g_dbg;
@@ -48,6 +49,7 @@ static LONG InterlockedExchange(volatile LONG *p,LONG value) { return __atomic_e
 static LONG InterlockedExchangeAdd(volatile LONG *p,LONG value) { return __atomic_fetch_add(p,value,__ATOMIC_SEQ_CST); }
 static int64_t qemu_clock_get_ns(int clock) { (void)clock;return now_ns; }
 static int64_t qemu_clock_get_ms(int clock) { return qemu_clock_get_ns(clock)/1000000; }
+static int64_t qemu_clock_get_us(int clock) { return qemu_clock_get_ns(clock)/1000; }
 static void update_irq(MCPXAPUState *d) { (void)d; }
 static void qemu_cond_broadcast(int *c) { (void)c; }
 static void stl_le_phys(void *memory,uint32_t addr,uint32_t value) { (void)memory;(void)addr;(void)value; }

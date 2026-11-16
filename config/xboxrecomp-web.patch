@@ -3019,15 +3019,60 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      case NV_PAPU_ISTS:
          qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
          update_irq(d);
-@@ -486,6 +494,7 @@
+@@ -439,6 +447,7 @@
+          * caught up by running frames back to back; the speaker queue has
+          * the room. Further behind, resynchronise. */
+         d->next_frame_time_us = now_us;
++        d->next_frame_remainder = 0;
+     }
+
+     while (!d->pause_requested) {
+@@ -450,7 +459,13 @@
+             break;
+         }
+     }
+-    d->next_frame_time_us += EP_FRAME_US;
++    /* Eight 32-sample frames at 48 kHz take 5333 1/3 us. Carry the
++     * fractional microseconds: truncating every batch runs 62.5 ppm fast. */
++    const unsigned batch_us_numerator = 8u * NUM_SAMPLES_PER_FRAME * 1000000u;
++    d->next_frame_time_us += batch_us_numerator / 48000u;
++    d->next_frame_remainder += batch_us_numerator % 48000u;
++    d->next_frame_time_us += d->next_frame_remainder / 48000u;
++    d->next_frame_remainder %= 48000u;
+
+     d->sleep_acc_us += (int)(qemu_clock_get_us(QEMU_CLOCK_REALTIME) - now_us);
+ }
+@@ -481,11 +496,29 @@
+     float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
+     memset(mixbins, 0, sizeof(mixbins));
+
++    int64_t stage_start = d->profile.enabled ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
++    if (d->profile.enabled) {
++        d->profile.voice_wait_us = 0;
++        d->profile.voice_wait_count = 0;
++    }
+     mcpx_apu_vp_frame(d, mixbins);
++    if (d->profile.enabled) {
++        int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++        d->profile.vp_us = now - stage_start;
++        stage_start = now;
++    }
+     mcpx_apu_dsp_frame(d, mixbins);
++    if (d->profile.enabled) {
++        int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++        d->profile.dsp_us = now - stage_start;
++        stage_start = now;
++    }
      mcpx_apu_monitor_frame(d);
++    if (d->profile.enabled)
++        d->profile.output_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - stage_start;
 
      d->ep_frame_div++;
 +    InterlockedExchangeAdd(&d->sample_count, NUM_SAMPLES_PER_FRAME);
 
      mcpx_debug_end_frame();
  }
-@@ -494,12 +503,25 @@
+@@ -494,12 +527,27 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -3044,6 +3089,8 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(arg);
 +    int64_t profile_since = 0, profile_total = 0, profile_max = 0;
++    int64_t worst_vp = 0, worst_dsp = 0, worst_output = 0, worst_voice_wait = 0;
++    unsigned worst_voice_wait_count = 0;
 +    unsigned profile_frames = 0;
      qemu_mutex_lock(&d->lock);
 
@@ -3053,7 +3100,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          if (d->pause_requested && !g_test_tone.active && !g_mixer_active_count) {
              d->is_idle = true;
              qemu_cond_signal(&d->idle_cond);
-@@ -571,7 +593,24 @@
+@@ -571,7 +619,36 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -3063,22 +3110,34 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +                int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 +                int64_t duration = now - started;
 +                profile_total += duration;
-+                if (duration > profile_max) profile_max = duration;
++                if (duration > profile_max) {
++                    profile_max = duration;
++                    worst_vp = d->profile.vp_us;
++                    worst_dsp = d->profile.dsp_us;
++                    worst_output = d->profile.output_us;
++                    worst_voice_wait = d->profile.voice_wait_us;
++                    worst_voice_wait_count = d->profile.voice_wait_count;
++                }
 +                profile_frames++;
 +                if (!profile_since) profile_since = started;
 +                if (now - profile_since >= 5000000) {
 +                    fprintf(stderr, "[APU-PERF] frames=%u busy=%.1fms max=%.1fms over=%.1fms\n",
 +                            profile_frames, profile_total / 1000.0, profile_max / 1000.0,
 +                            (now - profile_since) / 1000.0);
++                    fprintf(stderr, "[APU-STAGES] worst-vp=%.1fms dsp=%.1fms output=%.1fms voice-wait=%.1fms waits=%u\n",
++                            worst_vp / 1000.0, worst_dsp / 1000.0, worst_output / 1000.0,
++                            worst_voice_wait / 1000.0, worst_voice_wait_count);
 +                    profile_since = now;
 +                    profile_total = profile_max = 0;
 +                    profile_frames = 0;
++                    worst_vp = worst_dsp = worst_output = worst_voice_wait = 0;
++                    worst_voice_wait_count = 0;
 +                }
 +            }
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,6 +660,7 @@
+@@ -621,6 +698,7 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
@@ -3086,15 +3145,16 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      mcpx_apu_vp_reset(d);
 
      if (d->gp.dsp) {
-@@ -648,6 +688,7 @@
+@@ -648,6 +726,8 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
 +    s_apu_lock_profile = getenv("RECOMP_APU_LOCK_PROFILE") != NULL;
++    d->profile.enabled = s_apu_lock_profile;
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -766,9 +807,33 @@
+@@ -766,9 +846,33 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -3139,7 +3199,7 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
      QemuCond cond;
      QemuCond idle_cond;
      bool pause_requested;
-@@ -476,6 +477,7 @@
+@@ -476,10 +477,17 @@
      uint32_t regs[0x20000];
 
      int ep_frame_div;
@@ -3147,6 +3207,16 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
      int sleep_acc_us;
      int frame_count;
      int64_t frame_count_time_ms;
+     int64_t next_frame_time_us;
++    unsigned next_frame_remainder;
++    struct {
++        bool enabled;
++        int64_t vp_us, dsp_us, output_us, voice_wait_us;
++        unsigned voice_wait_count;
++    } profile;
+
+     struct {
+         struct {
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c
@@ -3804,6 +3874,58 @@ diff --git a/src/kernel/xbox_ggl.h b/src/kernel/xbox_ggl.h
  void xbox_ggl_set_priority(int prio); /* this thread; higher wins, default 0 */
 
  #if !defined(XBOX_GGL_IMPL)
+diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
+--- a/src/apu/apu_vp.c
++++ b/src/apu/apu_vp.c
+@@ -1318,13 +1318,19 @@
+     dbg->rate = rate;
+     {
+         /* RECOMP_APU_VOICE_LOG=1: each voice's pitch, rate and format, once
+-         * per voice start and every 5 s. */
++         * per voice start and every 5 s. Full-buffer validation and alignment
++         * searches are separate: RECOMP_APU_VOICE_SCAN=1 enables those costly
++         * diagnostics, which must not run in ordinary timing captures. */
+         static int on = -1;
++        static int scan;
+         static DWORD last[MCPX_HW_MAX_VOICES];
+         static unsigned calls[MCPX_HW_MAX_VOICES];
+         extern unsigned long g_apu_vp_frames;
+         static unsigned long frames_at[MCPX_HW_MAX_VOICES];
+-        if (on < 0) on = getenv("RECOMP_APU_VOICE_LOG") != NULL;
++        if (on < 0) {
++            scan = getenv("RECOMP_APU_VOICE_SCAN") != NULL;
++            on = getenv("RECOMP_APU_VOICE_LOG") != NULL || scan;
++        }
+         calls[v]++;
+         if (on && GetTickCount() - last[v] > 5000) {
+             uint32_t fmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFFu);
+@@ -1347,7 +1353,7 @@
+                         ldl_le_phys(address_space_memory, sge + (ba / 4096 + 1) * 8),
+                         ldl_le_phys(address_space_memory, sge + (ba / 4096 + 2) * 8),
+                         xbox_ContiguousAllocatedBytes());
+-                if (((fmt >> 30) & 3) == 2) {
++                if (scan && ((fmt >> 30) & 3) == 2) {
+                     /* ADPCM: how many of the buffer's blocks carry a valid
+                      * header (step index <= 88, reserved byte 0)? Garbage
+                      * in the buffer decodes as noise. */
+@@ -1723,11 +1729,16 @@
+                 static DWORD lock_log;
+                 bool skip = false;
+                 if (is_voice_locked(d, v)) {
+-                    int64_t until = qemu_clock_get_us(QEMU_CLOCK_REALTIME) + 3000;
++                    int64_t wait_start = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++                    int64_t until = wait_start + 3000;
+                     lock_waits++;
+                     while (is_voice_locked(d, v) && qemu_clock_get_us(QEMU_CLOCK_REALTIME) < until)
+                         qemu_cond_timedwait(&d->cond, &d->lock, 1);
+                     skip = is_voice_locked(d, v);
++                    if (d->profile.enabled) {
++                        d->profile.voice_wait_us += qemu_clock_get_us(QEMU_CLOCK_REALTIME) - wait_start;
++                        d->profile.voice_wait_count++;
++                    }
+                     if (skip) lock_skips++;
+                 }
+                 if (getenv("RECOMP_APU_VOICE_LOG") && GetTickCount() - lock_log > 5000) {
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
