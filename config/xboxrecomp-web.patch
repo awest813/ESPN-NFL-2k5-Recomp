@@ -4490,10 +4490,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..cd86495
+index 0000000..6c96f39
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1591 @@
+@@ -0,0 +1,1627 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -4536,7 +4536,11 @@ index 0000000..cd86495
 +    int swapchain;                /* the canvas's current texture, resolved at replay */
 +};
 +struct SDL_GPUBuffer { WGPUBuffer buf; uint32_t size; atomic_uint refs; };
-+struct SDL_GPUTransferBuffer { uint8_t *mem; uint32_t size; atomic_uint refs; };
++typedef struct {
++    uint8_t *mem;
++    atomic_uint refs;             /* current mapping plus recorded operations */
++} WgTransferStorage;
++struct SDL_GPUTransferBuffer { WgTransferStorage *storage; uint32_t size; };
 +struct SDL_GPUSampler { WGPUSampler s; };
 +struct SDL_GPUShader { WGPUShaderModule mod; SDL_GPUShaderStage stage; };
 +struct SDL_GPUGraphicsPipeline { WGPURenderPipeline pipe; };
@@ -4553,10 +4557,10 @@ index 0000000..cd86495
 +typedef struct {
 +    OpKind kind;
 +    union {
-+        struct { SDL_GPUTransferBuffer *src; uint32_t src_off; SDL_GPUBuffer *dst; uint32_t dst_off, size; } ub;
-+        struct { SDL_GPUTransferBuffer *src; uint32_t src_off, row_px, rows; SDL_GPUTexture *dst;
++        struct { WgTransferStorage *src; uint32_t src_off; SDL_GPUBuffer *dst; uint32_t dst_off, size; } ub;
++        struct { WgTransferStorage *src; uint32_t src_off, row_px, rows; SDL_GPUTexture *dst;
 +                 uint32_t level, x, y, w, h, layer; } ut;
-+        struct { SDL_GPUTexture *src; uint32_t level, x, y, w, h, layer; SDL_GPUTransferBuffer *dst;
++        struct { SDL_GPUTexture *src; uint32_t level, x, y, w, h, layer; WgTransferStorage *dst;
 +                 uint32_t dst_off, row_px; } dt;
 +        struct { SDL_GPUTexture *src, *dst; uint32_t sl, sx, sy, dl, dx, dy, w, h, src_layer, dst_layer; } ct;
 +        struct { SDL_GPUTexture *tex; } mip;
@@ -5076,21 +5080,53 @@ index 0000000..cd86495
 +        emscripten_proxy_async(q(), s_server, do_release_buffer, b);
 +}
 +
-+/* Transfer buffers are plain memory: the server copies out of (or into) them
-+ * during the synchronous submit, so they need no WebGPU object. */
++/* A command captures the backing allocation at recording time. Cycling a
++ * bound transfer buffer replaces only its current mapping, so old uploads
++ * and pending readbacks keep their own bytes until their commands finish. */
++static WgTransferStorage *transfer_storage_create(uint32_t size)
++{
++    WgTransferStorage *storage = (WgTransferStorage *)calloc(1, sizeof *storage);
++    if (!storage) return NULL;
++    storage->mem = (uint8_t *)malloc(size ? size : 1);
++    if (!storage->mem) { free(storage); return NULL; }
++    atomic_init(&storage->refs, 1);
++    return storage;
++}
++static void transfer_storage_drop(WgTransferStorage *storage)
++{
++    if (storage && atomic_fetch_sub(&storage->refs, 1) == 1) {
++        free(storage->mem);
++        free(storage);
++    }
++}
 +SDL_GPUTransferBuffer *WG_CreateGPUTransferBuffer(SDL_GPUDevice *d, const SDL_GPUTransferBufferCreateInfo *i)
 +{
 +    (void)d;
 +    SDL_GPUTransferBuffer *t = (SDL_GPUTransferBuffer *)calloc(1, sizeof *t);
 +    if (!t) return NULL;
-+    atomic_init(&t->refs, 1);
 +    t->size = i->size;
-+    t->mem = (uint8_t *)malloc(i->size ? i->size : 1);
-+    if (!t->mem) { free(t); return NULL; }
++    t->storage = transfer_storage_create(i->size);
++    if (!t->storage) { free(t); return NULL; }
 +    return t;
 +}
-+void WG_ReleaseGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; if (t && atomic_fetch_sub(&t->refs, 1) == 1) { free(t->mem); free(t); } }
-+void *WG_MapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t, bool cycle) { (void)d; (void)cycle; return t ? t->mem : NULL; }
++void WG_ReleaseGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t)
++{
++    (void)d;
++    if (t) { transfer_storage_drop(t->storage); free(t); }
++}
++void *WG_MapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t, bool cycle)
++{
++    (void)d;
++    if (!t) return NULL;
++    if (cycle && atomic_load(&t->storage->refs) > 1) {
++        WgTransferStorage *fresh = transfer_storage_create(t->size);
++        if (!fresh) { SDL_SetError("WebGPU transfer buffer cycling: out of memory"); return NULL; }
++        WgTransferStorage *old = t->storage;
++        t->storage = fresh;
++        transfer_storage_drop(old);
++    }
++    return t->storage->mem;
++}
 +void WG_UnmapGPUTransferBuffer(SDL_GPUDevice *d, SDL_GPUTransferBuffer *t) { (void)d; (void)t; }
 +
 +/* ── Samplers and shaders ─────────────────────────────────────────────── */
@@ -5340,10 +5376,10 @@ index 0000000..cd86495
 +    if (release) WG_ReleaseGPUBuffer(NULL, b);
 +    else atomic_fetch_add(&b->refs, 1);
 +}
-+static void transfer_ref(SDL_GPUTransferBuffer *b, int release)
++static void transfer_ref(WgTransferStorage *b, int release)
 +{
 +    if (!b) return;
-+    if (release) WG_ReleaseGPUTransferBuffer(NULL, b);
++    if (release) transfer_storage_drop(b);
 +    else atomic_fetch_add(&b->refs, 1);
 +}
 +static void op_resources(const Op *o, int release)
@@ -5389,7 +5425,7 @@ index 0000000..cd86495
 +        cmd_fail(CMD(p), "invalid buffer upload range or alignment"); return;
 +    }
 +    Op *o = push(CMD(p), OP_UPLOAD_BUFFER);
-+    if (o) { o->ub = (typeof(o->ub)){ s->transfer_buffer, s->offset, d->buffer, d->offset, d->size }; op_resources(o, 0); }
++    if (o) { o->ub = (typeof(o->ub)){ s->transfer_buffer->storage, s->offset, d->buffer, d->offset, d->size }; op_resources(o, 0); }
 +}
 +static int texture_region_valid(SDL_GPUTexture *t, uint32_t level, uint32_t x, uint32_t y,
 +                                uint32_t w, uint32_t h, uint32_t layer, uint32_t depth)
@@ -5419,7 +5455,7 @@ index 0000000..cd86495
 +        cmd_fail(CMD(p), "invalid texture upload region or transfer range"); return;
 +    }
 +    Op *o = push(CMD(p), OP_UPLOAD_TEXTURE);
-+    if (o) { o->ut = (typeof(o->ut)){ s->transfer_buffer, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
++    if (o) { o->ut = (typeof(o->ut)){ s->transfer_buffer->storage, s->offset, s->pixels_per_row ? s->pixels_per_row : d->w,
 +                                   s->rows_per_layer ? s->rows_per_layer : d->h, d->texture, d->mip_level,
 +                                   d->x, d->y, d->w, d->h, d->layer }; op_resources(o, 0); }
 +}
@@ -5431,7 +5467,7 @@ index 0000000..cd86495
 +    }
 +    Op *o = push(CMD(p), OP_DOWNLOAD_TEXTURE);
 +    if (o) {
-+        o->dt = (typeof(o->dt)){ s->texture, s->mip_level, s->x, s->y, s->w, s->h, s->layer, d->transfer_buffer, d->offset,
++        o->dt = (typeof(o->dt)){ s->texture, s->mip_level, s->x, s->y, s->w, s->h, s->layer, d->transfer_buffer->storage, d->offset,
 +                                   d->pixels_per_row ? d->pixels_per_row : s->w };
 +        op_resources(o, 0);
 +        CMD(p)->has_download = 1;
@@ -6087,10 +6123,10 @@ index 0000000..cd86495
 +#endif /* __EMSCRIPTEN__ */
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
 new file mode 100644
-index 0000000..1eed721
+index 0000000..f1e7f28
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,159 @@
 +#ifndef SDL_GPU_WEBGPU_H
 +#define SDL_GPU_WEBGPU_H
 +/* The SDL GPU renderer on WebGPU (Emscripten builds).
@@ -6110,7 +6146,8 @@ index 0000000..1eed721
 + * from any thread, runs there through Emscripten's proxying queue. Command
 + * buffers are recorded on the caller's side and replayed into a
 + * GPUCommandEncoder on submit. Recorded commands retain textures, buffers
-+ * and transfer storage until submission or cancellation completes. Submits are synchronous (they copy upload data
++ * and the transfer-storage version captured by each operation until submit
++ * or cancellation completes. Submits are synchronous (they copy upload data
 + * into WebGPU before returning) and wait for any downloads in them. The
 + * renderer calls from two threads -- the pushbuffer executor and the window
 + * presenter -- which this makes safe.
@@ -9301,10 +9338,10 @@ index 0000000..4691e41
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..c712fa0
+index 0000000..0377186
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1018 @@
+@@ -0,0 +1,1125 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -9462,7 +9499,7 @@ index 0000000..c712fa0
 +    const SgWindowClip *window_clip;
 +} Draw;
 +
-+static void draw(const Draw *d)
++static SDL_GPUCommandBuffer *record_draw(const Draw *d)
 +{
 +    static SDL_GPUBuffer *vb;
 +    static SDL_GPUTransferBuffer *tb;
@@ -9517,8 +9554,10 @@ index 0000000..c712fa0
 +        }
 +        SDL_EndGPURenderPass(p);
 +    }
-+    SDL_SubmitGPUCommandBuffer(c);
++    return c;
 +}
++
++static void draw(const Draw *d) { SDL_SubmitGPUCommandBuffer(record_draw(d)); }
 +
 +static uint32_t px(const uint8_t *img, uint32_t x, uint32_t y)   /* BGRA bytes -> 0xAARRGGBB */
 +{
@@ -10262,6 +10301,111 @@ index 0000000..c712fa0
 +        SDL_UnmapGPUTransferBuffer(dev, readback);
 +        CHECK(px(img, W/2, H/2) == 0xFF2468ACu, "released buffers, sampler texture, targets and upload bytes render exact pixels");
 +        SDL_ReleaseGPUTransferBuffer(dev, readback);
++    }
++
++    /* Cycle a bound staging allocation without changing previously recorded
++     * upload bytes. Reversed submission makes accidental sharing observable. */
++    {
++        SDL_GPUTexture *first = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SDL_GPUTexture *second = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
++        SgVertex red[6], blue[6];
++        quad(red, 0, 0, W, H, 0, 0, 0, 0, 0xFFCC2200u, 0);
++        quad(blue, 0, 0, W, H, 0, 0, 0, 0, 0xFF0044EEu, 0);
++        Draw a = {.color = first, .depth = depth, .tex = white, .pipe = opaque,
++            .v = red, .n = 6, .clear_color = 1, .clear_argb = 0xFF000000u,
++            .clear_depth = 1, .depth_value = 1};
++        SDL_GPUCommandBuffer *old = record_draw(&a);
++        a.color = second; a.v = blue;
++        SDL_GPUCommandBuffer *fresh = record_draw(&a);
++        CHECK(SDL_SubmitGPUCommandBuffer(fresh) && SDL_SubmitGPUCommandBuffer(old), "submit cycled vertex uploads in reverse order");
++        download(first, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFFCC2200u, "old draw retains its vertex bytes after transfer-buffer cycling");
++        download(second, 0, W, H, img);
++        CHECK(px(img, W/2, H/2) == 0xFF0044EEu, "new draw uses the cycled vertex bytes");
++        SDL_ReleaseGPUTexture(dev, first); SDL_ReleaseGPUTexture(dev, second);
++    }
++    {
++        SDL_GPUTransferBufferCreateInfo ti = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 4};
++        SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++        SDL_GPUTexture *first = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++        SDL_GPUTexture *second = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++        *(uint32_t *)SDL_MapGPUTransferBuffer(dev, tb, false) = 0xFF0000FFu;
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCommandBuffer *old = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(old);
++        SDL_GPUTextureTransferInfo from = {.transfer_buffer = tb};
++        SDL_GPUTextureRegion to = {.texture = first, .w = 1, .h = 1, .d = 1};
++        SDL_UploadToGPUTexture(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        SDL_GPUCommandBuffer *cancelled = SDL_AcquireGPUCommandBuffer(dev);
++        cp = SDL_BeginGPUCopyPass(cancelled);
++        SDL_UploadToGPUTexture(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        SDL_GPUCommandBuffer *rejected = SDL_AcquireGPUCommandBuffer(dev);
++        cp = SDL_BeginGPUCopyPass(rejected);
++        SDL_UploadToGPUTexture(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        SDL_PushGPUFragmentUniformData(rejected, 0, &ti, 1025);
++        *(uint32_t *)SDL_MapGPUTransferBuffer(dev, tb, true) = 0xFFFF0000u;
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCommandBuffer *fresh = SDL_AcquireGPUCommandBuffer(dev);
++        cp = SDL_BeginGPUCopyPass(fresh); to.texture = second;
++        SDL_UploadToGPUTexture(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        SDL_ReleaseGPUTransferBuffer(dev, tb);
++        CHECK(SDL_CancelGPUCommandBuffer(cancelled), "cancel an old transfer-storage generation");
++        CHECK(!SDL_SubmitGPUCommandBuffer(rejected), "reject an old transfer-storage generation");
++        CHECK(SDL_SubmitGPUCommandBuffer(fresh) && SDL_SubmitGPUCommandBuffer(old), "submit cycled texture uploads after application release");
++        uint32_t pixel;
++        download(first, 0, 1, 1, &pixel);
++        CHECK(pixel == 0xFF0000FFu, "old texture upload retains its staging bytes after cycling");
++        download(second, 0, 1, 1, &pixel);
++        CHECK(pixel == 0xFFFF0000u, "new texture upload uses the cycled staging bytes");
++        ti.size = 8;
++        tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++        uint32_t *data = SDL_MapGPUTransferBuffer(dev, tb, false);
++        data[0] = 0xFF0000FFu; data[1] = 0xFFFF0000u;
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        old = SDL_AcquireGPUCommandBuffer(dev); cp = SDL_BeginGPUCopyPass(old);
++        from.transfer_buffer = tb; to.texture = first;
++        SDL_UploadToGPUTexture(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        /* The pending upload references only the prefix. SDL allows writes
++         * to its unreferenced tail without cycling the shared mapping. */
++        data = SDL_MapGPUTransferBuffer(dev, tb, false); data[1] = 0xFF00FF00u;
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUTexture *prefix = make_tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
++            SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++        fresh = SDL_AcquireGPUCommandBuffer(dev); cp = SDL_BeginGPUCopyPass(fresh);
++        to.texture = prefix;
++        SDL_UploadToGPUTexture(cp, &from, &to, false);
++        from.offset = 4; to.texture = second;
++        SDL_UploadToGPUTexture(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        SDL_ReleaseGPUTransferBuffer(dev, tb);
++        CHECK(SDL_SubmitGPUCommandBuffer(old) && SDL_SubmitGPUCommandBuffer(fresh), "submit non-cycling writes to an unreferenced tail");
++        download(first, 0, 1, 1, &pixel);
++        CHECK(pixel == 0xFF0000FFu, "non-cycling tail write preserves the pending prefix upload");
++        download(prefix, 0, 1, 1, &pixel);
++        CHECK(pixel == 0xFF0000FFu, "non-cycling map preserves existing bytes for subsequent uploads");
++        download(second, 0, 1, 1, &pixel);
++        CHECK(pixel == 0xFF00FF00u, "non-cycling tail update is visible to its subsequent upload");
++        SDL_ReleaseGPUTexture(dev, prefix);
++        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
++        tb = SDL_CreateGPUTransferBuffer(dev, &ti);
++        old = SDL_AcquireGPUCommandBuffer(dev); cp = SDL_BeginGPUCopyPass(old);
++        SDL_GPUTextureRegion source = {.texture = first, .w = 1, .h = 1, .d = 1};
++        SDL_GPUTextureTransferInfo destination = {.transfer_buffer = tb};
++        SDL_DownloadFromGPUTexture(cp, &source, &destination); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_MapGPUTransferBuffer(dev, tb, true) != NULL, "cycle a bound readback allocation");
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        fresh = SDL_AcquireGPUCommandBuffer(dev); cp = SDL_BeginGPUCopyPass(fresh);
++        source.texture = second;
++        SDL_DownloadFromGPUTexture(cp, &source, &destination); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_SubmitGPUCommandBuffer(fresh) && SDL_SubmitGPUCommandBuffer(old), "submit cycled readbacks in reverse order");
++        pixel = *(uint32_t *)SDL_MapGPUTransferBuffer(dev, tb, false);
++        SDL_UnmapGPUTransferBuffer(dev, tb);
++        CHECK(pixel == 0xFF00FF00u, "old readback cannot overwrite a newer transfer mapping");
++        SDL_ReleaseGPUTransferBuffer(dev, tb);
++        SDL_ReleaseGPUTexture(dev, first); SDL_ReleaseGPUTexture(dev, second);
 +    }
 +
 +    /* 10. Presenting: copy the flipped target to a sampled texture, then

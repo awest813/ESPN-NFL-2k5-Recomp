@@ -138,3 +138,37 @@ These checks identify and fix one demonstrated resource lifetime fault. They
 do not establish that every previously observed shader-handle or out-of-bounds
 exception shares this cause. Full graphics/audio/gameplay reference fidelity
 and a sustained 30 FPS floor remain open.
+
+## Transfer-buffer versions and emulator reference setup
+
+A second data-integrity defect was reproduced with exact pixels: recording a
+red draw/upload, cycling its bound staging buffer to blue, then submitting the
+commands in reverse order changed the earlier result to blue. The preceding
+implementation ignored `SDL_MapGPUTransferBuffer(..., cycle=true)`.
+
+Each recorded upload/download now retains its backing allocation. Cycling a
+bound mapping creates a fresh allocation; old commands keep their captured
+bytes. Non-cycling maps continue to share the current storage. Allocation
+failure leaves the previous mapping intact. This follows the pinned SDL
+[transfer mapping contract](https://wiki.libsdl.org/SDL3/SDL_MapGPUTransferBuffer).
+
+The failing-before logs are `build-web-tests/transfer-cycle-before.log`.
+Fixed hardware/SwiftShader results are in `transfer-cycle-checked-hardware.log`
+and `transfer-cycle-checked-linux.log`. They check vertex and texture pixels,
+reverse submission, application release, cancelled/rejected older generations,
+non-cycling writes to unreferenced ranges, and an old readback completing after a newer mapping.
+Launcher/OPFS and audio/video/input integration run against the rebuilt game.
+The headless retail case in `build-web-tests/transfer-cycle-retail/report.json`
+rendered the stadium, intro and players without browser/GPU exceptions. Known
+guest TODO diagnostics remain. GPU destination-resource cycling remains a
+separate open check.
+
+The supplied files in Downloads now allow a local xemu reference boot. An
+isolated configuration and copied EEPROM/ROM files are under ignored
+`build-web-tests/xemu-reference`; the original HDD is used with `-snapshot`.
+The first reference run reached Arizona at New Orleans gameplay and produced
+`xemu-2026-11-15-19-42-36.png`, a raw 640×480 game frame without desktop UI.
+That run used 128 MB and surface scale 2; a later configuration explicitly
+selects 64 MB and scale 1 for repeatable checks. Desktop interaction stopped
+when the user pressed Escape. A controlled scene-matched comparison has not
+yet been completed, so these captures do not establish rendering/audio parity.
