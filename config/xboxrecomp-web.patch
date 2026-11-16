@@ -19901,10 +19901,10 @@ index 0000000..a3ffcc0
 +#endif
 diff --git a/tests/sdlgpu_web/test_wait.cjs b/tests/sdlgpu_web/test_wait.cjs
 new file mode 100644
-index 0000000..e2a694a
+index 0000000..3297182
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_wait.cjs
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,31 @@
 +// Bound the whole suite while distinguishing a slow software GPU from a stall.
 +'use strict';
 +const {performance}=require('node:perf_hooks');
@@ -19912,7 +19912,21 @@ index 0000000..e2a694a
 +  now=()=>performance.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
 +  const started=now();let lastProgress=started,lastCount=-1;
 +  for(;;) {
-+    const state=await readState(),time=now();
++    // A frozen renderer can leave page.evaluate pending indefinitely. Bound
++    // the observation itself, as well as the intervals between log entries.
++    const elapsed=now()-started,idle=now()-lastProgress;
++    const totalRemaining=totalMs-elapsed,idleRemaining=idleMs-idle;
++    const totalFirst=totalRemaining<=idleRemaining;
++    let timer,state;
++    try {
++      state=await Promise.race([Promise.resolve().then(readState),new Promise((_,reject)=>{
++        timer=setTimeout(()=>reject(Error(totalFirst
++          ? `WebGPU suite exceeded total time ${totalMs} ms during state read`
++          : `WebGPU suite made no progress for ${idleMs} ms during state read`)),
++          Math.max(1,Math.min(totalRemaining,idleRemaining)));
++      })]);
++    } finally {clearTimeout(timer);}
++    const time=now();
 +    if(state?.done)return state;
 +    const count=state?.count||0;
 +    if(count>lastCount){lastCount=count;lastProgress=time;}

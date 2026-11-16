@@ -21,4 +21,7 @@ const {waitForSuiteProgress}=require('../../external/xboxrecomp/tests/sdlgpu_web
   const failure=await waitForSuiteProgress(async()=>({count:1,done:true,error:'FAILED fixture'}),clock);
   assert.equal(failure.error,'FAILED fixture');
   console.log('ok: missing startup progress fails and terminal failure state remains available to the runner');
+  await assert.rejects(waitForSuiteProgress(()=>new Promise(()=>{}),{idleMs:10,totalMs:100}),/no progress.*state read/);
+  await assert.rejects(waitForSuiteProgress(()=>new Promise(()=>{}),{idleMs:100,totalMs:10}),/total time.*state read/);
+  console.log('ok: a hung browser-state read cannot evade either deadline');
 })().catch(error=>{console.error(error);process.exitCode=1;});

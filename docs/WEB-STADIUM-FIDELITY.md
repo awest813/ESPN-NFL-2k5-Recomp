@@ -1251,7 +1251,8 @@ The preceding commit's web CI failed at its fixed 120-second suite deadline
 while still reporting passing cube-mip samples. Its maximum interval between
 logged checks was 1.46 seconds, with no pixel/validation failure. The expanded
 SwiftShader suite now has a five-minute total bound and a 30-second progress-
-inactivity bound, measured with a monotonic clock. Deterministic tests verify
+inactivity bound, measured with a monotonic clock. State reads also have
+bounded waits so a frozen renderer cannot bypass either deadline. Deterministic tests verify
 completion beyond the old deadline, failure on a stalled/missing startup,
 and failure at the total bound despite continuing output. Terminal failures
 remain available to the runner's existing failure checks. Hardware WebGPU
