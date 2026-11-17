@@ -126,5 +126,7 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
       vertices: Array.from(fs.readFileSync(path.join(dir, 'compact.vertices.bin'))),
       uniforms: Array.from(fs.readFileSync(path.join(dir, 'compact.uniforms.bin')))});
     console.log('PASS compact vertex attributes use the production pipeline layout');
+    await require('./vp-position-check.cjs')(page, fs.readFileSync(path.join(dir, 'compact.wgsl'), 'utf8'),
+      JSON.parse(fs.readFileSync(path.join(dir, 'compact.layout.json'), 'utf8')));
   } finally { await browser.close(); }
 })().catch(e => {console.error(e); process.exitCode = 1;}).finally(() => server.close());

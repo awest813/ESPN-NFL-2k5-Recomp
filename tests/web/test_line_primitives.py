@@ -100,6 +100,9 @@ int main(void) {
     }
     s_gpu.shade_mode=0x1D01;a.z=b.z=-1;emitted=0;
     raster_line_clip(&a,&b,NULL,capture,NULL);assert(!emitted);
+    a.x=.0625f;b.x=1.0625f;a.w=b.w=1;a.z=-1;b.z=2;emitted=0;
+    raster_line_clip(&a,&b,NULL,capture,NULL);assert(emitted==1);
+    close_to(clipped[0].x,.0625f+1.0f/3.0f); /* Never resnap clip intersections. */
     a.z=b.z=1;a.w=-.5f;b.w=1;emitted=0;
     raster_line_clip(&a,&b,NULL,capture,NULL);assert(emitted==1);close_to(clipped[0].w,.001f);
     a.x=NAN;emitted=0;raster_line_clip(&a,&b,NULL,capture,NULL);assert(!emitted);

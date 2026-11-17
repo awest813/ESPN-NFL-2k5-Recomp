@@ -1712,3 +1712,49 @@ retail result remains the preceding flat-shade run (26.0–30.1 FPS after
 150 seconds, 200 audio underrun blocks), with no controlled performance
 claim for these line changes. Full patched Windows runtime validation is
 also still outstanding, as described above.
+
+### Original VP screen-coordinate precision
+
+The browser WGSL epilogue and CPU `vp_vertex` now truncate original screen
+XY to the same 1/16-pixel grid already used by the native GLSL and D3D11
+paths. Negative coordinates truncate toward zero. This happens before adding
+the widescreen surface offset and reconstructing homogeneous coordinates;
+depth, W, texture coordinates and other vertex outputs retain their original
+precision. Newly generated clip intersections are not snapped again.
+
+The external reference is xemu's
+[screen-coordinate helper](https://github.com/xemu-project/xemu/blob/49bfab07a50ef4a2b62f45b960c91aa0e67cfb05/hw/xbox/nv2a/pgraph/glsl/vsh.c)
+and its [programmable vertex epilogue](https://github.com/xemu-project/xemu/blob/0103939ba4fcd76d3bc5c052d4e27cddc69ac232/hw/xbox/nv2a/pgraph/glsl/vsh-prog.c).
+This change aligns the local backends with that documented NV2A behavior;
+it is not a new matched Xbox capture or proof of every raster coverage rule.
+
+The previous differential shader test discarded the whole position epilogue
+before comparing arithmetic outputs. The new checks execute it completely.
+The published shader fails the new test on its first signed fractional
+position. Hardware WebGPU and independent SwiftShader now both pass 864
+position components across signed 1/16 boundaries, non-unit/negative W and
+three surface/offset configurations. Another 20,480 rendered pixels check
+fractional rectangle edges with unit/non-unit W and widescreen offsets,
+using the production packed vertex layout. The arithmetic comparison still
+passes all 2,752 GPU executions. Position comparisons allow a small float32
+conversion tolerance, below a grid step for these tested surfaces.
+
+Native Vulkan under address/undefined sanitizers passes the actual CPU VP
+output checks, including unchanged depth/W/texture values, and the existing
+rendering/capture suite. Driver leak checks remain disabled. The production
+line/clipping Wasm fixture passes 228,150 checks, including an interpolated
+near-plane intersection that must retain its fractional position. The actual
+browser game and native Linux kernel/video libraries build, and a fresh
+pinned runtime reproduces all 89 patched files. Publication `1dbb90a` passed
+both Build and Pages workflows.
+
+The 246-second `subpixel-retail/report.json` run reaches Washington at Green
+Bay live play. Stadium structure/crowd, uniforms, referee, field markings and
+intro text remain visible; the harness records no browser/GPU/DSP fatal fault.
+Five-second averages after 150 seconds range from 26.9 to 30.1 FPS. Audio
+records 2,936 underrun blocks overall, increasing from 2,448 to 2,936 during
+the sampled interval after 150 seconds. Startup overlapped independent shader
+validation, and the teams/scene differ from the preceding run, so the total
+is not a controlled performance comparison. The late underruns still show
+that audio continuity is unfinished. These component and integration results
+do not establish full stadium/staff fidelity or a sustained 30 FPS floor.

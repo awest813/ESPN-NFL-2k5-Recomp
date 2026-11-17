@@ -1629,7 +1629,20 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3253,162 @@
+@@ -2891,8 +3132,10 @@
+                 O[3][0], O[3][1], O[3][2], O[3][3], O[9][0], O[9][1]);
+         }
+     }
+-    x->x = O[0][0];
+-    x->y = O[0][1];
++    /* Snap original screen outputs before homogeneous clipping, matching
++     * native GPU VPs. Generated clip intersections must not be snapped again. */
++    x->x = vp_screen_coord(O[0][0]);
++    x->y = vp_screen_coord(O[0][1]);
+     x->z = O[0][2];
+     x->w = O[0][3];
+     x->w = vp_clamp_w(x->w);
+@@ -3012,6 +3255,162 @@
      }
  }
 
@@ -1792,7 +1805,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3019,6 +3416,17 @@
+@@ -3019,6 +3418,17 @@
      float area, iwa, iwb, iwc;
      int minx, maxx, miny, maxy, x, y;
      int textured = s_gpu.tex.valid && s_gpu.tex.enabled;
@@ -1810,7 +1823,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3465,15 @@
+@@ -3057,26 +3467,15 @@
          }
          return;
      }
@@ -1840,7 +1853,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3123,31 +3520,11 @@
+@@ -3123,31 +3522,11 @@
              lb = w2 / area;
              lc = w0 / area;
              z = la * a->z + lb * b->z + lc * c->z;
@@ -1877,7 +1890,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3534,11 @@
+@@ -3157,6 +3536,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -1889,7 +1902,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3550,12 @@
+@@ -3168,9 +3552,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1903,7 +1916,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3563,54 @@
+@@ -3178,26 +3565,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -1962,7 +1975,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,6 +3645,10 @@
+@@ -3232,6 +3647,10 @@
                      }
                  }
              }
@@ -1973,7 +1986,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              shade_pixel(mem, bpp, x, y, argb);
          }
      }
-@@ -3253,7 +3670,7 @@
+@@ -3253,7 +3672,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1982,7 +1995,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3679,34 @@
+@@ -3262,32 +3681,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -2029,7 +2042,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,76 +3753,160 @@
+@@ -3334,76 +3755,160 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -2211,7 +2224,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Batches drawn through a vertex program (3D) since the last present: a
-@@ -3424,7 +3927,8 @@
+@@ -3424,7 +3929,8 @@
      s_vp.batches++;
      if (s_gpu.tex.valid)
          note_texture_use();
@@ -2221,7 +2234,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Count constant arrays once per batch, never from the per-vertex fetch path.
-@@ -3605,7 +4109,7 @@
+@@ -3605,7 +4111,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -2230,7 +2243,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4347,7 @@
+@@ -3843,7 +4349,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -2239,7 +2252,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4370,7 @@
+@@ -3866,7 +4372,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -2248,7 +2261,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4809,7 @@
+@@ -4305,7 +4811,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -2257,7 +2270,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5260,7 @@
+@@ -4756,7 +5262,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -2266,7 +2279,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5378,7 @@
+@@ -4874,7 +5380,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2275,7 +2288,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5386,7 @@
+@@ -4882,7 +5388,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -2284,7 +2297,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5438,7 @@
+@@ -4934,7 +5440,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2293,7 +2306,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5446,7 @@
+@@ -4942,7 +5448,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -3992,10 +4005,10 @@ index 0000000..28bb6e7
 +}
 diff --git a/src/kernel/sdlgpu/shaders/vp.wgsl b/src/kernel/sdlgpu/shaders/vp.wgsl
 new file mode 100644
-index 0000000..f0555f5
+index 0000000..bcd0342
 --- /dev/null
 +++ b/src/kernel/sdlgpu/shaders/vp.wgsl
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,154 @@
 +// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the
 +// two halves; the C translator inserts straight-line instructions between them.
 +struct VpUniforms {
@@ -4117,9 +4130,12 @@ index 0000000..f0555f5
 +    for (var k = 0u; k < 16u; k++) { O[k] = vec4f(0.0, 0.0, 0.0, 1.0); }
 +// INSERT_PROGRAM
 +    let p = O[0];
++    // NV2A raster setup keeps four fractional bits, truncating toward zero.
++    // Snap the original screen output before reconstructing clip coordinates.
++    let xy = trunc(p.xy * 16.0) / 16.0;
 +    let w = vclampw(p.w);
-+    let nx = (p.x + vc.info.w) / vc.info.x * 2.0 - 1.0;
-+    let ny = 1.0 - p.y / vc.info.y * 2.0;
++    let nx = (xy.x + vc.info.w) / vc.info.x * 2.0 - 1.0;
++    let ny = 1.0 - xy.y / vc.info.y * 2.0;
 +    var nz = p.z / vc.info.z;
 +    // Guest depth clamp is independent of clipping against the eye plane.
 +    if (vc.lightp.z != 0.0) { nz = clamp(nz, 0.0, 1.0); }
@@ -5135,7 +5151,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +222,1105 @@
+@@ -231,34 +222,1116 @@
      return bad == 0;
  }
 
@@ -6116,6 +6132,17 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +#endif
 +    s_gpu.attr[0]=(VertexAttr){0x600000,2,4,64};s_gpu.attr[3]=(VertexAttr){0x600010,2,4,64};
 +    s_gpu.attr[4]=(VertexAttr){0x600020,2,4,64};s_gpu.attr[9]=(VertexAttr){0x600030,2,4,64};
++    const float positions[]={-640.999f,-16.063f,-16.0625f,-16.0624f,-.063f,-.0625f,-.0624f,-.001f,
++                             0,.001f,.0624f,.0625f,.063f,16.0624f,16.0625f,16.063f,319.999f,640.999f};
++    for(unsigned p=0;p<sizeof positions/sizeof *positions;p++) {
++        float *v=(float *)(g_ram+0x600000);memset(v,0,64);
++        v[0]=positions[p];v[1]=-positions[p]+.03f;v[2]=.312345f;v[3]=2;
++        v[4]=v[7]=1;v[12]=.123456f;v[15]=1;
++        vp_begin_batch();const XfVert *out=vp_vertex(0);
++        float expected_x=(float)(int)(v[0]*16)/16,expected_y=(float)(int)(v[1]*16)/16;
++        CHECK(out->x==expected_x && out->y==expected_y,"CPU VP screen grid x=%g y=%g",v[0],v[1]);
++        CHECK(out->z==v[2] && out->w==v[3] && out->tc[0][0]==v[12],"screen snapping preserves depth, W and texture outputs");
++    }
 +    target(0x400000,64,64,256);s_gpu.prim=NV_PRIM_LINES;s_gpu.idx_count=2;s_gpu.idx[0]=0;s_gpu.idx[1]=1;
 +    for(int flat2d=0;flat2d<2;flat2d++)for(int mode=0;mode<3;mode++)for(int perspective=0;perspective<2;perspective++) {
 +        s_gpu.shade_mode=mode?0x1D00:0x1D01;s_gpu.provoking_vertex=mode==1;
@@ -6245,7 +6272,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1329,11 @@
+@@ -267,10 +1340,11 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -6260,7 +6287,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,7 +1371,10 @@
+@@ -308,7 +1382,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -6272,7 +6299,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +1388,32 @@
+@@ -322,6 +1399,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -24776,10 +24803,10 @@ index 0000000..65e0c18
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..3b8d203
+index 0000000..98ff077
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,2354 @@
+@@ -0,0 +1,2357 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -27104,9 +27131,12 @@ index 0000000..3b8d203
 +
 +static const char k_sg_vp_epilogue_wgsl[] =
 +    "    let p = O[0];\n"
++    "    // NV2A raster setup keeps four fractional bits, truncating toward zero.\n"
++    "    // Snap the original screen output before reconstructing clip coordinates.\n"
++    "    let xy = trunc(p.xy * 16.0) / 16.0;\n"
 +    "    let w = vclampw(p.w);\n"
-+    "    let nx = (p.x + vc.info.w) / vc.info.x * 2.0 - 1.0;\n"
-+    "    let ny = 1.0 - p.y / vc.info.y * 2.0;\n"
++    "    let nx = (xy.x + vc.info.w) / vc.info.x * 2.0 - 1.0;\n"
++    "    let ny = 1.0 - xy.y / vc.info.y * 2.0;\n"
 +    "    var nz = p.z / vc.info.z;\n"
 +    "    // Guest depth clamp is independent of clipping against the eye plane.\n"
 +    "    if (vc.lightp.z != 0.0) { nz = clamp(nz, 0.0, 1.0); }\n"
