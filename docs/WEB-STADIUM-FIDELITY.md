@@ -1758,3 +1758,54 @@ validation, and the teams/scene differ from the preceding run, so the total
 is not a controlled performance comparison. The late underruns still show
 that audio continuity is unfinished. These component and integration results
 do not establish full stadium/staff fidelity or a sustained 30 FPS floor.
+
+### Diagonal line width and backend coverage
+
+The software line fallback previously expanded endpoints along their minor
+axis. That produces less than one pixel of perpendicular width on diagonals.
+The shared `nv2a_line.h` helper now expands perpendicular to the segment.
+SDL's CPU-prepared 2D and 3D lines use the same explicit triangles, preserving
+endpoint colours, texture coordinates and W. Native GPU VP line lists retain
+the host line primitive. Browser lines temporarily use CPU VP preparation:
+WebGPU's built-in line coverage on the tested adapter missed all 29 diagonal
+probes, while explicit geometry passes them. Ordinary triangle batches retain
+GPU VP processing. GPU expansion of browser VP lines remains performance work.
+
+The [manifest](references/nv2a-line-width.json) pins the original Xbox
+`Line_width/Line_0001.0.png` capture and test-source hashes, 16 loop vertices,
+palette, width register 8 and isolated 100x108 crop. The crop contains 1,174
+foreground pixels. The original capture executes a VP; the pre-transformed
+replays consume its projected 1/16-grid positions. This is not a separate
+hardware test of raw pre-transformed input precision.
+
+`python tools/audit-line-reference.py build-web-tests/line-hardware` verifies
+the pinned inputs and generated header (Pillow required); `--write-header`
+regenerates it. The 29 probes are selected from capture pixels by their
+distance to the original geometry, without consulting a renderer output:
+they lie inside the perpendicular strip and outside the old minor-axis strip,
+away from endpoints and overlapping lines. The old software fallback misses
+all 29; the corrected 2D/3D GPU and software replays pass all 116 native probes
+within two RGB steps. Hardware WebGPU and independent SwiftShader each pass
+the 29 projected line probes and an explicit 3D line interpolation check with
+non-unit W.
+
+The full native crop audit remains deliberately separate from these passing
+probes. Each corrected native path covers 1,085 of the 1,174 reference pixels,
+adds zero outside the reference mask, and matches 1,081 shared pixels within
+two RGB steps. The VP software path recovers 104 reference pixels over the
+previous 981-pixel result. The GPU/software masks can differ at individual
+pixels despite equal totals. The 89 missing reference pixels, exact caps,
+widths other than register 8, smoothing and complete interpolation behavior
+remain unresolved. Passing the probes does not establish exact line fidelity.
+
+Optional native fixture output `NFL2K5_LINE_REFERENCE_DUMP=<prefix>` writes
+four raw replay frames. Compare the full crop with
+`python tools/audit-line-reference.py <capture-directory> --replay-prefix <name>`.
+The raw images remain ignored local diagnostics. The Wasm regression also
+checks perpendicular width across 24 directions, invalid inputs and existing
+assembly/colour/clipping behavior: 228,246 checks. Native address/undefined
+sanitizers pass with driver leak detection disabled. The actual browser game
+and Linux kernel/video build; a fresh pinned runtime reproduces 91 files.
+Publication `f67a27e` passed both Build and Pages workflows. No additional
+retail gameplay run is claimed for this change; the preceding integration
+run still documents the unresolved frame-rate and audio continuity limits.

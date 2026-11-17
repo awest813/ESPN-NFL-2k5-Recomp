@@ -64,6 +64,17 @@ static void check_edge(void *ctx,unsigned a,unsigned b,unsigned provoking) {
 static void capture(void *ctx,const XfVert *a,const XfVert *b) {clipped[0]=*a;clipped[1]=*b;emitted++;}
 static void close_to(float a,float b) {assert(fabsf(a-b)<0.0001f);checks++;}
 int main(void) {
+    for(unsigned angle=0;angle<360;angle+=15) {
+        float theta=angle*.0174532925199433f,dx=40*cosf(theta),dy=40*sinf(theta);
+        float a[]={32,32},b[]={32+dx,32+dy},quad[4][2];
+        assert(line_quad(a,b,quad));
+        float nx=quad[3][0]-quad[0][0],ny=quad[3][1]-quad[0][1];
+        close_to(hypotf(nx,ny),1);close_to(nx*dx+ny*dy,0);
+        close_to(quad[1][0]-quad[0][0],dx);close_to(quad[1][1]-quad[0][1],dy);
+    }
+    {float a[]={0,0},b[]={0,0},q[4][2];assert(!line_quad(a,b,q));
+     b[0]=INFINITY;assert(!line_quad(a,b,q));b[0]=NAN;assert(!line_quad(a,b,q));
+     b[0]=1000001;assert(!line_quad(a,b,q));}
     for(unsigned k=0;k<16;k++) {
         inputs[k].ok=1;inputs[k].x=k;inputs[k].y=k+1;inputs[k].w=1;
         for(unsigned c=0;c<4;c++) {inputs[k].col[c]=k+c*.125f;inputs[k].spec[c]=k+c*.25f;}
@@ -112,7 +123,7 @@ int main(void) {
 out = root / 'build-web-tests/line-primitives'
 out.mkdir(parents=True, exist_ok=True)
 body = (prefix + constants + '\n' + vertex + '\n' + function('static int primitive_is_lines(')
-        + function('static void batch_lines(') + function('static void xf_lerp(')
+        + function('static void batch_lines(') + (kernel / 'nv2a_line.h').read_text(encoding='utf-8') + function('static void xf_lerp(')
         + 'typedef void (*XfLineFn)(void *,const XfVert *,const XfVert *);\n'
         + function('static void raster_line_clip(') + harness.replace(
             'typedef void (*XfLineFn)(void *,const XfVert *,const XfVert *);', ''))

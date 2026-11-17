@@ -1,0 +1,115 @@
+{
+  "capture": {
+    "file": "Line_0001.0.png",
+    "revision": "a822689507cce8e8de54d9e170c9369c1a0c7566",
+    "sha256": "1362334c27d1b9d8ef7b6f6c7b54d8a5a27adbc1aa5a4e309be4d9161954a9f5",
+    "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.0.png"
+  },
+  "source": {
+    "file": "line_width_tests.cpp",
+    "revision": "2cfe6073d59ab2a69f98cf4c6ca003c1a02c8c6d",
+    "sha256": "9790fb1e42eabc2ddef1416cbfbb63906593a9ac0ee0494829e660c9bcae3dd7",
+    "url": "https://github.com/abaire/nxdk_pgraph_tests/blob/2cfe6073d59ab2a69f98cf4c6ca003c1a02c8c6d/src/tests/line_width_tests.cpp"
+  },
+  "surface": [
+    640,
+    480
+  ],
+  "origin": [
+    160,
+    48
+  ],
+  "crop": [
+    270,
+    50,
+    100,
+    108
+  ],
+  "background": [
+    32,
+    34,
+    36
+  ],
+  "primitive": 3,
+  "width_register": 8,
+  "raw_xy": [
+    [
+      196.0,
+      47.0
+    ],
+    [
+      194.0,
+      19.0
+    ],
+    [
+      182.0,
+      97.0
+    ],
+    [
+      106.18625,
+      80.0
+    ],
+    [
+      127.0,
+      94.58163
+    ],
+    [
+      133.597443,
+      13.763389
+    ],
+    [
+      205.0,
+      62.0
+    ],
+    [
+      115.54392,
+      16.0
+    ],
+    [
+      122.0,
+      3.0
+    ],
+    [
+      117.062706,
+      87.735558
+    ],
+    [
+      201.0,
+      28.664894
+    ],
+    [
+      146.114091,
+      10.0
+    ],
+    [
+      205.356591,
+      88.0
+    ],
+    [
+      125.0,
+      107.0
+    ],
+    [
+      190.828953,
+      35.510304
+    ],
+    [
+      163.0,
+      105.956814
+    ]
+  ],
+  "diffuse_low_byte_r": [
+    "FFFF3333",
+    "FF33FF33",
+    "FF3333FF",
+    "FFFFFF33",
+    "FF33FFFF",
+    "FFFF33FF",
+    "FF808080",
+    "FFFFFFFF"
+  ],
+  "probe_selection": "Foreground pixels with exactly one segment within 0.6 px, projection t strictly between 0.05 and 0.95, perpendicular distance below 0.46 px and minor-axis distance above 0.52 px, using original positions truncated to 1/16 px. Independent of any replay output.",
+  "expected_probes": 29,
+  "reference_foreground_pixels": 1174,
+  "scope": "Projected-geometry line-loop replay, smooth diffuse colours and width register 8 only; not original Xbox VP execution or complete line width/endpoint/smoothing fidelity."
+}
