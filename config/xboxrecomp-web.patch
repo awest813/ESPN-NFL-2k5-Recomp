@@ -1109,7 +1109,18 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* An untransformed batch drawn as if it were screen space smears a few pixels
   * into the corner, so the batch has to be classified before it is rasterised.
   *
-@@ -1818,8 +1909,10 @@
+@@ -1806,6 +1897,10 @@
+ #define NV_PRIM_QUAD_STRIP     9
+ #define NV_PRIM_POLYGON        10
+
++static int primitive_is_lines(uint32_t primitive) {
++    return primitive >= NV_PRIM_LINES && primitive <= NV_PRIM_LINE_STRIP;
++}
++
+ /* How many post-draw captures to keep: enough to see whether the geometry
+  * is stable from frame to frame, few enough not to fill a directory. */
+ #define FB_DUMP_AFTER_DRAW 8
+@@ -1818,8 +1913,10 @@
   * a batch whose texcoords cannot be read is drawn untextured rather than not
   * at all, so a missing coordinate stream costs the colour and not the shape.
   */
@@ -1121,7 +1132,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int textured;
 
      if (!fetch_attr(&s_gpu.attr[0], i0, p[0])
-@@ -1831,15 +1924,30 @@
+@@ -1831,15 +1928,77 @@
                 && fetch_texcoord(i1, uv[1])
                 && fetch_texcoord(i2, uv[2]);
 
@@ -1158,10 +1169,57 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +        default: return start + (s_gpu.provoking_vertex ? 0 : 2);
 +    }
 +}
++
++typedef void (*BatchLineFn)(void *ctx, uint32_t a, uint32_t b, uint32_t provoking);
++static void batch_lines(BatchLineFn emit, void *ctx) {
++    uint32_t count=s_gpu.idx_count;
++    if(count<2 || !primitive_is_lines(s_gpu.prim))return;
++    uint32_t step=s_gpu.prim==NV_PRIM_LINES?2u:1u;
++    for(uint32_t i=0;i+1<count;i+=step)
++        emit(ctx,s_gpu.idx[i],s_gpu.idx[i+1],s_gpu.idx[s_gpu.provoking_vertex?i:i+1]);
++    if(s_gpu.prim==NV_PRIM_LINE_LOOP)
++        emit(ctx,s_gpu.idx[count-1],s_gpu.idx[0],s_gpu.idx[s_gpu.provoking_vertex?count-1:0]);
++}
++
++/* Approximate software coverage for one-pixel aliased lines. The minor-axis
++ * offset avoids drawing two rows/columns when an endpoint is integral.
++ * Exact NV2A diamond-exit, endpoint and wide-line rules remain unverified. */
++static int line_quad(const float a[2],const float b[2],float xy[4][2]) {
++    float dx=b[0]-a[0],dy=b[1]-a[1];
++    if(!isfinite(dx) || !isfinite(dy) || (dx==0 && dy==0) ||
++       fabsf(a[0])>1e6f || fabsf(a[1])>1e6f || fabsf(b[0])>1e6f || fabsf(b[1])>1e6f)return 0;
++    const float *points[4]={a,b,b,a};
++    int axis=fabsf(dx)>=fabsf(dy)?1:0;
++    for(unsigned k=0;k<4;k++) {
++        xy[k][0]=points[k][0];xy[k][1]=points[k][1];
++        xy[k][axis]+=(k<2?-0.5f:0.5f)+1.0f/512.0f;
++    }
++    return 1;
++}
++
++static void raster_line_indexed(void *ctx,uint32_t a,uint32_t b,uint32_t provoking) {
++    (void)ctx;
++    float positions[2][4],xy[4][2],uv[2][2]={{0}},colors[2][4];
++    uint32_t indices[2]={a,b};
++    if(!fetch_attr(&s_gpu.attr[0],a,positions[0]) || !fetch_attr(&s_gpu.attr[0],b,positions[1]) ||
++       !line_quad(positions[0],positions[1],xy))return;
++    int textured=fetch_texcoord(a,uv[0]) && fetch_texcoord(b,uv[1]);
++    for(unsigned k=0;k<2;k++)fetch_attr(color_attr(),s_gpu.shade_mode==0x1D01?indices[k]:provoking,colors[k]);
++    const unsigned triangles[2][3]={{0,1,2},{0,2,3}},endpoint[4]={0,1,1,0};
++    for(unsigned t=0;t<2;t++) {
++        float tc[3][2],rgba[3][4];
++        for(unsigned k=0;k<3;k++) {
++            unsigned source=endpoint[triangles[t][k]];
++            memcpy(tc[k],uv[source],sizeof tc[k]);memcpy(rgba[k],colors[source],sizeof rgba[k]);
++        }
++        raster_triangle_colors(xy[triangles[t][0]],xy[triangles[t][1]],xy[triangles[t][2]],0,
++                               textured?tc:NULL,rgba);
++    }
++}
 
  static void batch_triangles(BatchTriFn emit, void *ctx) {
      uint32_t i;
-@@ -1847,36 +1955,36 @@
+@@ -1847,36 +2006,36 @@
          case NV_PRIM_TRIANGLES:
              for (i = 0; i + 2 < s_gpu.idx_count; i += 3)
                  emit(ctx, s_gpu.idx[i], s_gpu.idx[i + 1], s_gpu.idx[i + 2],
@@ -1205,7 +1263,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              break;
          default:
-@@ -1884,9 +1992,9 @@
+@@ -1884,13 +2043,18 @@
      }
  }
 
@@ -1217,7 +1275,16 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void raster_batch(void) {
-@@ -1985,12 +2093,12 @@
+     uint32_t before = s_gpu.tris_drawn;
++
++    if(primitive_is_lines(s_gpu.prim)) {
++        if(batch_is_screen_space())batch_lines(raster_line_indexed,NULL);
++        return;
++    }
+
+     if (s_gpu.idx_count < 3)
+         return;
+@@ -1985,12 +2149,12 @@
          return sample_texture(u, v, argb);
      saved = s_gpu.tex;
      s_gpu.tex = s_stage[st];
@@ -1232,7 +1299,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_sampler_stage = saved_stage;
  #endif
      s_gpu.tex = saved;
-@@ -2027,11 +2135,12 @@
+@@ -2027,11 +2191,12 @@
  #define NV097_SET_COMBINER_COLOR_OCW        0x1E40   /* +i*4, 8 */
  #define NV097_SET_COMBINER_CONTROL          0x1E60
  #define NV097_SET_SHADER_STAGE_PROGRAM      0x1E70
@@ -1246,7 +1313,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int set;
  } s_comb;
 
-@@ -2075,6 +2184,8 @@
+@@ -2075,6 +2240,8 @@
              s_comb.set = 1;
              return 1;
          case NV097_SET_SHADER_STAGE_PROGRAM: s_comb.stage_prog = param;
@@ -1255,7 +1322,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              return 1;
          /* NV_PGRAPH_SHADERCTL: dot mappings (bits 0-11) and each stage's input
           * stage (bits 16-27), for the dot-product texture modes (xemu). */
-@@ -2449,6 +2560,10 @@
+@@ -2449,6 +2616,10 @@
          return 1;
      }
      switch (method) {
@@ -1266,7 +1333,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          case NV097_SET_TRANSFORM_EXECUTION_MODE: s_vp.mode = param & 3;
              return 1;
          case NV097_SET_TRANSFORM_PROGRAM_LOAD: s_vp.prog_load = param;
-@@ -2540,10 +2655,60 @@
+@@ -2540,10 +2711,60 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
@@ -1328,7 +1395,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                     float R[13][4], float O[16][4], const float V[16][4], int a0,
                     int scalar, float out[4]) {
      const float *s;
-@@ -2553,11 +2718,11 @@
+@@ -2553,11 +2774,11 @@
      switch (mux) {
          case 1: s = reg == 12 ? O[0] : R[reg < 13 ? reg : 0];
              break;
@@ -1343,7 +1410,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2788,19 @@
+@@ -2623,7 +2844,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -1364,7 +1431,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +2811,54 @@
+@@ -2634,68 +2867,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1455,7 +1522,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +2891,12 @@
+@@ -2728,20 +2947,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1478,7 +1545,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +2929,13 @@
+@@ -2774,13 +2985,13 @@
                  break;
              }
              case 7: {
@@ -1496,7 +1563,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +2978,18 @@
+@@ -2823,11 +3034,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1520,7 +1587,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,7 +3009,29 @@
+@@ -2847,7 +3065,29 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1550,7 +1617,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (++s_xf_gen == 0) {
          memset(s_xf_stamp, 0, sizeof s_xf_stamp);
          s_xf_gen = 1;
-@@ -2864,8 +3048,9 @@
+@@ -2864,8 +3104,9 @@
          return x;
      s_xf_stamp[index & (VP_CACHE - 1)] = s_xf_gen;
      for (a = 0; a < NV_VERTEX_ATTRS; a++)
@@ -1562,7 +1629,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -3012,6 +3197,162 @@
+@@ -3012,6 +3253,162 @@
      }
  }
 
@@ -1725,7 +1792,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Perspective-correct, Gouraud-shaded, depth-tested triangle. */
  static void raster_triangle_xf(const XfVert *a, const XfVert *b, const XfVert *c) {
      uint8_t *mem = (uint8_t *) xbox_GetMemoryOffset();
-@@ -3019,6 +3360,17 @@
+@@ -3019,6 +3416,17 @@
      float area, iwa, iwb, iwc;
      int minx, maxx, miny, maxy, x, y;
      int textured = s_gpu.tex.valid && s_gpu.tex.enabled;
@@ -1743,7 +1810,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3409,15 @@
+@@ -3057,26 +3465,15 @@
          }
          return;
      }
@@ -1767,13 +1834,13 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 -         * counter-clockwise. (Taking it as clockwise culled NFL 2K5's movie
 -         * quad as a back face and left only its fade overlay.) */
 -        int cw = area < 0;
-+    if (s_vp.cull && vp_cull_enabled()) {
++    if (!primitive_is_lines(s_gpu.prim) && s_vp.cull && vp_cull_enabled()) {
 +        /* Screen Y grows downward, so positive area is clockwise. */
 +        int cw = area > 0;
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3123,31 +3464,11 @@
+@@ -3123,31 +3520,11 @@
              lb = w2 / area;
              lc = w0 / area;
              z = la * a->z + lb * b->z + lc * c->z;
@@ -1810,7 +1877,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3478,11 @@
+@@ -3157,6 +3534,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -1822,7 +1889,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3494,12 @@
+@@ -3168,9 +3550,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1836,7 +1903,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3507,54 @@
+@@ -3178,26 +3563,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -1895,7 +1962,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,6 +3589,10 @@
+@@ -3232,6 +3645,10 @@
                      }
                  }
              }
@@ -1906,7 +1973,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              shade_pixel(mem, bpp, x, y, argb);
          }
      }
-@@ -3253,7 +3614,7 @@
+@@ -3253,7 +3670,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -1915,7 +1982,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3623,34 @@
+@@ -3262,32 +3679,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -1962,7 +2029,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,71 +3697,101 @@
+@@ -3334,76 +3753,160 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -2034,6 +2101,53 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +    }
 +}
 +
++typedef void (*XfLineFn)(void *ctx,const XfVert *a,const XfVert *b);
++static void raster_line_clip(const XfVert *a,const XfVert *b,const XfVert *provoking,XfLineFn emit,void *ctx) {
++    const float eps=1e-3f;
++    XfVert vertices[2]={*a,*b};
++    for(unsigned k=0;k<2;k++) {
++        XfVert *v=&vertices[k];
++        if(!isfinite(v->x)||!isfinite(v->y)||!isfinite(v->z)||!isfinite(v->w))return;
++        if(s_gpu.shade_mode==0x1D00) {
++            memcpy(v->col,provoking->col,sizeof v->col);memcpy(v->spec,provoking->spec,sizeof v->spec);
++        }
++    }
++    if(a->w < -1 && b->w < -1)return;
++    int clip_depth=((s_vp.zminmax>>4)&15u)==0;
++    if((a->w>eps && b->w>eps && (!clip_depth || (a->z>=0 && b->z>=0))) ||
++       (!s_vp.depth_test && a->w<=eps && b->w<=eps)) {
++        emit(ctx,&vertices[0],&vertices[1]);return;
++    }
++    for(unsigned k=0;k<2;k++) {
++        vertices[k].x*=vertices[k].w;vertices[k].y*=vertices[k].w;vertices[k].z*=vertices[k].w;
++    }
++    for(int plane=0;plane<=clip_depth;plane++) {
++        float da=plane?vertices[0].z:vertices[0].w-eps;
++        float db=plane?vertices[1].z:vertices[1].w-eps;
++        if(da<0 && db<0)return;
++        if((da<0)!=(db<0)) {
++            unsigned out=da<0?0:1;XfVert clipped;
++            xf_lerp(&clipped,&vertices[0],&vertices[1],da/(da-db));
++            if(plane)clipped.z=0;else clipped.w=eps;
++            vertices[out]=clipped;
++        }
++    }
++    for(unsigned k=0;k<2;k++) {
++        vertices[k].x/=vertices[k].w;vertices[k].y/=vertices[k].w;vertices[k].z/=vertices[k].w;vertices[k].ok=1;
++    }
++    emit(ctx,&vertices[0],&vertices[1]);
++}
++typedef struct { XfLineFn emit;void *context; } XfLineContext;
++static void transform_line(void *ctx,uint32_t a,uint32_t b,uint32_t provoking) {
++    XfLineContext *context=ctx;
++    const XfVert *va=vp_vertex(a),*vb=vp_vertex(b);
++    const XfVert *color=s_gpu.shade_mode==0x1D00?vp_vertex(provoking):NULL;
++    raster_line_clip(va,vb,color,context->emit,context->context);
++}
++static void batch_lines_xf(XfLineFn emit,void *ctx) {
++    XfLineContext context={emit,ctx};vp_begin_batch();batch_lines(transform_line,&context);
++}
++
  static void batch_triangles_xf(XfTriFn emit, void *ctx) {
      uint32_t i, n = s_gpu.idx_count;
      const uint16_t *ix = s_gpu.idx;
@@ -2085,7 +2199,29 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void raster_xf_cb(void *ctx, const XfVert *a, const XfVert *b, const XfVert *c) {
-@@ -3605,7 +3998,7 @@
+     (void) ctx;
+     raster_triangle_xf(a, b, c);
++}
++static void raster_line_xf_cb(void *ctx,const XfVert *a,const XfVert *b) {
++    (void)ctx;float pa[2]={a->x,a->y},pb[2]={b->x,b->y},xy[4][2];
++    if(!line_quad(pa,pb,xy))return;
++    XfVert v[4]={*a,*b,*b,*a};
++    for(unsigned k=0;k<4;k++){v[k].x=xy[k][0];v[k].y=xy[k][1];}
++    raster_triangle_xf(&v[0],&v[1],&v[2]);raster_triangle_xf(&v[0],&v[2],&v[3]);
+ }
+
+ /* Batches drawn through a vertex program (3D) since the last present: a
+@@ -3424,7 +3927,8 @@
+     s_vp.batches++;
+     if (s_gpu.tex.valid)
+         note_texture_use();
+-    batch_triangles_xf(raster_xf_cb, NULL);
++    if(primitive_is_lines(s_gpu.prim))batch_lines_xf(raster_line_xf_cb,NULL);
++    else batch_triangles_xf(raster_xf_cb, NULL);
+ }
+
+ /* Count constant arrays once per batch, never from the per-vertex fetch path.
+@@ -3605,7 +4109,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -2094,7 +2230,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4236,7 @@
+@@ -3843,7 +4347,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -2103,7 +2239,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4259,7 @@
+@@ -3866,7 +4370,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -2112,7 +2248,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4698,7 @@
+@@ -4305,7 +4809,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -2121,7 +2257,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5149,7 @@
+@@ -4756,7 +5260,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -2130,7 +2266,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5267,7 @@
+@@ -4874,7 +5378,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2139,7 +2275,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5275,7 @@
+@@ -4882,7 +5386,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -2148,7 +2284,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5327,7 @@
+@@ -4934,7 +5438,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2157,7 +2293,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5335,7 @@
+@@ -4942,7 +5446,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -2780,7 +2916,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          static int told;
          if (!told++)
              fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
-@@ -385,11 +490,12 @@
+@@ -385,24 +490,24 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -2790,11 +2926,32 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
  /* batch_triangles() callback: one triangle, as the software path would draw it. */
 -static void sg_collect(void *ctx, uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb) {
-+static void sg_collect(void *ctx, uint32_t i0, uint32_t i1, uint32_t i2, uint32_t provoking) {
++static void sg_collect_vertices(void *ctx,const uint32_t *idx,int count,uint32_t provoking) {
      SgVertexList *list = (SgVertexList *) ctx;
-     const uint32_t idx[3] = {i0, i1, i2};
+-    const uint32_t idx[3] = {i0, i1, i2};
      float p[3][4], uv[3][2];
-@@ -414,10 +520,7 @@
+     int k, textured;
+
+-    for (k = 0; k < 3; k++)
++    for (k = 0; k < count; k++)
+         if (!fetch_attr(&s_gpu.attr[0], idx[k], p[k]))
+             return; /* raster_indexed skips it too */
+     textured = s_gpu.tex.valid;
+-    for (k = 0; k < 3 && textured; k++)
++    for (k = 0; k < count && textured; k++)
+         textured = fetch_texcoord(idx[k], uv[k]);
+
+-    if (list->count + 3 > list->cap) {
++    if (list->count + count > list->cap) {
+         uint32_t cap = list->cap ? list->cap * 2 : 192;
+         SgVertex *v = (SgVertex *) realloc(list->v, cap * sizeof *v);
+         if (!v)
+@@ -410,18 +515,21 @@
+         list->v = v;
+         list->cap = cap;
+     }
+-    for (k = 0; k < 3; k++) {
++    for (k = 0; k < count; k++) {
          SgVertex *o = &list->v[list->count++];
          o->x = p[k][0];
          o->y = p[k][1];
@@ -2806,7 +2963,35 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          o->uv[0] = textured ? uv[k][0] : 0.0f;
          o->uv[1] = textured ? uv[k][1] : 0.0f;
          o->uv[2] = textured ? 1.0f : 0.0f;
-@@ -452,12 +555,19 @@
+     }
++}
++static void sg_collect(void *ctx,uint32_t a,uint32_t b,uint32_t c,uint32_t provoking) {
++    const uint32_t indices[3]={a,b,c};sg_collect_vertices(ctx,indices,3,provoking);
++}
++static void sg_collect_line(void *ctx,uint32_t a,uint32_t b,uint32_t provoking) {
++    const uint32_t indices[2]={a,b};sg_collect_vertices(ctx,indices,2,provoking);
+ }
+
+ /* gpu_draw_batch(1). Returns 0 to leave the batch to the software path. */
+@@ -431,7 +539,7 @@
+     SDL_GPUGraphicsPipeline *pipe;
+     SgSurface *s;
+
+-    if (s_gpu.idx_count < 3 || !batch_is_screen_space())
++    if (s_gpu.idx_count < (primitive_is_lines(s_gpu.prim)?2u:3u) || !batch_is_screen_space())
+         return 0; /* raster_batch keeps its counters */
+     if (!sg_draw_init())
+         return sg_fallback(SG_FB_SHADERS, 0);
+@@ -445,19 +553,27 @@
+         return sg_fallback(SG_FB_TEXTURE, 0); /* unreadable texture: software decides */
+
+     list.count = 0;
+-    batch_triangles(sg_collect, &list);
++    if(primitive_is_lines(s_gpu.prim))batch_lines(sg_collect_line,&list);
++    else batch_triangles(sg_collect, &list);
+     if (!list.count)
+         return 1; /* nothing visible, as in software */
+
      {
          float surface_size[2] = {(float) s->w, (float) s->h};
          struct {
@@ -2831,7 +3016,23 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c
-@@ -111,6 +111,10 @@
+@@ -19,6 +19,7 @@
+ /* SgPipeKey.color */
+ #define SG_COLOR_BLEND   (1u << 0)        /* bits 1-4: write mask R G B A */
+ #define SG_COLOR_XF      (1u << 30)       /* 3D pipeline: xf shaders, SgXfVertex */
++#define SG_COLOR_LINES   (1u << 21)       /* independent line-list topology */
+ #define SG_COLOR_VALID   (1u << 31)       /* bits 5-9 src, 10-14 dst, 15-17 op */
+ /* SgPipeKey.depth: bit 0 test, bit 1 write, bits 4-7 compare op */
+ /* SgPipeKey.stencil: bit 0 test, bits 4-7 compare, 8-11 fail, 12-15 zfail, 16-19 pass */
+@@ -86,6 +87,7 @@
+
+     memset(key, 0, sizeof *key);
+     key->color = SG_COLOR_VALID | (xf ? SG_COLOR_XF : 0);
++    if(primitive_is_lines(s_gpu.prim))key->color|=SG_COLOR_LINES;
+     key->vs = vs;
+     if (g_color_mask & 0x00010000u) mask |= SDL_GPU_COLORCOMPONENT_R;
+     if (g_color_mask & 0x00000100u) mask |= SDL_GPU_COLORCOMPONENT_G;
+@@ -111,6 +113,10 @@
      if (xf && s_vp.depth_test && !no_depth)
          key->depth = 1u | (s_vp.depth_mask ? 2u : 0u)
                       | (uint32_t) sg_compare_op(s_vp.depth_func) << 4;
@@ -2842,7 +3043,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      if (xf && s_vp.stencil_test) {
          key->stencil = 1u
                         | (uint32_t) sg_compare_op(s_vp.stencil_func) << 4
-@@ -120,10 +124,11 @@
+@@ -120,10 +126,11 @@
          key->masks = (s_vp.stencil_fmask & 0xFFu) | (s_vp.stencil_wmask & 0xFFu) << 8;
      }
      {
@@ -2852,13 +3053,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
 -        if (xf && cull_on && s_vp.cull && s_vp.cull_face != 0x0408) {
 +        /* sg_collect_xf already culls CPU-transformed vertices. Only the
 +         * GPU vertex-program path needs the host rasterizer to cull. */
-+        if (xf && vs && vp_cull_enabled() && s_vp.cull) {
++        if (xf && vs && !primitive_is_lines(s_gpu.prim) && vp_cull_enabled() && s_vp.cull) {
 +            if (s_vp.cull_face == 0x0408)
 +                return 0; /* CPU collection discards front and back faces. */
              uint32_t cm = (s_vp.cull_face == 0x0404) ? 1u : 2u; /* 0404 FRONT, 0405 BACK */
              uint32_t cw = (s_vp.front_face == 0x0900) ? 1u : 0u; /* 0900 CW, 0901 CCW */
              key->color |= (cm << 18) | (cw << 20);
-@@ -138,9 +143,12 @@
+@@ -138,9 +145,12 @@
      const int vp = key->vs != 0;
      SDL_GPUVertexAttribute vp_attrs[16];
      int k;
@@ -2873,7 +3074,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      const uint32_t blend = key->color;
      SDL_GPUStencilOpState stencil = {
          .fail_op = (SDL_GPUStencilOp) ((key->stencil >> 8) & 15u),
-@@ -150,7 +158,7 @@
+@@ -150,7 +160,7 @@
      };
      SDL_GPUVertexBufferDescription buffer = {
          .slot = 0,
@@ -2882,7 +3083,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
          .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX,
      };
      SDL_GPUVertexAttribute flat_attrs[3] = {
-@@ -230,13 +238,12 @@
+@@ -224,19 +234,18 @@
+             .vertex_attributes = vp ? vp_attrs : xf ? xf_attrs : flat_attrs,
+             .num_vertex_attributes = vp ? 16 : xf ? 8 : 3,
+         },
+-        .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
++        .primitive_type = (blend&SG_COLOR_LINES)?SDL_GPU_PRIMITIVETYPE_LINELIST:SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+         .rasterizer_state = {
+             .fill_mode = SDL_GPU_FILLMODE_FILL,
              .cull_mode = ((blend >> 18) & 3u) == 1u ? SDL_GPU_CULLMODE_FRONT :
                           ((blend >> 18) & 3u) == 2u ? SDL_GPU_CULLMODE_BACK :
                                                        SDL_GPU_CULLMODE_NONE,
@@ -2899,7 +3107,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
          },
          .depth_stencil_state = {
              .enable_depth_test = (key->depth & 1u) != 0,
-@@ -277,18 +284,29 @@
+@@ -277,18 +286,29 @@
  }
 
  /* The pipeline for the current state; NULL when it cannot be drawn on the GPU. */
@@ -2934,7 +3142,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      p = &s_sg.pipes[s_sg.pipe_count];
      p->pipe = sg_pipeline_create(&key);
      if (!p->pipe) {
-@@ -297,6 +315,7 @@
+@@ -297,6 +317,7 @@
          return NULL;
      }
      p->key = key;
@@ -3004,7 +3212,7 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.inc.c b/src/kernel/nv2a_gpu_d3d11.inc.c
  }
 
  /* SRV for texture stage st, decoding it through the software sampler the
-@@ -1798,6 +1764,13 @@
+@@ -1798,10 +1764,29 @@
              gpu_vertex(&s_gpu11.verts[nv++], A_, rw, rh); \
              gpu_vertex(&s_gpu11.verts[nv++], B_, rw, rh); \
              gpu_vertex(&s_gpu11.verts[nv++], C_, rw, rh); \
@@ -3018,7 +3226,24 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.inc.c b/src/kernel/nv2a_gpu_d3d11.inc.c
          } else { s_vp.rej_bad++; gpu_log_rejected(ix[a_], A_); gpu_log_rejected(ix[b_], B_); gpu_log_rejected(ix[c_], C_); } } while (0)
      /* Lines (NV097 2 lines, 3 line loop, 4 line strip) go out as a D3D line
       * list: play art on the play-calling screen, field markings. */
-@@ -1815,7 +1788,7 @@
+-#define GPU_LINE(a_, b_) do {         const XfVert *A_ = get(ix[a_]), *B_ = get(ix[b_]);         if (A_->ok && B_->ok && nv + 2 <= GPU_MAX_VERTS) {             gpu_vertex(&s_gpu11.verts[nv++], A_, rw, rh);             gpu_vertex(&s_gpu11.verts[nv++], B_, rw, rh);         } else s_vp.rej_bad++; } while (0)
++#define GPU_LINE(a_, b_) do { \
++        const XfVert *A_ = get(ix[a_]), *B_ = get(ix[b_]); \
++        if (A_->ok && B_->ok && nv + 2 <= GPU_MAX_VERTS) { \
++            gpu_vertex(&s_gpu11.verts[nv++], A_, rw, rh); \
++            gpu_vertex(&s_gpu11.verts[nv++], B_, rw, rh); \
++            if(s_gpu.shade_mode==0x1D00) { \
++                const XfVert *P_=s_gpu.provoking_vertex?A_:B_; \
++                for(uint32_t k_=nv-2;k_<nv;k_++) { \
++                    memcpy(s_gpu11.verts[k_].d0,P_->col,sizeof P_->col); \
++                    memcpy(s_gpu11.verts[k_].d1,P_->spec,sizeof P_->spec); \
++                } \
++            } \
++        } else s_vp.rej_bad++; } while(0)
+     lines = s_gpu.prim >= NV_PRIM_LINES && s_gpu.prim <= NV_PRIM_LINE_STRIP;
+     if (flat2d) {
+         get = gpu_vertex_2d;
+@@ -1815,7 +1800,7 @@
          get = vp_vertex;
          vp_begin_batch();
          s_vp.batches++;
@@ -3027,7 +3252,16 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.inc.c b/src/kernel/nv2a_gpu_d3d11.inc.c
              vpvs = gpu_vp_shader();
      }
      if (vpvs) {
-@@ -2094,6 +2067,7 @@
+@@ -1851,7 +1836,7 @@
+     case NV_PRIM_LINE_LOOP:
+     case NV_PRIM_LINE_STRIP:
+         for (i = 0; i + 1 < n; i++) GPU_LINE(i, i + 1);
+-        if (s_gpu.prim == NV_PRIM_LINE_LOOP && n > 2) GPU_LINE(n - 1, 0);
++        if (s_gpu.prim == NV_PRIM_LINE_LOOP && n >= 2) GPU_LINE(n - 1, 0);
+         break;
+     default:
+         break;
+@@ -2094,6 +2079,7 @@
       * depth range after the players; clamping squashed its near half onto
       * the clip plane, over the players, which looked see-through. */
      c.show[1] = ((s_vp.zminmax >> 4) & 0xF) == 0 ? 1u : 0u;
@@ -3035,7 +3269,7 @@ diff --git a/src/kernel/nv2a_gpu_d3d11.inc.c b/src/kernel/nv2a_gpu_d3d11.inc.c
      c.fogc[0] = (float)(s_fog.color & 0xFF) / 255.0f;
      c.fogc[1] = (float)((s_fog.color >> 8) & 0xFF) / 255.0f;
      c.fogc[2] = (float)((s_fog.color >> 16) & 0xFF) / 255.0f;
-@@ -2116,19 +2090,20 @@
+@@ -2116,19 +2102,20 @@
          }
          c.dotmap[0] = 0; c.dotmap[1] = ctl & 0xF; c.dotmap[2] = (ctl >> 4) & 0xF; c.dotmap[3] = (ctl >> 8) & 0xF;
          c.input[0] = 0; c.input[1] = 0; c.input[2] = (ctl >> 16) & 0xF; c.input[3] = (ctl >> 20) & 0xF;
@@ -4715,11 +4949,12 @@ diff --git a/tests/sdlgpu_posix/CMakeLists.txt b/tests/sdlgpu_posix/CMakeLists.t
  endforeach()
 -add_executable(sdlgpu_check test_main.c ${_headers})
 -target_include_directories(sdlgpu_check PRIVATE ../../src ${_out})
-+add_executable(sdlgpu_check test_main.c ../../src/platform/guest_memory.c ../../src/platform/win32_compat.c ${_headers})
-+target_include_directories(sdlgpu_check PRIVATE ../../src ../../src/kernel ../../src/platform ${_out})
- target_compile_definitions(sdlgpu_check PRIVATE SG_HAVE_SHADERS=1)
+-target_compile_definitions(sdlgpu_check PRIVATE SG_HAVE_SHADERS=1)
 -target_link_libraries(sdlgpu_check PRIVATE SDL3::SDL3 m)
 -target_compile_options(sdlgpu_check PRIVATE -Wall -Wextra -Wno-unused-function)
++add_executable(sdlgpu_check test_main.c ../../src/platform/guest_memory.c ../../src/platform/win32_compat.c ${_headers})
++target_include_directories(sdlgpu_check PRIVATE ../../src ../../src/kernel ../../src/platform ${_out})
++target_compile_definitions(sdlgpu_check PRIVATE SG_HAVE_SHADERS=1 TEST_GLSLANG="${GLSLANG}")
 +target_link_libraries(sdlgpu_check PRIVATE SDL3::SDL3 Threads::Threads m)
 +target_compile_options(sdlgpu_check PRIVATE -Wall -Wextra -Wno-unused-function -ffunction-sections -fdata-sections -UNDEBUG)
 +target_link_options(sdlgpu_check PRIVATE -Wl,--gc-sections)
@@ -4729,7 +4964,7 @@ diff --git a/tests/sdlgpu_posix/CMakeLists.txt b/tests/sdlgpu_posix/CMakeLists.t
 diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 --- a/tests/sdlgpu_posix/test_main.c
 +++ b/tests/sdlgpu_posix/test_main.c
-@@ -10,7 +10,7 @@
+@@ -10,87 +10,78 @@
   *    in float (and draws a quad's shared diagonal twice), a GPU snaps
   *    vertices to a 1/256 px grid; those pixels are not compared
   *
@@ -4738,10 +4973,10 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  #include <SDL3/SDL.h>
  #include <math.h>
  #include <stdint.h>
-@@ -18,79 +18,68 @@
+ #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-
+-
 -/* ---- executor stand-ins ------------------------------------------------ */
 -typedef struct { int unused; } VertexAttr;
 -typedef struct { int valid, enabled; uint32_t width, height, addr_u, addr_v, color, pitch; } TexState;
@@ -4758,6 +4993,9 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 -} s_gpu;
 -static uint32_t g_clear_rx = 0x0FFF0000u, g_clear_ry = 0x0FFF0000u;
 -static uint32_t g_color_mask = 0x01010101u;
++#include <unistd.h>
++#include <sys/wait.h>
++
 +/* Exercise the actual executor state and decoding, so renderer changes
 + * cannot silently outgrow a duplicate test-only layout. */
 +static int fail_next_submit, fail_next_wait;
@@ -4871,7 +5109,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  {
      uint32_t out = 0;
      for (int sh = 0; sh < 32; sh += 8)
-@@ -162,10 +151,10 @@
+@@ -162,10 +153,10 @@
                      float su = (w1 * uv[0][0] + w2 * uv[1][0] + w0 * uv[2][0]) / area;
                      float sv = (w1 * uv[0][1] + w2 * uv[1][1] + w0 * uv[2][1]) / area;
                      uint32_t texel;
@@ -4885,7 +5123,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
                          continue;
                      }
                  }
-@@ -208,9 +197,9 @@
+@@ -208,9 +199,9 @@
      for (int i = 0; i < SG_MAX_SURFACES; i++)        /* the title wrote the surface */
          if (s_sg.surf[i].color) s_sg.surf[i].owner = SG_OWNER_GUEST;
 
@@ -4897,7 +5135,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +220,1022 @@
+@@ -231,34 +222,1105 @@
      return bad == 0;
  }
 
@@ -5831,6 +6069,88 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_gpu.tex=saved;memcpy(s_attr_inline[3],inline_color,sizeof inline_color);
 +}
 +
++/* The fixture has glslangValidator for static shaders, but need not have
++ * glslang's optional C library. Compile this real translated program with
++ * the available CLI, then exercise the ordinary SPIRV -> READY cache path. */
++static int prepare_test_vertex_program(void) {
++    char path[]="/tmp/nfl2k5-line-vp-XXXXXX",binary[128];
++    int fd=mkstemp(path);if(fd<0)return 0;
++    char *source=sg_vp_translate(s_vp.start,NULL);FILE *file=fdopen(fd,"wb");
++    if(!source || !file){if(file)fclose(file);else close(fd);free(source);unlink(path);return 0;}
++    fputs(source,file);fclose(file);free(source);snprintf(binary,sizeof binary,"%s.spv",path);
++    pid_t child=fork();
++    if(child==0){execl(TEST_GLSLANG,TEST_GLSLANG,"-V","--target-env","vulkan1.0","-S","vert","-o",binary,path,(char *)NULL);_exit(127);}
++    int status=0;if(child<0 || waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) {unlink(path);unlink(binary);return 0;}
++    file=fopen(binary,"rb");if(!file){unlink(path);return 0;}
++    fseek(file,0,SEEK_END);long size=ftell(file);rewind(file);
++    uint32_t *words=size>0 && size%4==0?malloc((size_t)size):NULL;
++    int ok=words && fread(words,1,(size_t)size,file)==(size_t)size;fclose(file);unlink(path);unlink(binary);
++    if(!ok){free(words);return 0;}
++    uint32_t length=0,key=sg_vp_hash(s_vp.start,&length);
++    for(unsigned probe=0;probe<SG_VP_CACHE;probe++) {
++        SgVpProg *p=&s_sg_vp[(key+probe)&(SG_VP_CACHE-1)];
++        if(SDL_GetAtomicInt(&p->state)!=SG_VP_EMPTY)continue;
++        p->key=key;p->start=s_vp.start;p->length=length;
++        memcpy(p->program,s_vp.prog+s_vp.start,length*sizeof p->program[0]);p->inmask=vp_input_mask(s_vp.start);
++        p->spirv=words;p->words=(size_t)size/4;SDL_SetAtomicInt(&p->state,SG_VP_SPIRV);return 1;
++    }
++    free(words);return 0;
++}
++
++static void test_line_rendering(void)
++{
++    unsigned char vp[sizeof s_vp],comb[sizeof s_comb];memcpy(vp,&s_vp,sizeof s_vp);memcpy(comb,&s_comb,sizeof s_comb);
++    VertexAttr attributes[NV_VERTEX_ATTRS];memcpy(attributes,s_gpu.attr,sizeof attributes);
++    uint32_t shade=s_gpu.shade_mode,provoking=s_gpu.provoking_vertex,alpha=s_gpu.alpha_test,blend=s_gpu.blend,fog=s_fog.enable;
++    Texture texture=s_gpu.tex;s_gpu.tex.valid=0;s_gpu.alpha_test=s_gpu.blend=s_fog.enable=0;memset(&s_comb,0,sizeof s_comb);
++    s_vp.depth_test=s_vp.stencil_test=0;s_vp.cull=1;s_vp.cull_face=0x0408;s_vp.color_mask=0x01010101u;
++    s_vp.mode=2;s_vp.loaded=1;s_vp.start=0;s_vp.clip_min=0;s_vp.clip_max=1;s_vp.specular_enable=0;
++    memset(s_vp.prog,0,sizeof s_vp.prog);const unsigned inputs[]={0,3,4,9};
++    for(unsigned k=0;k<4;k++) {
++        s_vp.prog[k][1]=(1u<<21)|(inputs[k]<<9)|0x1Bu;s_vp.prog[k][2]=2u<<26;
++        s_vp.prog[k][3]=(15u<<12)|(1u<<11)|(inputs[k]<<3)|(k==3);
++    }
++    s_vp_cgen++;
++#ifndef SG_HAVE_GLSLANG
++    CHECK(prepare_test_vertex_program(),"compile real line vertex program with the fixture CLI");
++#endif
++    s_gpu.attr[0]=(VertexAttr){0x600000,2,4,64};s_gpu.attr[3]=(VertexAttr){0x600010,2,4,64};
++    s_gpu.attr[4]=(VertexAttr){0x600020,2,4,64};s_gpu.attr[9]=(VertexAttr){0x600030,2,4,64};
++    target(0x400000,64,64,256);s_gpu.prim=NV_PRIM_LINES;s_gpu.idx_count=2;s_gpu.idx[0]=0;s_gpu.idx[1]=1;
++    for(int flat2d=0;flat2d<2;flat2d++)for(int mode=0;mode<3;mode++)for(int perspective=0;perspective<2;perspective++) {
++        s_gpu.shade_mode=mode?0x1D00:0x1D01;s_gpu.provoking_vertex=mode==1;
++        for(unsigned k=0;k<2;k++) {
++            float *v=(float *)(g_ram+0x600000)+k*16;memset(v,0,64);
++            v[0]=k?56.5f:8.5f;v[1]=20.5f;v[2]=0.25f;v[3]=k && perspective?2:1;
++            v[4]=k==0;v[6]=k==1;v[7]=1;v[15]=1;
++        }
++        s_gpu.clear_color=0xFF112233u;CHECK(sg_clear(0xF0),"line clear");
++        CHECK(sg_draw_batch(flat2d),"two-vertex %s line GPU draw",flat2d?"2D":"3D");download_frame();
++        uint32_t expected=mode==1?0xFFFF0000u:mode==2?0xFF0000FFu:!flat2d && perspective?0xFFAA0055u:0xFF800080u,pixel;
++        memcpy(&pixel,g_ram+0x400000+20*256+32*4,4);
++        int good=1;for(unsigned c=0;c<32;c+=8)good&=abs((int)((pixel>>c)&255u)-(int)((expected>>c)&255u))<=2;
++        CHECK(good,"line GPU %s mode=%d perspective=%d: %08X expected %08X",flat2d?"2D":"3D",mode,perspective,pixel,expected);
++        memcpy(&pixel,g_ram+0x400000+18*256+32*4,4);CHECK(pixel==0xFF112233u,"line GPU stays one pixel wide");
++        for(unsigned p=0;p<64*64;p++)((uint32_t *)(g_ram+0x400000))[p]=0xFF112233u;
++        surface_stage_reset();if(flat2d)raster_batch();else batch_lines_xf(raster_line_xf_cb,NULL);
++        CHECK(surface_stage_flush(g_ram),"line CPU flush");surface_stage_reset();
++        memcpy(&pixel,g_ram+0x400000+20*256+32*4,4);good=1;
++        for(unsigned c=0;c<32;c+=8)good&=abs((int)((pixel>>c)&255u)-(int)((expected>>c)&255u))<=2;
++        CHECK(good,"line CPU %s mode=%d perspective=%d: %08X expected %08X",flat2d?"2D":"3D",mode,perspective,pixel,expected);
++    }
++    s_gpu.shade_mode=0x1D01;s_gpu.prim=NV_PRIM_LINES;
++    uint32_t slot=0;SDL_GPUShader *program=NULL;uint64_t deadline=SDL_GetTicks()+10000;
++    do {program=sg_vp_program(&slot);if(!program)SDL_Delay(4);} while(!program && SDL_GetTicks()<deadline);
++    CHECK(program!=NULL,"line GPU vertex program becomes ready");
++    if(program) {
++        uint32_t before=s_sg_stats.gpuvp;s_gpu.clear_color=0xFF112233u;
++        CHECK(sg_clear(0xF0) && sg_draw_batch(0),"ready GPU VP line draw");download_frame();
++        CHECK(s_sg_stats.gpuvp==before+1,"ready line uses GPU vertex processing");
++    }
++    memcpy(&s_vp,vp,sizeof s_vp);s_vp_cgen++;memcpy(&s_comb,comb,sizeof s_comb);memcpy(s_gpu.attr,attributes,sizeof attributes);
++    s_gpu.shade_mode=shade;s_gpu.provoking_vertex=provoking;s_gpu.alpha_test=alpha;s_gpu.blend=blend;s_fog.enable=fog;s_gpu.tex=texture;
++}
++
 +static void test_flat_filtering(void)
 +{
 +    Texture saved = s_gpu.tex;
@@ -5912,6 +6232,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    test_software_presentation();
 +    test_flat_shading();
 +    test_pretransform_colors();
++    test_line_rendering();
 +    test_flat_filtering();
 +
      /* ---- milestone 1: flat 2D draws on a 320x240 target ---- */
@@ -5924,7 +6245,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1244,11 @@
+@@ -267,10 +1329,11 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -5939,7 +6260,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,7 +1286,10 @@
+@@ -308,7 +1371,10 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -5951,7 +6272,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      {
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload != NULL, "changed texture served stale from the cache");
-@@ -322,6 +1303,32 @@
+@@ -322,6 +1388,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -21709,7 +22030,31 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              affine = 1;
      /* RECOMP_SDLGPU_UVTRACE=1: describe large triangles (the field, the
  * stands) once per texture -- what the vertex program hands over, to
-@@ -292,20 +340,27 @@
+@@ -280,6 +328,23 @@
+     }
+ }
+
++static void sg_collect_line_xf(void *ctx,const XfVert *a,const XfVert *b) {
++    SgXfList *list=ctx;const XfVert *input[2]={a,b};
++    if(!a->ok || !b->ok)return;
++    if(list->count+2>list->cap) {
++        uint32_t cap=list->cap?list->cap*2:192;
++        SgXfVertex *grown=realloc(list->v,(size_t)cap*sizeof *grown);
++        if(!grown)return;list->v=grown;list->cap=cap;
++    }
++    int affine=!s_vp.depth_test && a->w>=-1 && a->w<=1e-3f && b->w>=-1 && b->w<=1e-3f;
++    for(unsigned k=0;k<2;k++) {
++        const XfVert *v=input[k];SgXfVertex *out=&list->v[list->count++];
++        out->pos[0]=v->x;out->pos[1]=v->y;out->pos[2]=v->z;out->pos[3]=affine?1:v->w;
++        memcpy(out->col,v->col,sizeof out->col);memcpy(out->spec,v->spec,sizeof out->spec);
++        memcpy(out->tc,v->tc,sizeof out->tc);out->fog=v->fog;
++    }
++}
++
+ /* The combiner program and per-batch state, for shaders/xf.frag. */
+ static void sg_xf_shade_fill(SgXfShade *sh, uint32_t sampled) {
+     int st;
+@@ -292,20 +357,27 @@
      sh->misc[0] = s_comb.specfog[0];
      sh->misc[1] = s_comb.specfog[1];
      sh->misc[2] = sampled;
@@ -21741,7 +22086,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
      memcpy(sh->factor0, s_comb.factor0, sizeof sh->factor0);
      memcpy(sh->factor1, s_comb.factor1, sizeof sh->factor1);
-@@ -316,7 +371,16 @@
+@@ -316,7 +388,16 @@
      sh->fog[0] = s_fog.color;
      for (st = 0; st < 4; st++) {
          sh->mode[st] = sg_stage_mode(st);
@@ -21759,7 +22104,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
 
      {
-@@ -330,6 +394,10 @@
+@@ -330,6 +411,10 @@
          memcpy(&sh->depth[2], &cmin, sizeof cmin);
          memcpy(&sh->depth[3], &cmax, sizeof cmax);
      }
@@ -21770,7 +22115,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
  }
 
  /* ── 3D batches with the vertex program on the GPU ──────────────────────
-@@ -339,13 +407,79 @@
+@@ -339,13 +424,79 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -21852,7 +22197,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -359,17 +493,15 @@
+@@ -359,17 +510,15 @@
  static uint32_t sg_vp_vertex(uint32_t index) {
      uint32_t a, k;
      index &= 0xFFFF;
@@ -21876,29 +22221,42 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -379,12 +511,16 @@
+@@ -377,16 +526,23 @@
+ }
+
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
-  * CPU path instead: program still compiling or not translatable, points or
-  * lines, or out of memory. */
+- * CPU path instead: program still compiling or not translatable, points or
+- * lines, or out of memory. */
 -static int sg_draw_vp(SgSurface *s, SgTextureUse tex[4], uint32_t sampled) {
++ * CPU path instead: program still compiling or not translatable, points,
++ * flat colours, or out of memory. */
 +static int sg_draw_vp(SgSurface *s, SgTextureUse tex[8], uint32_t sampled) {
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
      SDL_GPUGraphicsPipeline *pipe;
 
      if (!sg_vp_wanted())
-+        return 0;
+         return 0;
 +    /* Shared indexed VP outputs cannot carry a different primitive's flat
 +     * colour. The CPU VP/clip path duplicates the selected outputs instead. */
 +    if (s_gpu.shade_mode == 0x1D00)
-         return 0;
++        return 0;
      switch (s_gpu.prim) {
++        case NV_PRIM_LINES:
++        case NV_PRIM_LINE_LOOP:
++        case NV_PRIM_LINE_STRIP:
          case NV_PRIM_TRIANGLES:
-@@ -397,18 +533,42 @@
+         case NV_PRIM_TRIANGLE_STRIP:
+         case NV_PRIM_TRIANGLE_FAN:
+@@ -395,20 +551,44 @@
+         case NV_PRIM_QUAD_STRIP:
+             break;
          default:
-             return 0; /* points and lines: not on the GPU yet */
-     }
+-            return 0; /* points and lines: not on the GPU yet */
+-    }
 -    if (!sg_vp_program(&slot))
++            return 0; /* points: not on the GPU yet */
++    }
 +    if (!sg_vp_program(&slot)) {
 +        s_sg_stats.vp_program_pending++;
          return 0; /* compiling (or cannot): CPU this time */
@@ -21943,7 +22301,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +581,15 @@
+@@ -421,12 +601,29 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -21960,7 +22318,29 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +637,10 @@
+                              s_sgvp.ix[ni++] = sg_vp_vertex(src[c_]); } while (0)
++#define VPL(a_,b_) do { s_sgvp.ix[ni++]=sg_vp_vertex(src[a_]);s_sgvp.ix[ni++]=sg_vp_vertex(src[b_]); } while(0)
+     switch (s_gpu.prim) {
++        case NV_PRIM_LINES:
++            for(i=0;i+1<n;i+=2)VPL(i,i+1);
++            break;
++        case NV_PRIM_LINE_LOOP:
++        case NV_PRIM_LINE_STRIP:
++            for(i=0;i+1<n;i++)VPL(i,i+1);
++            if(s_gpu.prim==NV_PRIM_LINE_LOOP && n>=2)VPL(n-1,0);
++            break;
+         case NV_PRIM_TRIANGLES:
+             for (i = 0; i + 2 < n; i += 3)
+                 VPT(i, i + 1, i + 2);
+@@ -460,6 +657,7 @@
+             break;
+     }
+ #undef VPT
++#undef VPL
+     if (!ni)
+         return 1; /* nothing to draw */
+
+@@ -469,10 +667,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -21973,7 +22353,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +662,8 @@
+@@ -494,7 +692,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -21983,7 +22363,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,7 +677,7 @@
+@@ -508,13 +707,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -21992,7 +22372,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      uint32_t sampled = 0;
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
-@@ -532,31 +701,42 @@
+     int st;
+
+-    if (s_gpu.idx_count < 3)
++    if (s_gpu.idx_count < (primitive_is_lines(s_gpu.prim)?2u:3u))
+         return 0;
+     sg_vp_selfcheck();
+     /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
+@@ -532,31 +731,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -22034,13 +22421,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      sg_probe_init();
      s_probe.hit = 0;
      list.count = 0;
+-    batch_triangles_xf(sg_collect_xf, &list);
 +    profile_start = sg_profile_now();
-     batch_triangles_xf(sg_collect_xf, &list);
++    if(primitive_is_lines(s_gpu.prim))batch_lines_xf(sg_collect_line_xf,&list);
++    else batch_triangles_xf(sg_collect_xf, &list);
 +    if (profile_start) s_sg_stats.vertex_ticks += sg_profile_now() - profile_start;
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,15 +749,15 @@
+@@ -569,15 +780,15 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,
@@ -22461,10 +22850,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..f597da8
+index 0000000..ec88f8e
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1738 @@
+@@ -0,0 +1,1753 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -23236,6 +23625,16 @@ index 0000000..f597da8
 +
 +/* ── Pipelines ────────────────────────────────────────────────────────── */
 +typedef struct { const SDL_GPUGraphicsPipelineCreateInfo *info; SDL_GPUGraphicsPipeline *out; } PipeArgs;
++static WGPUPrimitiveTopology primitive_topology(SDL_GPUPrimitiveType primitive) {
++    switch(primitive) {
++        case SDL_GPU_PRIMITIVETYPE_TRIANGLELIST:return WGPUPrimitiveTopology_TriangleList;
++        case SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP:return WGPUPrimitiveTopology_TriangleStrip;
++        case SDL_GPU_PRIMITIVETYPE_LINELIST:return WGPUPrimitiveTopology_LineList;
++        case SDL_GPU_PRIMITIVETYPE_LINESTRIP:return WGPUPrimitiveTopology_LineStrip;
++        case SDL_GPU_PRIMITIVETYPE_POINTLIST:return WGPUPrimitiveTopology_PointList;
++        default:return WGPUPrimitiveTopology_Undefined;
++    }
++}
 +static void do_create_pipeline(void *p)
 +{
 +    PipeArgs *a = (PipeArgs *)p;
@@ -23315,7 +23714,9 @@ index 0000000..f597da8
 +        .layout = s_layout,
 +        .vertex = { .module = i->vertex_shader->mod, .entryPoint = sv("main"), .bufferCount = nb, .buffers = vbl },
 +        .primitive = {
-+            .topology = WGPUPrimitiveTopology_TriangleList,
++            .topology = primitive_topology(i->primitive_type),
++            .stripIndexFormat = (i->primitive_type==SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP ||
++                                 i->primitive_type==SDL_GPU_PRIMITIVETYPE_LINESTRIP)?WGPUIndexFormat_Uint32:WGPUIndexFormat_Undefined,
 +            .frontFace = rs->front_face == SDL_GPU_FRONTFACE_CLOCKWISE ? WGPUFrontFace_CW : WGPUFrontFace_CCW,
 +            .cullMode = rs->cull_mode == SDL_GPU_CULLMODE_FRONT ? WGPUCullMode_Front
 +                      : rs->cull_mode == SDL_GPU_CULLMODE_BACK ? WGPUCullMode_Back : WGPUCullMode_None,
@@ -23333,6 +23734,9 @@ index 0000000..f597da8
 +}
 +SDL_GPUGraphicsPipeline *WG_CreateGPUGraphicsPipeline(SDL_GPUDevice *d, const SDL_GPUGraphicsPipelineCreateInfo *i)
 +{
++    if(primitive_topology(i->primitive_type)==WGPUPrimitiveTopology_Undefined) {
++        SDL_SetError("unsupported GPU primitive topology");return NULL;
++    }
 +    (void)d;
 +    PipeArgs a = { i, NULL };
 +    if (!i->vertex_shader || !i->fragment_shader) { SDL_SetError("pipeline without shaders"); return NULL; }
@@ -27829,10 +28233,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..52645ff
+index 0000000..4cf194a
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,1813 @@
+@@ -0,0 +1,1872 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -27887,7 +28291,7 @@ index 0000000..52645ff
 +}
 +
 +/* A flat 2D pipeline as sdlgpu_pipeline.inc.c builds one. */
-+static SDL_GPUGraphicsPipeline *flat_pipe(int blend, Uint8 write_mask, int depth_test, SDL_GPUCompareOp cmp)
++static SDL_GPUGraphicsPipeline *flat_pipe_topology(SDL_GPUPrimitiveType primitive,int blend, Uint8 write_mask, int depth_test, SDL_GPUCompareOp cmp)
 +{
 +    SDL_GPUVertexBufferDescription buf = { .slot = 0, .pitch = sizeof(SgVertex), .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX };
 +    SDL_GPUVertexAttribute a[3] = {
@@ -27904,7 +28308,7 @@ index 0000000..52645ff
 +        .vertex_shader = flat_vs, .fragment_shader = flat_fs,
 +        .vertex_input_state = { .vertex_buffer_descriptions = &buf, .num_vertex_buffers = 1,
 +                                .vertex_attributes = a, .num_vertex_attributes = 3 },
-+        .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
++        .primitive_type = primitive,
 +        .rasterizer_state = { .fill_mode = SDL_GPU_FILLMODE_FILL, .cull_mode = SDL_GPU_CULLMODE_NONE,
 +                              .front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE },
 +        .depth_stencil_state = { .enable_depth_test = depth_test, .enable_depth_write = depth_test,
@@ -27913,6 +28317,9 @@ index 0000000..52645ff
 +                         .depth_stencil_format = depth_fmt, .has_depth_stencil_target = true },
 +    };
 +    return SDL_CreateGPUGraphicsPipeline(dev, &i);
++}
++static SDL_GPUGraphicsPipeline *flat_pipe(int blend,Uint8 write_mask,int depth_test,SDL_GPUCompareOp cmp) {
++    return flat_pipe_topology(SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,blend,write_mask,depth_test,cmp);
 +}
 +
 +typedef struct { uint32_t tex_size[2], tex_wrap[2], alpha_test, alpha_func, alpha_ref, pad, sampling[4]; } Shade;
@@ -28240,6 +28647,47 @@ index 0000000..52645ff
 +          "flat quad at its top-left position: %08X (y not flipped)", px(img, 15, 25));
 +    CHECK(px(img, 5, 25) == 0xFF000000u && px(img, 15, 75) == 0xFF000000u, "nothing drawn outside the quad");
 +
++    {
++        SDL_GPUGraphicsPipeline *lines=flat_pipe_topology(SDL_GPU_PRIMITIVETYPE_LINELIST,0,15,0,SDL_GPU_COMPAREOP_ALWAYS);
++        SDL_GPUGraphicsPipeline *strip=flat_pipe_topology(SDL_GPU_PRIMITIVETYPE_LINESTRIP,0,15,0,SDL_GPU_COMPAREOP_ALWAYS);
++        SDL_GPUGraphicsPipeline *points=flat_pipe_topology(SDL_GPU_PRIMITIVETYPE_POINTLIST,0,15,0,SDL_GPU_COMPAREOP_ALWAYS);
++        SDL_GPUGraphicsPipeline *triangles=flat_pipe_topology(SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP,0,15,0,SDL_GPU_COMPAREOP_ALWAYS);
++        CHECK(lines && strip && points && triangles,"line/point/strip pipeline topologies create");
++        CHECK(!flat_pipe_topology((SDL_GPUPrimitiveType)0x7FFF,0,15,0,SDL_GPU_COMPAREOP_ALWAYS),"invalid topology rejects before WebGPU validation");SDL_ClearError();
++        SgVertex vertices[5]={ {.x=8.5f,.y=20.5f,.color={1,0,0,1}}, {.x=56.5f,.y=20.5f,.color={0,0,1,1}},
++            {.x=8.5f,.y=40.5f,.color={0,1,0,1}}, {.x=56.5f,.y=40.5f,.color={0,1,0,1}} };
++        d=(Draw){.color=color,.depth=depth,.tex=white,.pipe=lines,.v=vertices,.n=4,
++            .clear_color=1,.clear_argb=0xFF112233u,.clear_depth=1,.depth_value=1};
++        draw(&d);download(color,0,W,H,img);
++        CHECK(near(px(img,32,20),0xFF800080u,2),"two-vertex line interpolates diffuse: %08X",px(img,32,20));
++        CHECK(px(img,32,40)==0xFF00FF00u && px(img,32,30)==0xFF112233u,"line-list pairs stay disconnected");
++        vertices[2].x=56.5f;vertices[2].y=56.5f;d.pipe=strip;d.n=3;
++        draw(&d);download(color,0,W,H,img);
++        CHECK(near(px(img,56,38),0xFF008080u,2) && px(img,32,38)==0xFF112233u,"line strip joins adjacent vertices without closing");
++        d.pipe=points;d.n=2;draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,8,20)==0xFFFF0000u && px(img,56,20)==0xFF0000FFu && px(img,32,20)==0xFF112233u,"point topology draws individual one-pixel points");
++        const float corners[4][2]={{8,8},{56,8},{8,56},{56,56}};
++        for(unsigned k=0;k<4;k++) {vertices[k].x=corners[k][0];vertices[k].y=corners[k][1];for(unsigned ch=0;ch<4;ch++)vertices[k].color[ch]=ch!=1 && ch!=2;}
++        d.pipe=triangles;d.n=4;draw(&d);download(color,0,W,H,img);
++        CHECK(px(img,16,16)==0xFFFF0000u && px(img,48,48)==0xFFFF0000u,"triangle strip includes its second triangle");
++        const float path[5][2]={{8.5f,20.5f},{56.5f,20.5f},{56.5f,56.5f},{8.5f,72.5f},{56.5f,72.5f}};
++        for(unsigned k=0;k<5;k++) {vertices[k].x=path[k][0];vertices[k].y=path[k][1];for(unsigned ch=0;ch<4;ch++)vertices[k].color[ch]=1;}
++        const uint32_t indices[6]={0,1,2,0xFFFFFFFFu,3,4};
++        SDL_GPUBufferCreateInfo bi={.usage=SDL_GPU_BUFFERUSAGE_VERTEX,.size=sizeof vertices};SDL_GPUBuffer *vb=SDL_CreateGPUBuffer(dev,&bi);
++        bi.usage=SDL_GPU_BUFFERUSAGE_INDEX;bi.size=sizeof indices;SDL_GPUBuffer *ib=SDL_CreateGPUBuffer(dev,&bi);
++        SDL_GPUTransferBufferCreateInfo ti={.usage=SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,.size=sizeof vertices+sizeof indices};
++        SDL_GPUTransferBuffer *transfer=SDL_CreateGPUTransferBuffer(dev,&ti);uint8_t *mapped=SDL_MapGPUTransferBuffer(dev,transfer,false);
++        memcpy(mapped,vertices,sizeof vertices);memcpy(mapped+sizeof vertices,indices,sizeof indices);SDL_UnmapGPUTransferBuffer(dev,transfer);
++        SDL_GPUCommandBuffer *command=SDL_AcquireGPUCommandBuffer(dev);SDL_GPUCopyPass *copy=SDL_BeginGPUCopyPass(command);
++        SDL_GPUTransferBufferLocation from={.transfer_buffer=transfer};SDL_GPUBufferRegion to={.buffer=vb,.size=sizeof vertices};
++        SDL_UploadToGPUBuffer(copy,&from,&to,false);from.offset=sizeof vertices;to.buffer=ib;to.size=sizeof indices;
++        SDL_UploadToGPUBuffer(copy,&from,&to,false);SDL_EndGPUCopyPass(copy);CHECK(SDL_SubmitGPUCommandBuffer(command),"upload indexed strip data");
++        CHECK(SDL_SubmitGPUCommandBuffer(record_indexed_binding(color,depth,strip,vb,ib,white)),"indexed line strip submits");download(color,0,W,H,img);
++        CHECK(px(img,32,20)==0xFFFFFFFFu && px(img,56,38)==0xFFFFFFFFu && px(img,32,72)==0xFFFFFFFFu && px(img,32,64)==0xFF000000u,
++              "32-bit indexed strip restart separates its two paths");
++        SDL_ReleaseGPUBuffer(dev,vb);SDL_ReleaseGPUBuffer(dev,ib);SDL_ReleaseGPUTransferBuffer(dev,transfer);
++    }
++
 +    /* 4. Textured: 8x8 checker, point sampled, wrapped, modulated as the software path does. */
 +    static uint32_t tex[64];
 +    for (int i = 0; i < 64; i++) {      /* R8G8B8A8 bytes: R,G,B,A */
@@ -28542,6 +28990,21 @@ index 0000000..52645ff
 +        SDL_GPUGraphicsPipeline *xf = SDL_CreateGPUGraphicsPipeline(dev, &i);
 +        CHECK(xf != NULL, "3D pipeline (xf shaders, stencil) creates");
 +        if (xf) {
++            SDL_GPUGraphicsPipelineCreateInfo line_info=i;line_info.primitive_type=SDL_GPU_PRIMITIVETYPE_LINELIST;
++            line_info.rasterizer_state.cull_mode=SDL_GPU_CULLMODE_FRONT;
++            SDL_GPUGraphicsPipeline *line_pipe=SDL_CreateGPUGraphicsPipeline(dev,&line_info);
++            CHECK(line_pipe!=NULL,"3D line pipeline creates");
++            float line_vertices[2][29]={{8.5f,20.5f,0.25f,1,1,0,0,1},{56.5f,20.5f,0.25f,2,0,0,1,1}};
++            d=(Draw){.color=color,.depth=depth,.tex=white,.pipe=line_pipe,.v=line_vertices,.n=2,.vertex_stride=sizeof line_vertices[0],
++                .fragment_uniforms=&shade,.fragment_size=sizeof shade,.clear_color=1,.clear_argb=0xFF112233u,.clear_depth=1,.depth_value=1};
++            draw(&d);download(color,0,W,H,img);
++            CHECK(near(px(img,32,20),0xFFAA0055u,2),"3D line preserves perspective-correct colour and ignores triangle culling: %08X",px(img,32,20));
++            shade.alpha[0]=1;shade.alpha[1]=0x0204;shade.alpha[2]=255;
++            draw(&d);download(color,0,W,H,img);CHECK(px(img,32,20)==0xFF112233u,"line alpha test discards foreground");
++            shade.alpha[0]=0;
++            for(unsigned k=0;k<2;k++){line_vertices[k][2]=0.5f;line_vertices[k][3]=1;line_vertices[k][4]=1;line_vertices[k][6]=0;}
++            d.clear_color=d.clear_depth=0;draw(&d);download(color,0,W,H,img);
++            CHECK(px(img,32,20)==0xFFFF0000u,"discarded line does not occlude a rear line");
 +            SDL_GPUTexture *hw_color=make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER,640,480,1);
 +            SDL_GPUTexture *hw_depth=make_tex(depth_fmt,SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,640,480,1);
 +            uint32_t *pixels=malloc(640*480*4);

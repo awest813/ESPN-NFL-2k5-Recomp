@@ -1657,3 +1657,58 @@ CPU VP fallback; the replay fixtures provide the positive flat-path evidence.
 Different teams/scenes prevent a controlled performance comparison. Full
 stadium/staff fidelity, continuous audio and a sustained 30 FPS floor remain
 unfinished.
+
+### Pause checkpoint: line primitives (2026-11-17)
+
+SDL rendering now accepts NV line lists, strips and loops in pre-transformed
+and vertex-program draws. Previously these batches produced no geometry.
+Strips and loops expand to independent line-list edges, including the closing
+edge of a two-vertex loop. Smooth GPU vertex programs retain GPU processing;
+flat draws select the original first/last endpoint's diffuse and specular
+outputs before CPU clipping. Triangle face culling does not reject lines.
+The software fallback expands one-pixel lines into narrow quads.
+
+The WebGPU adapter now respects the SDL pipeline primitive type instead of
+always creating a triangle-list pipeline. Triangle strips, line lists/strips
+and points have pixel checks; indexed strip restart uses the adapter's existing
+32-bit index support. This does not add NV point assembly or 16-bit indices.
+Native D3D11 line assembly also preserves flat endpoint colours.
+
+Validation at this checkpoint:
+
+- Hardware WebGPU and independent SwiftShader suites pass, including line
+  connectivity, perspective colour interpolation, alpha rejection followed by
+  a rear line (no erroneous depth occlusion), and invalid topology rejection.
+- Native Vulkan checks pass for 2D/3D GPU and software lines, smooth/flat
+  colours, non-unit W, culling independence and a ready GPU vertex program.
+  Address/undefined sanitizers pass with driver leak detection disabled.
+  Where the optional glslang C library is absent, the fixture compiles the
+  actual generated vertex shader through the already-required CLI compiler.
+- The Wasm regression compiles production line assembly, clipping and D3D11
+  colour selection: 228,149 checks cover shuffled indices, short/odd batches,
+  closure, capacity guards, clipped-away flat endpoints, varying texture/fog
+  values, eye/near planes and rejection of nonfinite positions. Existing
+  flat-shading and VP-cache regressions also pass.
+- The actual browser game and Linux kernel/video build. A fresh pinned
+  runtime reproduces all 89 patched files. No new retail gameplay run was
+  performed for this checkpoint; it establishes component behavior and build
+  stability, not observed changes in a particular stadium or play-art scene.
+
+Remaining work is deliberately recorded for resumption. Exact Xbox line
+coverage, endpoint rules, widths and smoothing have not been established;
+the software quad fallback is approximate. The local ignored
+`build-web-tests/line-hardware` directory contains a pinned Xbox Line_width
+capture and source for a future comparison, but no comparison result is
+claimed. The prior flat-shading capture tests do not establish line fidelity.
+
+A separate position discrepancy was identified but left unchanged: native
+GLSL GPU VP output and D3D11 truncate screen XY to a 1/16-pixel grid, while
+the WGSL VP epilogue and CPU `vp_vertex` use raw output XY. Verify against
+Xbox captures and add position/clipping regressions before changing this;
+quantizing already-clipped vertices could introduce a different error.
+Broader stadium/staff-model fidelity, all-mode gameplay accuracy, continuous
+audio and a sustained 30 FPS floor remain unfinished. The last integrated
+retail result remains the preceding flat-shade run (26.0–30.1 FPS after
+150 seconds, 200 audio underrun blocks), with no controlled performance
+claim for these line changes. Full patched Windows runtime validation is
+also still outstanding, as described above.
