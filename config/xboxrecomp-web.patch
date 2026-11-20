@@ -5099,16 +5099,19 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      mcpx_debug_end_frame();
  }
-@@ -494,17 +550,41 @@
+@@ -494,17 +550,44 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
-+/* A behind-schedule mixer can run continuously without throttle ever
-+ * releasing its mutex. Hand queued register writes the lock at a frame
-+ * boundary; never let them modify voices partway through se_frame(). */
++/* Hand already-queued register writes the lock at a frame boundary, even
++ * when the mixer is catching up. New arrivals must not extend this handoff
++ * indefinitely: voices still need their next frame. Writes remain excluded
++ * from se_frame(), and the next boundary services another pending cohort. */
 +static void mcpx_apu_service_mmio_waiters(MCPXAPUState *d)
 +{
-+    while (qatomic_fetch_add(&d->mmio_waiters, 0) > 0 && !qatomic_read(&d->exiting)) {
++    unsigned pending=(unsigned)qatomic_fetch_add(&d->mmio_waiters,0);
++    uint32_t completed=d->mmio_completed;
++    while ((uint32_t)(d->mmio_completed-completed)<pending && !qatomic_read(&d->exiting)) {
 +        int64_t started=s_apu_lock_profile?qemu_clock_get_us(QEMU_CLOCK_REALTIME):0;
 +        qemu_cond_wait(&d->cond, &d->lock);
 +        if(s_apu_lock_profile) {
@@ -5141,7 +5144,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              continue;
          }
 
-@@ -553,6 +633,15 @@
+@@ -553,6 +636,15 @@
                      if (on && (st_n || st_timeouts))
                          fprintf(stderr, "[APU] ISR stalls: %u in 5 s, total %.1f ms, max %.1f ms, >40 ms %u\n",
                                  st_n, st_total / 1000.0, st_max / 1000.0, st_timeouts);
@@ -5157,7 +5160,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
                      st_n = st_timeouts = 0;
                      st_total = st_max = 0;
                      st_last_log = now_ms;
-@@ -561,6 +650,12 @@
+@@ -561,6 +653,12 @@
          }
 
          throttle(d);
@@ -5170,7 +5173,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
          int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
-@@ -571,7 +666,40 @@
+@@ -571,7 +669,40 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -5211,7 +5214,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,7 +749,9 @@
+@@ -621,7 +752,9 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
@@ -5221,7 +5224,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      if (d->gp.dsp) {
          memset((void *)d->gp.dsp->core.pram_opcache, 0,
-@@ -648,6 +778,9 @@
+@@ -648,6 +781,9 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
@@ -5231,7 +5234,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -665,6 +798,19 @@
+@@ -665,6 +801,19 @@
 
      /* Init DSP (GP/EP - stubbed) */
      mcpx_apu_dsp_init(d);
@@ -5251,7 +5254,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      /* Init software mixer for DirectSound bridge */
      mixer_init();
-@@ -705,6 +851,8 @@
+@@ -705,6 +854,8 @@
      qemu_thread_join(&d->apu_thread);
      mcpx_apu_vp_finalize(d);
      mcpx_apu_monitor_finalize(d);
@@ -5260,7 +5263,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      free(d);
      g_state = NULL;
-@@ -737,8 +885,12 @@
+@@ -737,8 +888,12 @@
          if (is_write) {
              mcpx_apu_write(d, addr, val, size);
          }
@@ -5275,7 +5278,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -749,6 +901,20 @@
+@@ -749,6 +904,20 @@
  uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size)
  {
      if (!d) return 0;
@@ -5296,7 +5299,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      if (addr >= 0x20000 && addr < 0x30000) {
          return mcpx_apu_vp_read(d, addr - 0x20000, size);
      } else if (addr < 0x20000) {
-@@ -766,9 +932,33 @@
+@@ -766,9 +935,36 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -5305,8 +5308,11 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      qemu_mutex_lock(&d->lock);
 +    int64_t acquired = s_apu_lock_profile ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
      mcpx_apu_dispatch_mmio(d, (hwaddr)addr, val, size, true);
-+    if (qatomic_fetch_add(&d->mmio_waiters, -1) == 1)
-+        qemu_cond_signal(&d->cond);
++    d->mmio_completed++;
++    qatomic_fetch_add(&d->mmio_waiters,-1);
++    /* Wake a bounded frame-boundary handoff after every completed write,
++     * including when other writers are still arriving. */
++    qemu_cond_signal(&d->cond);
      qemu_mutex_unlock(&d->lock);
 +    if (s_apu_lock_profile) {
 +        static XBOX_THREAD_LOCAL int64_t since, wait_total, wait_max, dispatch_max;
@@ -5454,15 +5460,16 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
 
  /* ============================================================
   * SVF (State Variable Filter) - from vp/svf.h
-@@ -460,6 +350,7 @@
+@@ -460,6 +350,8 @@
 
      QemuThread apu_thread;
      QemuMutex lock;
 +    volatile int mmio_waiters; /* writers announced before taking lock */
++    uint32_t mmio_completed; /* completed writes, protected by lock */
      QemuCond cond;
      QemuCond idle_cond;
      bool pause_requested;
-@@ -472,14 +363,24 @@
+@@ -472,14 +364,24 @@
      MCPXAPUVPState vp;
      MCPXAPUGPState gp;
      MCPXAPUEPState ep;
@@ -5487,7 +5494,7 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
 
      struct {
          struct {
-@@ -513,10 +414,17 @@
+@@ -513,10 +415,17 @@
  void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
  void mcpx_apu_vp_reset(MCPXAPUState *d);
 

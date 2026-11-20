@@ -2757,3 +2757,51 @@ in `build-web-tests/persistent-snapshot-retail`. Different teams/scenes prevent
 a controlled whole-game performance comparison. Original-Xbox scene/audio
 parity, all modes/stadium/staff variants, uninterrupted audio and the 30 FPS
 floor remain unfinished.
+
+
+### Bounded APU register-write handoff
+
+The preceding rainy run records four APU deadline rebases totaling about
+269.3 ms, alongside 304 ms of missing output. That correlation does not prove
+a single cause. Inspection did reveal an unbounded condition wait: between
+voice frames, the mixer waited until `mmio_waiters` became zero. Continuing
+arrivals could extend that target indefinitely even after earlier writes
+completed.
+
+The handoff now snapshots the pending count and waits for that number of
+write completions, then resumes the frame when it regains the lock. Later
+arrivals do not increase the target and are considered at the next boundary.
+A protected 32-bit completion sequence uses unsigned wrap-safe subtraction.
+Every completed write signals the condition, including when other writers
+remain pending. Register dispatch and voice processing still share the mutex,
+so a write cannot modify voices partway through a frame. OS scheduling and
+mutex reacquisition can still delay either side; this is not a hard real-time
+latency guarantee. The existing 64 ms catch-up bound, sample cadence and
+output-buffer targets are retained.
+
+The actual production functions are exercised in Wasm and native ASAN/UBSAN.
+A deterministic continuous-arrival case keeps two writers pending indefinitely,
+includes a spurious wake and crosses completion-counter wrap. The old function
+fails because it cannot return within the bounded handoff. The fixture also
+checks notification while another writer remains queued, 10,000 real contended
+writes, frame-boundary exclusion, uncontended operation, continued mixing and
+shutdown. The full ordinary Web Python unit sequence, Linux APU/kernel/video
+builds and browser game link pass. Native handoff coverage is now part of CI.
+A fresh pinned runtime patch reproduces all 95 files and passes the reverse
+check. The preceding `ff81723` Build and Pages workflows both passed.
+
+
+The approximately 246-second packaged retail run selects rainy Green Bay/Miami.
+No browser/GPU failure is reported. Coin-toss/stadium lighting, players,
+referee and overlay text remain visible. Its 19 five-second FPS averages
+after 150 seconds range from 26.3 to 30.0. Audio records
+279 affected blocks and 35,712 missing output frames
+(744.0 ms at 48 kHz), with a longest gap of 2,304 frames
+(48.0 ms). Logged schedule windows contain 10 rebases totaling
+717.3 ms; numerous front-end traps remain visible during the bursts.
+Different teams/scenes and scheduling prevent a controlled before/after
+continuity claim. The bounded-wait regression is fixed, but uninterrupted
+audio is not established. Evidence and exact served Wasm/JS/patch hashes are
+retained in `build-web-tests/apu-cohort-retail`. Original-Xbox fidelity,
+complete mode/stadium/staff coverage, default DSP output matching and a 30 FPS
+floor remain unfinished.
