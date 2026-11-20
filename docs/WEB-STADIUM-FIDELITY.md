@@ -3842,3 +3842,78 @@ referees, stadium/crowd, field markings and readable overlays; neither run
 reports browser/GPU failures. Both browsers and the owned server are closed.
 The runs remain partial: continuous/reference-matched audio, a sustained
 30 FPS floor and complete stadium/staff/mode fidelity are still unfinished.
+
+### Bounded service of a retained APU interrupt (2026-11-20)
+
+The follow-up `uniform-apu-irq-retail` capture verifies Arizona/New Orleans
+and the coaches again, using the frozen pre-change build with DSP, APU and
+IRQ profiles. Its final clean approximately 60-second window records
+29.9–30.1 FPS, 15,872 missing audio frames (330.7 ms), five producer
+resynchronizations totaling 357 ms, and 331 front-end waits totaling
+1,610.7 ms. Twelve IRQ windows contain 539 service calls, 212 fresh timed
+notifications and 327 calls without one. No declined/uncallable handlers,
+discarded notifications or coalescing are reported. Maximum timed signal age
+is 1.375 ms; independent ISR/DPC maxima are 2.685/5.285 ms. These numbers
+do not prove the ages of untimed services. An owned fixture compiler
+overlapped earlier intervals; those intervals are excluded from timing
+comparisons. No browser/GPU failure is reported, and its browser/server closed.
+The preceding `61df479` Build workflow passes.
+
+Additional opt-in counters sample the APU line after a handler returns:
+`level-checks`, `level-after`, and `claimed-level-after`. A short actual-browser
+boot/menu check (`irq-level-smoke`) records 12 claimed services, six with the
+line still asserted at that observation, without browser/GPU failures. This
+can include a new assertion; it does not establish uninterrupted line level
+across a service. Nevertheless, the worker previously serviced the line only
+once before returning to its timer/event wait. A retained level does not
+require a fresh edge to request service; see the level-triggered discussion
+in the [Intel 8259A datasheet](https://flint.cs.yale.edu/cs422/readings/hardware/8259A.pdf).
+
+The worker now rechecks the line and allows up to four services in its APU
+slot. It stops when the line clears or the handler is declined/uncallable.
+The title still owns register acknowledgements; the bridge does not clear
+device state. The existing vblank → APU → DPC order, guest priorities,
+64 ms catch-up cap and PCM buffering remain unchanged. Four services bound
+an interrupt storm before DPC/guest work resumes. Profiling remains opt-in;
+its post-service callback performs no extra line reads or clock queries when
+disabled.
+
+The actual service helper is extracted into the existing Wasm/native IRQ
+fixture. It verifies two services without a new edge before returning,
+single-service clear, the four-service bound across repeated passes,
+declined/uncallable handlers, inactive/absent devices and disabled-profile
+clock overhead. Counter checks cover high/low/absent line callbacks, claimed
+classification and report reset. Wasm and native ASAN/UBSAN fixtures, full
+Release Web game link and native kernel build pass. A fresh pinned patch
+application and reverse check pass for all 98 runtime files; the submodule
+pin remains unchanged.
+
+The final candidate's `irq-level-service-retail` run again verifies Arizona
+at New Orleans and D. Green/J. Haslett, then captures intro, kickoff and
+active plays. DSP, APU and IRQ profiles are enabled, optional audio-clock
+wakes are off, and no local build/benchmark competes with the capture.
+
+| Approximately 60-second window | Five-second FPS averages | Missing audio | Front-end waits / total / maximum | Resynchronizations |
+| --- | --- | ---: | ---: | ---: |
+| Intro into opening play | 29.1–30.1 | 0 frames | 17 / 2.7 ms / 0.5 ms | 0 |
+| First active segment | 29.1–30.1 | 0 frames | 221 / 41.3 ms / 1.6 ms | 0 |
+| Following active segment | 25.6–30.1 | 0 frames | 271 / 46.2 ms / 1.7 ms | 0 |
+
+Audio counters are subtracted at each actual checkpoint; the FPS/scheduling
+aggregate edges can straddle those boundaries. The whole run still records
+two affected startup blocks, 256 missing frames (5.3 ms), before the first
+checkpoint. Each measured interval has 12 FPS and 12 scheduling windows.
+The two active segments report 1,499.9 APU frames per second (target 1,500).
+Ordinary wake lateness still reaches 21.9 ms, while long front-end waits and
+resynchronizations do not recur in this capture. Together with direct
+post-service line observations and the retained-level regression, this
+supports retaining the bounded-service fix. Different play sequences and
+profiling prevent claiming a causal whole-game FPS gain or universal audio
+continuity from the comparison.
+
+Checked frames show players, referees, sideline staff, stadium/crowd and
+readable offense/score/down overlays. No browser/GPU failure is reported.
+Exact artifact/patch hashes, images, logs and checkpoint summaries remain
+under the run directory. Its browser and owned server closed. Broader
+stadium/staff/mode/reference fidelity, default DSP parity, uninterrupted
+whole-game audio and the 30 FPS floor remain unfinished.

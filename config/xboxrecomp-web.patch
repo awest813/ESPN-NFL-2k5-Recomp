@@ -28700,7 +28700,46 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 
  static int kernel_raise_interrupt(uint32_t vector)
  {
-@@ -2821,6 +2822,8 @@
+@@ -2449,6 +2450,38 @@
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
+     fn();
+     return (int)(g_eax & 1u);
++}
++
++/* An asserted level can require another service without a new rising edge.
++ * Give it a bounded number of attempts before returning to DPC/guest work.
++ * Do not retry an absent or declined handler, and never clear device state
++ * here: the title's ISR owns the acknowledgement. */
++static unsigned kernel_service_apu_interrupt(const BridgeIrqTimes *first)
++{
++    static unsigned n;
++    unsigned calls=0;
++    while(calls<4) {
++        LONGLONG notification=bridge_irq_profile_take();
++        if(!g_xbox_apu_irq_line || !g_xbox_apu_irq_line()) {
++            bridge_irq_profile_discard(notification);
++            break;
++        }
++        BridgeIrqTimes times=*first;
++        if(calls) {
++            int64_t began=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
++            times=(BridgeIrqTimes){began,began,began};
++        }
++        int r=kernel_raise_interrupt(5);
++        int64_t completed=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
++        bridge_irq_profile_record(notification,&times,completed,r);
++        bridge_irq_profile_level_after(r,g_xbox_apu_irq_line);
++        calls++;
++        if(n++<5 || n%1000==0)
++            fprintf(stderr,"  [APU] interrupt #%u -> ISR %s\n",n,
++                    r<0?"not callable":r?"claimed it":"declined it");
++        if(r<=0)break;
++    }
++    return calls;
+ }
+
+ /* The GPU's vertical blank, delivered rather than merely enabled.
+@@ -2821,6 +2854,8 @@
       * elsewhere -- one DPC queue, not two). Started unconditionally from
       * xbox_kernel_bridge_init. */
      while (InterlockedCompareExchange(&g_kernel_timer_running, 0, 0)) {
@@ -28709,7 +28748,7 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
          /* Woken early when the APU raises its interrupt (xbox_kernel_irq_wake). */
          /* ...and at the next vblank deadline, not at a 10 ms poll. Polled,
           * vblanks landed 10 or 20 ms apart (deadline 16.7 seen at 20, 33.3
-@@ -2856,26 +2859,34 @@
+@@ -2856,26 +2891,19 @@
          }
          { static int named; if (!named && xbox_ggl_enabled()) { named = 1; fprintf(stderr, "  [GGL] timer/DPC thread %lu\n", GetCurrentThreadId()); } }
          xbox_ggl_set_priority(100);  /* ISRs/DPCs preempt threads, as on hardware */
@@ -28721,24 +28760,21 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
          }
 +        irq_times.locked=bridge_irq_profile_stamp(IRQ_PROFILE_VBLANK);
          kernel_vblank_tick();  /* the GPU's frame clock */
-+        irq_times.isr_begin=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
-         {
-             /* The APU's interrupt (vector 5: DirectSound's ISR, NFL 2K5
-              * 0x44CB6E). Raised while the emulated APU holds its line; the ISR
-              * acknowledges through NV_PAPU_ISTS, which drops it. */
-             extern int (*g_xbox_apu_irq_line)(void);
-             static unsigned n;
-+            LONGLONG notification=bridge_irq_profile_take();
-             if (g_xbox_apu_irq_line && g_xbox_apu_irq_line()) {
-                 int r = kernel_raise_interrupt(5);
-+                int64_t completed=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
-+                bridge_irq_profile_record(notification,&irq_times,completed,r);
-                 if (n++ < 5 || n % 1000 == 0)
-                     fprintf(stderr, "  [APU] interrupt #%u -> ISR %s\n", n,
-                             r < 0 ? "not callable" : r ? "claimed it" : "declined it");
+-        {
+-            /* The APU's interrupt (vector 5: DirectSound's ISR, NFL 2K5
+-             * 0x44CB6E). Raised while the emulated APU holds its line; the ISR
+-             * acknowledges through NV_PAPU_ISTS, which drops it. */
+-            extern int (*g_xbox_apu_irq_line)(void);
+-            static unsigned n;
+-            if (g_xbox_apu_irq_line && g_xbox_apu_irq_line()) {
+-                int r = kernel_raise_interrupt(5);
+-                if (n++ < 5 || n % 1000 == 0)
+-                    fprintf(stderr, "  [APU] interrupt #%u -> ISR %s\n", n,
+-                            r < 0 ? "not callable" : r ? "claimed it" : "declined it");
 -            }
-+            }else bridge_irq_profile_discard(notification);
-         }
+-        }
++        irq_times.isr_begin=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
++        kernel_service_apu_interrupt(&irq_times);
 +        int64_t dpc_begin=bridge_irq_profile_stamp(IRQ_PROFILE_DPC);
          xbox_bridge_drain_guest_dpcs();
 +        bridge_irq_profile_finish(dpc_begin);
@@ -28747,10 +28783,10 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
      return 0;
 diff --git a/src/kernel/irq_profile.h b/src/kernel/irq_profile.h
 new file mode 100644
-index 0000000..bdb0b56
+index 0000000..19351b0
 --- /dev/null
 +++ b/src/kernel/irq_profile.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,121 @@
 +/* Optional signal-to-service timing for the shared IRQ/DPC worker.
 + * Win32-compatible primitives must already be declared by the including TU.
 + * This records coalesced notifications, not hardware line-assertion duration.
@@ -28767,6 +28803,7 @@ index 0000000..bdb0b56
 +typedef struct {
 +    int started;int64_t since;
 +    unsigned calls,samples,missing,discarded,uncallable,declined;
++    unsigned level_checks,level_after,claimed_level_after;
 +    int64_t age,prelock,ggl,vblank,isr,max_isr,max_dpc;
 +    unsigned raised_stage;
 +} BridgeIrqStats;
@@ -28844,6 +28881,16 @@ index 0000000..bdb0b56
 +static void bridge_irq_profile_discard(LONGLONG token) {
 +    if(token && bridge_irq_profile_enabled())s_irq_profile_stats.discarded++;
 +}
++/* Sample the line after a service returns. A retained level is distinct from
++ * a missing notification timestamp; this may also observe a new assertion. */
++static void bridge_irq_profile_level_after(int result,int (*line)(void)) {
++    if(!bridge_irq_profile_enabled() || !line)return;
++    s_irq_profile_stats.level_checks++;
++    if(line()) {
++        s_irq_profile_stats.level_after++;
++        if(result>0)s_irq_profile_stats.claimed_level_after++;
++    }
++}
 +static void bridge_irq_profile_finish(int64_t begin) {
 +    if(!bridge_irq_profile_enabled())return;
 +    int64_t now=bridge_irq_profile_stamp(IRQ_PROFILE_OTHER);
@@ -28854,10 +28901,11 @@ index 0000000..bdb0b56
 +    static const char *names[]={"wait","ggl","vblank","isr","dpc","other"};
 +    unsigned phase=s->raised_stage<6?s->raised_stage:IRQ_PROFILE_OTHER;
 +    LONG coalesced=InterlockedExchange(&s_irq_profile_coalesced,0);
-+    fprintf(stderr,"[IRQ-PROFILE] calls=%u samples=%u missing=%u discarded=%u coalesced=%ld uncallable=%u declined=%u max-age=%.3fms prelock=%.3fms ggl=%.3fms vblank=%.3fms isr=%.3fms raised=%s max-isr=%.3fms max-dpc=%.3fms\n",
++    fprintf(stderr,"[IRQ-PROFILE] calls=%u samples=%u missing=%u discarded=%u coalesced=%ld uncallable=%u declined=%u max-age=%.3fms prelock=%.3fms ggl=%.3fms vblank=%.3fms isr=%.3fms raised=%s max-isr=%.3fms max-dpc=%.3fms level-checks=%u level-after=%u claimed-level-after=%u\n",
 +        s->calls,s->samples,s->missing,s->discarded,(long)coalesced,s->uncallable,s->declined,
 +        s->age/1000.0,s->prelock/1000.0,s->ggl/1000.0,s->vblank/1000.0,s->isr/1000.0,
-+        names[phase],s->max_isr/1000.0,s->max_dpc/1000.0);
++        names[phase],s->max_isr/1000.0,s->max_dpc/1000.0,
++        s->level_checks,s->level_after,s->claimed_level_after);
 +    memset(s,0,sizeof *s);s->started=1;s->since=now;
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/wg_uniform_cache.h b/src/kernel/sdlgpu/webgpu/wg_uniform_cache.h
