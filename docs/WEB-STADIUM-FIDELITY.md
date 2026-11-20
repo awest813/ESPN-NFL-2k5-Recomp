@@ -3521,3 +3521,38 @@ under `build-web-tests/controlled-quickgame-setup`; test/build logs use the
 `scripted-input` prefix. Owned browser and server were closed. Prior `7722d12`
 Build/Pages and `a417140` Build workflows have passed. Broader fidelity,
 continuous audio, mode coverage and performance remain unfinished.
+
+### Fixed-matchup worker profile (2026-11-20)
+
+A second explicitly selected Arizona/New Orleans run records 20 worker CPU
+profiles plus the page at a 4 ms sampling interval, approximately 150–240
+seconds after browser setup. Two earlier worker sessions expire before the
+capture and remain identified in target metadata. Exact served artifact,
+symbol-map and patch hashes are retained alongside the profiles in
+`build-web-tests/controlled-gameplay-cpu`. The owned browser and server close
+normally. No browser/GPU failure is reported.
+
+Checked frames show the intro, sideline staff, kickoff formation and opening
+action. The sampled period spans intro through kickoff; it is not a capture
+of the later first drive that fell to 18.6 FPS in the unprofiled run. After
+150 seconds, this profiled run's 22 five-second averages range from 14.2 to
+30.1 FPS. Profiling perturbs execution, so these values must not be presented
+as a regression against the preceding unprofiled run.
+
+After filtering identifiable futex/condition/mutex wait stacks, the GPU
+executor has 50.4 seconds of sample weight, including 23.7 seconds attributed
+to `sg_texture_for_stage` itself and 3.5 seconds to vertex attribute decoding.
+The APU worker has 49.4 seconds, including 34.8 seconds in `dsp_run` and its
+callees; the parallel-move `emu_pm_5` accounts for 9.6 seconds itself. The
+WebGPU driver worker has 14.2 seconds after the same filter, including 7.3
+seconds in `writeBuffer`. These weights are wall-stack samples, not exclusive
+CPU measurements, and inlining obscures some internal attribution.
+
+The acknowledgement worker again mostly samples clock calls/yielding. The
+timer worker again exposes only one `timer_thread` frame for almost the entire
+interval, without its wait children; do not infer that it consumes a full CPU.
+The profile supports investigating texture preparation, DSP execution and
+buffer uploads. It does not isolate the cause of the later drive's correlated
+audio/FPS collapse. A later gameplay-only interval and APU stage/scheduling
+measurements remain necessary before changing synchronization or DSP behavior.
+The `cac411d` Build workflow passed; its Pages deployment remains in progress.
