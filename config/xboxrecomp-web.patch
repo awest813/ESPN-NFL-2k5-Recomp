@@ -2006,7 +2006,32 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      x->z = O[0][2];
      x->w = O[0][3];
      x->w = vp_clamp_w(x->w);
-@@ -3012,13 +3425,199 @@
+@@ -2927,6 +3340,10 @@
+     return x;
+ }
+
++static int vp_integer_d16(void) {
++    return (s_gpu.format & 0xF0u) == 0x10u && !(s_vp.control0 & 0x1000u);
++}
++
+ /* Depth buffer: host-side, one float per pixel of the current surface.
+  * Cleared by CLEAR_SURFACE's Z bit. */
+ #define ZB_W 1024
+@@ -2946,10 +3363,10 @@
+ }
+
+ /* Depth (CLEAR_SURFACE bit 0) and/or stencil (bit 1), inside the clear
+- * rectangle only. The clear value is Z24S8: depth in the top 24 bits, in the
+- * units the shaders scale oPos.z to; stencil in the low 8. */
++ * rectangle only. Integer Z16 takes depth from the low 16 bits; Z24S8 takes
++ * depth from the top 24 bits and stencil from the low 8. */
+ static void zbuf_clear_bits(uint32_t param) {
+-    float z = (float) (s_vp.zclear >> 8);
++    float z = (float) (vp_integer_d16() ? s_vp.zclear & 0xFFFFu : s_vp.zclear >> 8);
+     uint8_t st = (uint8_t) (s_vp.zclear & 0xFF);
+     uint32_t x0, y0, x1, y1, x, y;
+     clear_rect(&x0, &y0, &x1, &y1);
+@@ -3012,13 +3429,199 @@
      }
  }
 
@@ -2031,17 +2056,17 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +    size_t zi=(size_t)y*ZB_W+(size_t)x;
 +    float *zp=&s_zbuf[zi];
 +    uint8_t *sp=&s_sbuf[zi];
-+    /* Integer D24 truncates in Xbox depth units before comparison/storage.
-+     * Other formats retain their separate, still incomplete conversion path. */
-+    if (vp_integer_d24()) {
++    /* Integer depth truncates in Xbox units before comparison/storage. */
++    if (vp_integer_d24() || vp_integer_d16()) {
++        float limit=vp_integer_d16()?65535.0f:16777215.0f;
 +        int ranged=s_vp.clip_max>s_vp.clip_min;
 +        float minimum=ranged?s_vp.clip_min:0.0f;
-+        float maximum=ranged?s_vp.clip_max:16777215.0f;
++        float maximum=ranged?s_vp.clip_max:limit;
 +        if(((s_vp.zminmax>>4)&15u)==0 && (z<minimum || z>maximum))return 0;
 +        if(z<minimum)z=minimum;
 +        if(z>maximum)z=maximum;
 +        if(z<0.0f)z=0.0f;
-+        if(z>16777215.0f)z=16777215.0f;
++        if(z>limit)z=limit;
 +        z=floorf(z);
 +    }
 +    if (s_vp.stencil_test &&
@@ -2207,7 +2232,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3656,15 @@
+@@ -3057,26 +3660,15 @@
          }
          return;
      }
@@ -2237,7 +2262,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3091,6 +3679,12 @@
+@@ -3091,6 +3683,12 @@
      maxx = (int) ceilf(fmaxf(a->x, fmaxf(b->x, c->x)));
      miny = (int) floorf(fminf(a->y, fminf(b->y, c->y)));
      maxy = (int) ceilf(fmaxf(a->y, fmaxf(b->y, c->y)));
@@ -2250,7 +2275,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (minx < (int) s_gpu.clip_x) minx = (int) s_gpu.clip_x;
      if (miny < (int) s_gpu.clip_y) miny = (int) s_gpu.clip_y;
      if (maxx > (int) (s_gpu.clip_x + s_gpu.clip_w)) maxx = (int) (s_gpu.clip_x + s_gpu.clip_w);
-@@ -3116,38 +3710,32 @@
+@@ -3116,38 +3714,32 @@
              float la, lb, lc, pa, pb, pc, iw, z;
              uint32_t argb, k;
              float col[4], spec[4], fog;
@@ -2276,7 +2301,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 -                                    *sp & s_vp.stencil_fmask)) {
 -                    stencil_apply(sp, s_vp.op_fail);
 -                    continue;
-+            if (vp_integer_d24()) {
++            if (vp_integer_d24() || vp_integer_d16()) {
 +                if (s_vp.control0 & 0x10000u) {
 +                    /* Screen-linear 1/W, anchored at the original vertex W.
 +                     * This also preserves a constant W at the D24 maximum. */
@@ -2309,7 +2334,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3745,11 @@
+@@ -3157,6 +3749,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -2321,7 +2346,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3761,12 @@
+@@ -3168,9 +3765,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -2335,7 +2360,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3774,54 @@
+@@ -3178,26 +3778,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -2394,7 +2419,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,11 +3856,19 @@
+@@ -3232,11 +3860,19 @@
                      }
                  }
              }
@@ -2414,7 +2439,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void xf_lerp(XfVert *o, const XfVert *p, const XfVert *q, float t) {
-@@ -3253,7 +3885,7 @@
+@@ -3253,7 +3889,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -2423,7 +2448,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3894,34 @@
+@@ -3262,32 +3898,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -2470,7 +2495,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,76 +3968,161 @@
+@@ -3334,76 +3972,161 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -2653,7 +2678,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Batches drawn through a vertex program (3D) since the last present: a
-@@ -3424,7 +4143,8 @@
+@@ -3424,7 +4147,8 @@
      s_vp.batches++;
      if (s_gpu.tex.valid)
          note_texture_use();
@@ -2663,7 +2688,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Count constant arrays once per batch, never from the per-vertex fetch path.
-@@ -3605,7 +4325,7 @@
+@@ -3605,7 +4329,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -2672,7 +2697,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4563,7 @@
+@@ -3843,7 +4567,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -2681,7 +2706,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4586,7 @@
+@@ -3866,7 +4590,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -2690,7 +2715,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +5025,7 @@
+@@ -4305,7 +5029,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -2699,7 +2724,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5476,7 @@
+@@ -4756,7 +5480,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -2708,7 +2733,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5594,7 @@
+@@ -4874,7 +5598,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2717,7 +2742,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5602,7 @@
+@@ -4882,7 +5606,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -2726,7 +2751,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5654,7 @@
+@@ -4934,7 +5658,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2735,7 +2760,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5662,7 @@
+@@ -4942,7 +5666,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
@@ -2755,15 +2780,21 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      SgOwner owner; /* applies to colour only, see below */
      /* Depth and stencil live only on the GPU. In software they are host
       * arrays (s_zbuf, s_sbuf), never guest RAM, so nothing ever downloads
-@@ -42,7 +43,7 @@
+@@ -42,10 +43,10 @@
      uint32_t last_use; /* s_sg.tick when last bound, for eviction */
  } SgSurface;
 
 -#define SG_MAX_PIPELINES 1024
+-
+-/* XfVert z and the depth clear value are in Z24 units: s_zbuf holds
+- * 0..2^24-1 (zbuf_clear_bits). The GPU stores z / SG_DEPTH_MAX. */
 +#define SG_MAX_PIPELINES 8192
++
++/* Legacy/default and integer Z24 native range. Integer Z16 uses 0..65535;
++ * its projection and normalized storage are selected by the shade flags. */
+ #define SG_DEPTH_MAX 16777215.0f
 
- /* XfVert z and the depth clear value are in Z24 units: s_zbuf holds
-  * 0..2^24-1 (zbuf_clear_bits). The GPU stores z / SG_DEPTH_MAX. */
+ /* One vertex of a flat 2D triangle (shaders/flat2d.vert). */
 @@ -98,6 +99,7 @@
      int draw_ready; /* shaders loaded: draws can be taken */
      SDL_GPUShader *flat2d_vs, *flat2d_fs;
@@ -5139,7 +5170,22 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
      SDL_ReleaseGPUFence(s_sg.dev, done);
 
      src = (const uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.download, false);
-@@ -235,7 +272,10 @@
+@@ -183,7 +220,13 @@
+     };
+     if (clear_depth) {
+         t.load_op = SDL_GPU_LOADOP_CLEAR;
+-        t.clear_depth = (float) (s_vp.zclear >> 8) / SG_DEPTH_MAX; /* as zbuf_clear_bits */
++        if (vp_integer_d16()) {
++            double exact=(double)(s_vp.zclear & 0xFFFFu)/65535.0;
++            t.clear_depth=(float)exact;
++            if((double)t.clear_depth<exact)t.clear_depth=nextafterf(t.clear_depth,INFINITY);
++        } else {
++            t.clear_depth = (float) (s_vp.zclear >> 8) / SG_DEPTH_MAX;
++        }
+     }
+     if (clear_stencil) {
+         t.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+@@ -235,7 +278,10 @@
          return 0; /* software clears instead */
      }
      SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &color, 1, &depth));
@@ -6261,7 +6307,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +228,1457 @@
+@@ -231,34 +228,1514 @@
      return bad == 0;
  }
 
@@ -6397,6 +6443,61 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +          "software D24 triangle W=%u expected %u: %08X depth %g",(s_vp.control0>>16)&1u,integer,pixel,s_zbuf[y*ZB_W+x]);
 +    sg_surface_current()->owner=SG_OWNER_GUEST;
 +}
++static void test_integer_d16_depth(void)
++{
++    unsigned char saved_vp[sizeof s_vp],saved_comb[sizeof s_comb];
++    memcpy(saved_vp,&s_vp,sizeof s_vp);memcpy(saved_comb,&s_comb,sizeof s_comb);
++    uint32_t old_format=s_gpu.format,old_mask=g_color_mask,old_blend=s_gpu.blend;Texture old_texture=s_gpu.tex;
++    unsigned old_alpha=s_gpu.alpha_test;s_gpu.alpha_test=0;s_gpu.tex.valid=0;s_gpu.blend=0;
++    memset(&s_comb,0,sizeof s_comb);s_vp.stencil_test=0;s_vp.control0=0;s_vp.cull=0;
++    target(0x200000,16,16,64);s_gpu.format=0x118;
++    s_vp.clip_min=0;s_vp.clip_max=65535;s_vp.zminmax=0;
++    s_vp.depth_test=s_vp.depth_mask=1;s_vp.poly_offset_fill=0;
++    s_vp.color_mask=g_color_mask=0x01010101u;
++    const size_t zi=2*ZB_W+2;
++    for(unsigned n=0;n<sizeof depth16_quantization_cases/sizeof *depth16_quantization_cases;n++) {
++        const DepthQuantizationCase *c=&depth16_quantization_cases[n];
++        for(unsigned function=0;function<8;function++)for(unsigned above=0;above<2;above++) {
++            unsigned stored=c->integer+above;if(stored>65535)continue;
++            s_vp.depth_func=0x200+function;s_zbuf[zi]=(float)stored;
++            int expected=depth_compare_reference(function,c->integer,stored);
++            int result=vp_fragment_tests(2,2,c->input);
++            CHECK(result==expected && s_zbuf[zi]==(float)(expected?c->integer:stored),
++                "software integer D16 case %u func %u stored %u: pass %d depth %g",n,function,stored,result,s_zbuf[zi]);
++        }
++        s_vp.zclear=0xA55A0000u|c->integer;
++        zbuf_clear_bits(1);
++        CHECK(s_zbuf[zi]==(float)c->integer,"D16 clear must use low 16 bits case %u: %g",n,s_zbuf[zi]);
++        SgSurface probe={0};SDL_GPUDepthStencilTargetInfo clear=sg_depth_target(&probe,1,0);
++        CHECK(clear.clear_depth==depth16_clear_reference(c->integer),"D16 normalized clear case %u: %.9g",n,clear.clear_depth);
++    }
++    SgXfVertex vertices[3]={ {.pos={0,0,0,1},.col={0,1,0,1}},
++        {.pos={16,0,0,1},.col={0,1,0,1}}, {.pos={0,16,0,1},.col={0,1,0,1}} };
++    SgTextureUse textures[8]={0};s_vp.depth_func=0x202;
++    for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++) {
++        s_vp.control0=w_buffer<<16;s_vp.zminmax=clip?0:0x10;
++        SgXfViewport view={{16,16},1.0f/sg_depth_projection_range(),0};
++        SgXfShade shade;sg_xf_shade_fill(&shade,0);
++        CHECK((shade.depth[0]&8u)!=0 && !(shade.depth[0]&4u),"D16 uniform encoding missing");
++        CHECK(view.depth_scale==1.0f/65536.0f && shade.depth[1]==0x47800000u,"D16 projection range disagrees");
++        SgVpUniforms vp_uniforms;sg_vp_uniforms_fill(&vp_uniforms,sg_surface_current());
++        CHECK(vp_uniforms.info[2]==65536.0f,"GPU vertex-program D16 projection range disagrees");
++        SgDraw draw={.surface=sg_surface_current(),.pipe=sg_pipeline_current(1,0),
++            .vertices=vertices,.vertex_bytes=sizeof vertices,.vertex_count=3,.tex=textures,.tex_count=8,
++            .vs_uniform=&view,.vs_uniform_size=sizeof view,.fs_uniform=&shade,.fs_uniform_size=sizeof shade};
++        for(unsigned n=0;n<sizeof depth16_quantization_cases/sizeof *depth16_quantization_cases;n++) {
++            const DepthQuantizationCase *c=&depth16_quantization_cases[n];if(w_buffer && c->input==0)continue;
++            for(unsigned v=0;v<3;v++){vertices[v].pos[2]=w_buffer?0.5f:c->input;vertices[v].pos[3]=w_buffer?c->input:1;}
++            s_gpu.clear_color=0xFF000000u;s_vp.zclear=c->integer;
++            CHECK(sg_clear(0xF1) && sg_queue_draw(&draw),"D16 GPU draw rejected");download_frame();
++            uint32_t pixel;memcpy(&pixel,g_ram+0x200000+2*64+2*4,4);
++            CHECK(pixel==0xFF00FF00u,"native integer D16 case %u W=%u clip=%u: %08X",n,w_buffer,clip,pixel);
++            check_software_d24_triangle(vertices,c->integer,2,2);
++        }
++    }
++    s_gpu.format=old_format;g_color_mask=old_mask;s_gpu.blend=old_blend;s_gpu.tex=old_texture;s_gpu.alpha_test=old_alpha;
++    memcpy(&s_vp,saved_vp,sizeof s_vp);memcpy(&s_comb,saved_comb,sizeof s_comb);
++}
 +static void test_integer_d24_depth(void)
 +{
 +    unsigned char saved_vp[sizeof s_vp],saved_comb[sizeof s_comb];
@@ -6431,10 +6532,10 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_vp.stencil_test=0;s_vp.clip_min=0;s_vp.clip_max=16777215;
 +    for(unsigned mode=0;mode<3;mode++) {
 +        s_gpu.format=mode==0?0x108:mode==1?0x118:0x128;
-+        s_vp.control0=mode==2?0x1000:0;s_vp.depth_func=0x202;s_zbuf[zi]=1.75f;
++        s_vp.control0=mode==0?0:0x1000;s_vp.depth_func=0x202;s_zbuf[zi]=1.75f;
 +        CHECK(vp_fragment_tests(2,2,1.75f) && s_zbuf[zi]==1.75f,"D24 quantization escaped format/float guard %u",mode);
 +        SgXfShade shade;sg_xf_shade_fill(&shade,0);
-+        CHECK(!(shade.depth[0]&4u),"non-integer-D24 uniform enabled quantization %u",mode);
++        CHECK(!(shade.depth[0]&12u),"floating/invalid format enabled integer quantization %u",mode);
 +    }
 +    target(0x200000,16,16,64);s_gpu.format=0x128;s_vp.control0=0;
 +    s_vp.depth_func=0x202;s_vp.depth_test=s_vp.depth_mask=1;s_vp.clip_min=0;s_vp.clip_max=16777215;
@@ -7473,10 +7574,11 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    s_vp.depth_test=s_vp.depth_mask=1;s_vp.stencil_test=s_vp.poly_offset_fill=0;
 +    s_vp.depth_func=0x202;s_vp.cull=0;s_vp.color_mask=g_color_mask=0x01010101u;
 +    const unsigned probes[]={20,32,44};
-+    for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
++    for(unsigned bits=16;bits<=24;bits+=8)for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
 +    for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++)
 +    for(unsigned offset=0;offset<2;offset++) {
-+        const DepthLineCase *c=&depth_line_cases[n];
++        DepthLineCase adjusted=depth_line_case(n,bits);const DepthLineCase *c=&adjusted;
++        s_gpu.format=bits==16?0x118:0x128;
 +        s_vp.poly_offset_fill=offset;s_vp.poly_offset_bias=32;s_vp.poly_offset_scale=16;
 +        s_vp.control0=w_buffer<<16;s_vp.zminmax=clip?0:0x10;
 +        s_vp.clip_min=c->minimum;s_vp.clip_max=c->maximum;
@@ -7488,15 +7590,15 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        for(unsigned p=0;p<3;p++) {
 +            unsigned x=depth_line_probe_x(c,probes[p]),y=depth_line_probe_y(c,probes[p]);int visible;unsigned integer=depth_line_reference(c,probes[p],w_buffer,clip,&visible);
 +            uint32_t expected=visible?0xFF00FF00u:0xFF000000u;
-+            s_gpu.clear_color=0xFF000000u;s_vp.zclear=integer<<8;
++            s_gpu.clear_color=0xFF000000u;s_vp.zclear=bits==16?integer:integer<<8;
 +            CHECK(sg_clear(0xF3) && sg_draw_batch(0),"integer D24 line GPU draw rejected");download_frame();
 +            uint32_t pixel;memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
-+            CHECK(pixel==expected,"D24 GPU line case %u W=%u clip=%u fill-offset=%u x=%u: %08X expected %08X",n,w_buffer,clip,offset,x,pixel,expected);
++            CHECK(pixel==expected,"D%u GPU line case %u W=%u clip=%u fill-offset=%u x=%u: %08X expected %08X",bits,n,w_buffer,clip,offset,x,pixel,expected);
 +            memcpy(g_ram+0x400000+y*256+x*4,&s_gpu.clear_color,4);s_zbuf[y*ZB_W+x]=(float)integer;
 +            surface_stage_reset();batch_lines_xf(raster_line_xf_cb,NULL);
 +            CHECK(surface_stage_flush(g_ram),"D24 software line flush");surface_stage_reset();
 +            memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
-+            CHECK(pixel==expected,"D24 software line case %u W=%u clip=%u fill-offset=%u x=%u: %08X expected %08X",n,w_buffer,clip,offset,x,pixel,expected);
++            CHECK(pixel==expected,"D%u software line case %u W=%u clip=%u fill-offset=%u x=%u: %08X expected %08X",bits,n,w_buffer,clip,offset,x,pixel,expected);
 +            sg_surface_current()->owner=SG_OWNER_GUEST;
 +        }
 +    }
@@ -7702,6 +7804,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    test_passthru_clamp();
 +    test_alpha_depth_order();
 +    test_integer_d24_depth();
++    test_integer_d16_depth();
 +    test_texture_alpha_kill();
 +    test_texture_clip_plane();
 +    test_bump_environment();
@@ -7723,7 +7826,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1687,25 @@
+@@ -267,10 +1744,25 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -7752,7 +7855,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1743,48 @@
+@@ -308,12 +1800,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -7802,7 +7905,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1793,40 @@
+@@ -322,6 +1850,40 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -29428,10 +29531,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.vert b/src/kernel/sdlgpu/shaders/xf.ve
 +}
 diff --git a/tests/sdlgpu_web/depth_quantization_reference.h b/tests/sdlgpu_web/depth_quantization_reference.h
 new file mode 100644
-index 0000000..001344f
+index 0000000..5579139
 --- /dev/null
 +++ b/tests/sdlgpu_web/depth_quantization_reference.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,130 @@
 +/* Integer D24 depth truncates in native Xbox units before comparison.
 + * Expected integers are explicit, rather than calculated by the shader's
 + * conversion. Clear values use independent double-precision division and
@@ -29445,6 +29548,16 @@ index 0000000..001344f
 +    {1023.75f,1023}, {65535.5f,65535}, {1048575.75f,1048575},
 +    {8388607.5f,8388607}, {16777214.0f,16777214}, {16777215.0f,16777215},
 +};
++static const DepthQuantizationCase depth16_quantization_cases[] = {
++    {0,0},{0.25f,0},{0.75f,0},{1.25f,1},{1.75f,1},
++    {255.75f,255},{256.25f,256},{32767.75f,32767},{32768.5f,32768},
++    {65534.75f,65534},{65535,65535},
++};
++static float depth16_clear_reference(unsigned value) {
++    double exact=(double)value/65535.0;
++    float normalized=(float)exact;
++    return (double)normalized<exact?nextafterf(normalized,INFINITY):normalized;
++}
 +static float depth_clear_reference(unsigned value) {
 +    double exact=(double)value/16777215.0;
 +    float normalized=(float)exact;
@@ -29485,6 +29598,14 @@ index 0000000..001344f
 +    {{40.75f,16.25f},{56.5f,8.5f},{8.75f,2.25f},0,16777215},
 +    {{16.25f,40.75f},{8.5f,56.5f},{16777215,16777215},0,16777215},
 +};
++static DepthLineCase depth_line_case(unsigned index,unsigned bits) {
++    DepthLineCase c=depth_line_cases[index];
++    if(bits==16) {
++        for(unsigned k=0;k<2;k++)if(c.depth[k]>=16777214.0f)c.depth[k]=65534.0f+(c.depth[k]-16777214.0f);
++        if(c.maximum==16777215.0f)c.maximum=65535.0f;
++    }
++    return c;
++}
 +/* Probe index denotes a pixel on the dominant axis, including vertical lines. */
 +static double depth_line_probe_t(const DepthLineCase *c,unsigned probe) {
 +    const float *axis=fabs(c->x[1]-c->x[0])>=fabs(c->y[1]-c->y[0])?c->x:c->y;
@@ -29943,7 +30064,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 -    uint32_t rect[4]; /* stage coordinates in texels (linear texture) */
 -    uint32_t depth[4];
 +    uint32_t rect[4]; /* bit 0 texels; 1/2 border; 8..11 filters; 16..19 levels; 28 clamps valid */
-+    uint32_t depth[4]; /* flags: W buffer=1, depth clip=2, integer D24=4; max/min/max */
++    uint32_t depth[4]; /* flags: W=1, clip=2, integer D24=4, integer D16=8; range/min/max */
 +    float depth_offset[4];
 +    uint32_t border[4]; /* ARGB border colour per texture stage */
 +    float bump_mat[3][4], bump_lum[3][4]; /* stages 1..3, column-major matrix / scale,offset */
@@ -30100,9 +30221,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +
  /* The combiner program and per-batch state, for shaders/xf.frag. */
 +static float sg_depth_projection_range(void) {
-+    /* Keep integer-D24 vertex projection and fragment reconstruction exact.
++    /* Keep integer vertex projection and fragment reconstruction exact.
 +     * A float reciprocal of 2^24-1 can map 16777214 to normalized 1.0. */
-+    return vp_integer_d24() ? 16777216.0f : SG_DEPTH_MAX;
++    return vp_integer_d16() ? 65536.0f : vp_integer_d24() ? 16777216.0f : SG_DEPTH_MAX;
 +}
 +
  static void sg_xf_shade_fill(SgXfShade *sh, uint32_t sampled) {
@@ -30163,11 +30284,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          int ranged = s_vp.clip_max > s_vp.clip_min;
          float cmin = ranged ? s_vp.clip_min : 0.0f;
 -        float cmax = ranged ? s_vp.clip_max : zmax;
-+        float cmax = ranged ? s_vp.clip_max : SG_DEPTH_MAX;
++        float cmax = ranged ? s_vp.clip_max : vp_integer_d16() ? 65535.0f : SG_DEPTH_MAX;
          sh->depth[0] = ((s_vp.control0 >> 16) & 1u)
 -                     | ((((s_vp.zminmax >> 4) & 0xFu) == 0) ? 2u : 0u);
 +                     | ((((s_vp.zminmax >> 4) & 0xFu) == 0) ? 2u : 0u)
-+                     | (vp_integer_d24() ? 4u : 0u);
++                     | (vp_integer_d24() ? 4u : vp_integer_d16() ? 8u : 0u);
          memcpy(&sh->depth[1], &zmax, sizeof zmax);
          memcpy(&sh->depth[2], &cmin, sizeof cmin);
          memcpy(&sh->depth[3], &cmax, sizeof cmax);
@@ -30943,7 +31064,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      }
 
      vec4 result;
-@@ -300,18 +430,133 @@
+@@ -300,18 +430,147 @@
      }
  }
 
@@ -30990,6 +31111,20 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +#define LINE_ENDPOINT(i) sh.line_endpoint[i]
 +#endif
 +
++// Encode n/65535 rounded upward to float, independently of GPU reciprocal
++// approximations. Its binary fraction repeats n's 16 bits. The first 24
++// significant bits plus one ULP give ceil-to-f32; endpoints are exact.
++float integer_d16_normalized(float depth) {
++    uint n=uint(depth);
++    if(n==0u)return 0.0;
++    if(n>=65535u)return 1.0;
++    uint leading=uint(findMSB(n));
++    uint repeated=(n<<16u)|n;
++    uint significand=(repeated<<(15u-leading))>>8u;
++    uint bits=((leading+111u)<<23u)|(significand&0x7fffffu);
++    return uintBitsToFloat(bits+1u);
++}
++
  void main()
  {
 +#ifdef NV2A_LINE
@@ -31018,7 +31153,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +    v_t3=LINE_ENDPOINT(6)*weights.x+LINE_ENDPOINT(14)*weights.y;
 +    v_fog=LINE_ENDPOINT(7).x*weights.x+LINE_ENDPOINT(15).x*weights.y;
 +    v_w=1.0/line_inv_w;
-+    float native_line_z = (sh.depth.x & 4u) != 0u
++    float native_line_z = (sh.depth.x & 12u) != 0u
 +        ? fma(line_t, LINE_ENDPOINT(8).z - LINE_ENDPOINT(0).z, LINE_ENDPOINT(0).z)
 +        : mix(LINE_ENDPOINT(0).z, LINE_ENDPOINT(8).z, line_t);
 +    line_z=native_line_z*sh.line_params.x;
@@ -31081,14 +31216,14 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
          c8 = to8(comb_eval(t0, v_col, v_spec, tn));
      } else if (sampled0) {
          // modulate(texel, argb): (t * c + 127) / 255 per channel, in integers.
-@@ -323,10 +568,41 @@
+@@ -323,10 +582,43 @@
      if (sh.alpha.x != 0u && !alpha_pass(c8.a))
          discard;
      out_color = vec4(c8) / 255.0;
 -    float zmax = uintBitsToFloat(sh.depth.y);
 -    float zd = (sh.depth.x & 1u) != 0u ? v_w : gl_FragCoord.z * zmax;
 +    float native_w = v_w;
-+    if (w_buffer && (sh.depth.x & 4u) != 0u) {
++    if (w_buffer && (sh.depth.x & 12u) != 0u) {
 +#ifdef NV2A_LINE
 +        float anchor_w = LINE_ENDPOINT(0).w;
 +        native_w = anchor_w / fma(line_t, anchor_w / LINE_ENDPOINT(8).w - 1.0, 1.0);
@@ -31113,9 +31248,11 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 -    gl_FragDepth = clamp(clamp(zd, cmin, cmax) / zmax, 0.0, 1.0);
 -}
 \ No newline at end of file
-+    float native_max = (sh.depth.x & 4u) != 0u ? 16777215.0 : zmax;
++    float native_max = (sh.depth.x & 8u) != 0u ? 65535.0 : (sh.depth.x & 4u) != 0u ? 16777215.0 : zmax;
 +    float native_depth = clamp(clamp(zd, cmin, cmax), 0.0, native_max);
-+    if ((sh.depth.x & 4u) != 0u) {
++    if ((sh.depth.x & 8u) != 0u) {
++        gl_FragDepth=integer_d16_normalized(floor(native_depth));
++    } else if ((sh.depth.x & 4u) != 0u) {
 +        // Integer D24 truncates after depth bias/clamping. Encode the integer
 +        // without a GPU reciprocal of 16777215, whose rounding differs across
 +        // drivers. Scaling by 2^-24 is exact; the next float represents the
@@ -33179,10 +33316,10 @@ index 0000000..b6d2e75
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..44a9f2f
+index 0000000..9292c3e
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,9473 @@
+@@ -0,0 +1,9681 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -35136,6 +35273,40 @@ index 0000000..44a9f2f
 +    "    return true;\n"
 +    "}\n"
 +    "\n"
++    "fn integer_d16_normalized(depth: f32) -> f32 {\n"
++    "    var depth_1: f32;\n"
++    "    var n_1: u32;\n"
++    "    var leading: u32;\n"
++    "    var repeated: u32;\n"
++    "    var significand: u32;\n"
++    "    var bits: u32;\n"
++    "\n"
++    "    depth_1 = depth;\n"
++    "    let _e72 = depth_1;\n"
++    "    n_1 = u32(_e72);\n"
++    "    let _e75 = n_1;\n"
++    "    if (_e75 == 0u) {\n"
++    "        return 0f;\n"
++    "    }\n"
++    "    let _e79 = n_1;\n"
++    "    if (_e79 >= 65535u) {\n"
++    "        return 1f;\n"
++    "    }\n"
++    "    let _e83 = n_1;\n"
++    "    leading = u32(i32(firstLeadingBit(_e83)));\n"
++    "    let _e88 = n_1;\n"
++    "    let _e91 = n_1;\n"
++    "    repeated = ((_e88 << 16u) | _e91);\n"
++    "    let _e94 = repeated;\n"
++    "    let _e96 = leading;\n"
++    "    significand = ((_e94 << (15u - _e96)) >> 8u);\n"
++    "    let _e102 = leading;\n"
++    "    let _e107 = significand;\n"
++    "    bits = (((_e102 + 111u) << 23u) | (_e107 & 8388607u));\n"
++    "    let _e112 = bits;\n"
++    "    return bitcast<f32>((_e112 + 1u));\n"
++    "}\n"
++    "\n"
 +    "fn main_1() {\n"
 +    "    var zmax: f32;\n"
 +    "    var w_buffer: bool;\n"
@@ -35164,10 +35335,11 @@ index 0000000..44a9f2f
 +    "    var cmin: f32;\n"
 +    "    var cmax: f32;\n"
 +    "    var local_27: f32;\n"
++    "    var local_28: f32;\n"
 +    "    var native_max: f32;\n"
 +    "    var native_depth: f32;\n"
 +    "    var integer_depth: f32;\n"
-+    "    var local_28: f32;\n"
++    "    var local_29: f32;\n"
 +    "\n"
 +    "    let _e70 = sh;\n"
 +    "    zmax = bitcast<f32>(_e70.depth.y);\n"
@@ -35341,7 +35513,7 @@ index 0000000..44a9f2f
 +    "    native_w = _e359;\n"
 +    "    let _e361 = w_buffer;\n"
 +    "    let _e362 = sh;\n"
-+    "    if (_e361 && ((_e362.depth.x & 4u) != 0u)) {\n"
++    "    if (_e361 && ((_e362.depth.x & 12u) != 0u)) {\n"
 +    "        {\n"
 +    "            let _e370 = gl_FragCoord_1;\n"
 +    "            let _e372 = v_depth_anchor_1;\n"
@@ -35401,41 +35573,58 @@ index 0000000..44a9f2f
 +    "        discard;\n"
 +    "    }\n"
 +    "    let _e446 = sh;\n"
-+    "    if ((_e446.depth.x & 4u) != 0u) {\n"
-+    "        local_27 = 16777215f;\n"
++    "    if ((_e446.depth.x & 8u) != 0u) {\n"
++    "        local_28 = 65535f;\n"
 +    "    } else {\n"
-+    "        let _e454 = zmax;\n"
-+    "        local_27 = _e454;\n"
++    "        let _e454 = sh;\n"
++    "        if ((_e454.depth.x & 4u) != 0u) {\n"
++    "            local_27 = 16777215f;\n"
++    "        } else {\n"
++    "            let _e462 = zmax;\n"
++    "            local_27 = _e462;\n"
++    "        }\n"
++    "        let _e464 = local_27;\n"
++    "        local_28 = _e464;\n"
 +    "    }\n"
-+    "    let _e456 = local_27;\n"
-+    "    native_max = _e456;\n"
-+    "    let _e458 = zd;\n"
-+    "    let _e459 = cmin;\n"
-+    "    let _e460 = cmax;\n"
-+    "    let _e463 = native_max;\n"
-+    "    native_depth = clamp(clamp(_e458, _e459, _e460), 0f, _e463);\n"
-+    "    let _e466 = sh;\n"
-+    "    if ((_e466.depth.x & 4u) != 0u) {\n"
++    "    let _e466 = local_28;\n"
++    "    native_max = _e466;\n"
++    "    let _e468 = zd;\n"
++    "    let _e469 = cmin;\n"
++    "    let _e470 = cmax;\n"
++    "    let _e473 = native_max;\n"
++    "    native_depth = clamp(clamp(_e468, _e469, _e470), 0f, _e473);\n"
++    "    let _e476 = sh;\n"
++    "    if ((_e476.depth.x & 8u) != 0u) {\n"
 +    "        {\n"
-+    "            let _e473 = native_depth;\n"
-+    "            integer_depth = floor(_e473);\n"
-+    "            let _e477 = integer_depth;\n"
-+    "            if (_e477 == 0f) {\n"
-+    "                local_28 = 0f;\n"
-+    "            } else {\n"
-+    "                let _e481 = integer_depth;\n"
-+    "                local_28 = bitcast<f32>((bitcast<u32>((_e481 * 0.000000059604645f)) + 1u));\n"
-+    "            }\n"
-+    "            let _e491 = local_28;\n"
-+    "            gl_FragDepth = _e491;\n"
++    "            let _e484 = native_depth;\n"
++    "            let _e486 = integer_d16_normalized(floor(_e484));\n"
++    "            gl_FragDepth = _e486;\n"
 +    "            return;\n"
 +    "        }\n"
 +    "    } else {\n"
-+    "        {\n"
-+    "            let _e492 = native_depth;\n"
-+    "            let _e493 = zmax;\n"
-+    "            gl_FragDepth = (_e492 / _e493);\n"
-+    "            return;\n"
++    "        let _e487 = sh;\n"
++    "        if ((_e487.depth.x & 4u) != 0u) {\n"
++    "            {\n"
++    "                let _e494 = native_depth;\n"
++    "                integer_depth = floor(_e494);\n"
++    "                let _e497 = integer_depth;\n"
++    "                if (_e497 == 0f) {\n"
++    "                    local_29 = 0f;\n"
++    "                } else {\n"
++    "                    let _e501 = integer_depth;\n"
++    "                    local_29 = bitcast<f32>((bitcast<u32>((_e501 * 0.000000059604645f)) + 1u));\n"
++    "                }\n"
++    "                let _e511 = local_29;\n"
++    "                gl_FragDepth = _e511;\n"
++    "                return;\n"
++    "            }\n"
++    "        } else {\n"
++    "            {\n"
++    "                let _e512 = native_depth;\n"
++    "                let _e513 = zmax;\n"
++    "                gl_FragDepth = (_e512 / _e513);\n"
++    "                return;\n"
++    "            }\n"
 +    "        }\n"
 +    "    }\n"
 +    "}\n"
@@ -37339,6 +37528,40 @@ index 0000000..44a9f2f
 +    "    return true;\n"
 +    "}\n"
 +    "\n"
++    "fn integer_d16_normalized(depth: f32) -> f32 {\n"
++    "    var depth_1: f32;\n"
++    "    var n_1: u32;\n"
++    "    var leading: u32;\n"
++    "    var repeated: u32;\n"
++    "    var significand: u32;\n"
++    "    var bits: u32;\n"
++    "\n"
++    "    depth_1 = depth;\n"
++    "    let _e77 = depth_1;\n"
++    "    n_1 = u32(_e77);\n"
++    "    let _e80 = n_1;\n"
++    "    if (_e80 == 0u) {\n"
++    "        return 0f;\n"
++    "    }\n"
++    "    let _e84 = n_1;\n"
++    "    if (_e84 >= 65535u) {\n"
++    "        return 1f;\n"
++    "    }\n"
++    "    let _e88 = n_1;\n"
++    "    leading = u32(i32(firstLeadingBit(_e88)));\n"
++    "    let _e93 = n_1;\n"
++    "    let _e96 = n_1;\n"
++    "    repeated = ((_e93 << 16u) | _e96);\n"
++    "    let _e99 = repeated;\n"
++    "    let _e101 = leading;\n"
++    "    significand = ((_e99 << (15u - _e101)) >> 8u);\n"
++    "    let _e107 = leading;\n"
++    "    let _e112 = significand;\n"
++    "    bits = (((_e107 + 111u) << 23u) | (_e112 & 8388607u));\n"
++    "    let _e117 = bits;\n"
++    "    return bitcast<f32>((_e117 + 1u));\n"
++    "}\n"
++    "\n"
 +    "fn main_1() {\n"
 +    "    var delta_1: vec2<f32>;\n"
 +    "    var point: vec2<f32>;\n"
@@ -37380,10 +37603,11 @@ index 0000000..44a9f2f
 +    "    var cmin: f32;\n"
 +    "    var cmax: f32;\n"
 +    "    var local_29: f32;\n"
++    "    var local_30: f32;\n"
 +    "    var native_max: f32;\n"
 +    "    var native_depth: f32;\n"
 +    "    var integer_depth: f32;\n"
-+    "    var local_30: f32;\n"
++    "    var local_31: f32;\n"
 +    "\n"
 +    "    let _e78 = sh.line_endpoint[8];\n"
 +    "    let _e83 = sh.line_endpoint[0];\n"
@@ -37492,7 +37716,7 @@ index 0000000..44a9f2f
 +    "    let _e350 = line_inv_w;\n"
 +    "    v_w = (1f / _e350);\n"
 +    "    let _e352 = sh;\n"
-+    "    if ((_e352.depth.x & 4u) != 0u) {\n"
++    "    if ((_e352.depth.x & 12u) != 0u) {\n"
 +    "        let _e359 = line_t;\n"
 +    "        let _e363 = sh.line_endpoint[8];\n"
 +    "        let _e368 = sh.line_endpoint[0];\n"
@@ -37685,7 +37909,7 @@ index 0000000..44a9f2f
 +    "    native_w = _e685;\n"
 +    "    let _e687 = w_buffer;\n"
 +    "    let _e688 = sh;\n"
-+    "    if (_e687 && ((_e688.depth.x & 4u) != 0u)) {\n"
++    "    if (_e687 && ((_e688.depth.x & 12u) != 0u)) {\n"
 +    "        {\n"
 +    "            let _e699 = sh.line_endpoint[0];\n"
 +    "            anchor_w = _e699.w;\n"
@@ -37744,41 +37968,58 @@ index 0000000..44a9f2f
 +    "        discard;\n"
 +    "    }\n"
 +    "    let _e776 = sh;\n"
-+    "    if ((_e776.depth.x & 4u) != 0u) {\n"
-+    "        local_29 = 16777215f;\n"
++    "    if ((_e776.depth.x & 8u) != 0u) {\n"
++    "        local_30 = 65535f;\n"
 +    "    } else {\n"
-+    "        let _e784 = zmax;\n"
-+    "        local_29 = _e784;\n"
++    "        let _e784 = sh;\n"
++    "        if ((_e784.depth.x & 4u) != 0u) {\n"
++    "            local_29 = 16777215f;\n"
++    "        } else {\n"
++    "            let _e792 = zmax;\n"
++    "            local_29 = _e792;\n"
++    "        }\n"
++    "        let _e794 = local_29;\n"
++    "        local_30 = _e794;\n"
 +    "    }\n"
-+    "    let _e786 = local_29;\n"
-+    "    native_max = _e786;\n"
-+    "    let _e788 = zd;\n"
-+    "    let _e789 = cmin;\n"
-+    "    let _e790 = cmax;\n"
-+    "    let _e793 = native_max;\n"
-+    "    native_depth = clamp(clamp(_e788, _e789, _e790), 0f, _e793);\n"
-+    "    let _e796 = sh;\n"
-+    "    if ((_e796.depth.x & 4u) != 0u) {\n"
++    "    let _e796 = local_30;\n"
++    "    native_max = _e796;\n"
++    "    let _e798 = zd;\n"
++    "    let _e799 = cmin;\n"
++    "    let _e800 = cmax;\n"
++    "    let _e803 = native_max;\n"
++    "    native_depth = clamp(clamp(_e798, _e799, _e800), 0f, _e803);\n"
++    "    let _e806 = sh;\n"
++    "    if ((_e806.depth.x & 8u) != 0u) {\n"
 +    "        {\n"
-+    "            let _e803 = native_depth;\n"
-+    "            integer_depth = floor(_e803);\n"
-+    "            let _e807 = integer_depth;\n"
-+    "            if (_e807 == 0f) {\n"
-+    "                local_30 = 0f;\n"
-+    "            } else {\n"
-+    "                let _e811 = integer_depth;\n"
-+    "                local_30 = bitcast<f32>((bitcast<u32>((_e811 * 0.000000059604645f)) + 1u));\n"
-+    "            }\n"
-+    "            let _e821 = local_30;\n"
-+    "            gl_FragDepth = _e821;\n"
++    "            let _e814 = native_depth;\n"
++    "            let _e816 = integer_d16_normalized(floor(_e814));\n"
++    "            gl_FragDepth = _e816;\n"
 +    "            return;\n"
 +    "        }\n"
 +    "    } else {\n"
-+    "        {\n"
-+    "            let _e822 = native_depth;\n"
-+    "            let _e823 = zmax;\n"
-+    "            gl_FragDepth = (_e822 / _e823);\n"
-+    "            return;\n"
++    "        let _e817 = sh;\n"
++    "        if ((_e817.depth.x & 4u) != 0u) {\n"
++    "            {\n"
++    "                let _e824 = native_depth;\n"
++    "                integer_depth = floor(_e824);\n"
++    "                let _e827 = integer_depth;\n"
++    "                if (_e827 == 0f) {\n"
++    "                    local_31 = 0f;\n"
++    "                } else {\n"
++    "                    let _e831 = integer_depth;\n"
++    "                    local_31 = bitcast<f32>((bitcast<u32>((_e831 * 0.000000059604645f)) + 1u));\n"
++    "                }\n"
++    "                let _e841 = local_31;\n"
++    "                gl_FragDepth = _e841;\n"
++    "                return;\n"
++    "            }\n"
++    "        } else {\n"
++    "            {\n"
++    "                let _e842 = native_depth;\n"
++    "                let _e843 = zmax;\n"
++    "                gl_FragDepth = (_e842 / _e843);\n"
++    "                return;\n"
++    "            }\n"
 +    "        }\n"
 +    "    }\n"
 +    "}\n"
@@ -39724,6 +39965,40 @@ index 0000000..44a9f2f
 +    "    return true;\n"
 +    "}\n"
 +    "\n"
++    "fn integer_d16_normalized(depth: f32) -> f32 {\n"
++    "    var depth_1: f32;\n"
++    "    var n_1: u32;\n"
++    "    var leading: u32;\n"
++    "    var repeated: u32;\n"
++    "    var significand: u32;\n"
++    "    var bits: u32;\n"
++    "\n"
++    "    depth_1 = depth;\n"
++    "    let _e78 = depth_1;\n"
++    "    n_1 = u32(_e78);\n"
++    "    let _e81 = n_1;\n"
++    "    if (_e81 == 0u) {\n"
++    "        return 0f;\n"
++    "    }\n"
++    "    let _e85 = n_1;\n"
++    "    if (_e85 >= 65535u) {\n"
++    "        return 1f;\n"
++    "    }\n"
++    "    let _e89 = n_1;\n"
++    "    leading = u32(i32(firstLeadingBit(_e89)));\n"
++    "    let _e94 = n_1;\n"
++    "    let _e97 = n_1;\n"
++    "    repeated = ((_e94 << 16u) | _e97);\n"
++    "    let _e100 = repeated;\n"
++    "    let _e102 = leading;\n"
++    "    significand = ((_e100 << (15u - _e102)) >> 8u);\n"
++    "    let _e108 = leading;\n"
++    "    let _e113 = significand;\n"
++    "    bits = (((_e108 + 111u) << 23u) | (_e113 & 8388607u));\n"
++    "    let _e118 = bits;\n"
++    "    return bitcast<f32>((_e118 + 1u));\n"
++    "}\n"
++    "\n"
 +    "fn main_1() {\n"
 +    "    var delta_1: vec2<f32>;\n"
 +    "    var point: vec2<f32>;\n"
@@ -39765,10 +40040,11 @@ index 0000000..44a9f2f
 +    "    var cmin: f32;\n"
 +    "    var cmax: f32;\n"
 +    "    var local_29: f32;\n"
++    "    var local_30: f32;\n"
 +    "    var native_max: f32;\n"
 +    "    var native_depth: f32;\n"
 +    "    var integer_depth: f32;\n"
-+    "    var local_30: f32;\n"
++    "    var local_31: f32;\n"
 +    "\n"
 +    "    let _e76 = v_line_index_1;\n"
 +    "    let _e84 = sh.line_endpoint[((i32(_e76) * 16i) + 8i)];\n"
@@ -39896,7 +40172,7 @@ index 0000000..44a9f2f
 +    "    let _e446 = line_inv_w;\n"
 +    "    v_w = (1f / _e446);\n"
 +    "    let _e448 = sh;\n"
-+    "    if ((_e448.depth.x & 4u) != 0u) {\n"
++    "    if ((_e448.depth.x & 12u) != 0u) {\n"
 +    "        let _e455 = line_t;\n"
 +    "        let _e456 = v_line_index_1;\n"
 +    "        let _e464 = sh.line_endpoint[((i32(_e456) * 16i) + 8i)];\n"
@@ -40094,7 +40370,7 @@ index 0000000..44a9f2f
 +    "    native_w = _e806;\n"
 +    "    let _e808 = w_buffer;\n"
 +    "    let _e809 = sh;\n"
-+    "    if (_e808 && ((_e809.depth.x & 4u) != 0u)) {\n"
++    "    if (_e808 && ((_e809.depth.x & 12u) != 0u)) {\n"
 +    "        {\n"
 +    "            let _e817 = v_line_index_1;\n"
 +    "            let _e825 = sh.line_endpoint[((i32(_e817) * 16i) + 0i)];\n"
@@ -40155,41 +40431,58 @@ index 0000000..44a9f2f
 +    "        discard;\n"
 +    "    }\n"
 +    "    let _e907 = sh;\n"
-+    "    if ((_e907.depth.x & 4u) != 0u) {\n"
-+    "        local_29 = 16777215f;\n"
++    "    if ((_e907.depth.x & 8u) != 0u) {\n"
++    "        local_30 = 65535f;\n"
 +    "    } else {\n"
-+    "        let _e915 = zmax;\n"
-+    "        local_29 = _e915;\n"
++    "        let _e915 = sh;\n"
++    "        if ((_e915.depth.x & 4u) != 0u) {\n"
++    "            local_29 = 16777215f;\n"
++    "        } else {\n"
++    "            let _e923 = zmax;\n"
++    "            local_29 = _e923;\n"
++    "        }\n"
++    "        let _e925 = local_29;\n"
++    "        local_30 = _e925;\n"
 +    "    }\n"
-+    "    let _e917 = local_29;\n"
-+    "    native_max = _e917;\n"
-+    "    let _e919 = zd;\n"
-+    "    let _e920 = cmin;\n"
-+    "    let _e921 = cmax;\n"
-+    "    let _e924 = native_max;\n"
-+    "    native_depth = clamp(clamp(_e919, _e920, _e921), 0f, _e924);\n"
-+    "    let _e927 = sh;\n"
-+    "    if ((_e927.depth.x & 4u) != 0u) {\n"
++    "    let _e927 = local_30;\n"
++    "    native_max = _e927;\n"
++    "    let _e929 = zd;\n"
++    "    let _e930 = cmin;\n"
++    "    let _e931 = cmax;\n"
++    "    let _e934 = native_max;\n"
++    "    native_depth = clamp(clamp(_e929, _e930, _e931), 0f, _e934);\n"
++    "    let _e937 = sh;\n"
++    "    if ((_e937.depth.x & 8u) != 0u) {\n"
 +    "        {\n"
-+    "            let _e934 = native_depth;\n"
-+    "            integer_depth = floor(_e934);\n"
-+    "            let _e938 = integer_depth;\n"
-+    "            if (_e938 == 0f) {\n"
-+    "                local_30 = 0f;\n"
-+    "            } else {\n"
-+    "                let _e942 = integer_depth;\n"
-+    "                local_30 = bitcast<f32>((bitcast<u32>((_e942 * 0.000000059604645f)) + 1u));\n"
-+    "            }\n"
-+    "            let _e952 = local_30;\n"
-+    "            gl_FragDepth = _e952;\n"
++    "            let _e945 = native_depth;\n"
++    "            let _e947 = integer_d16_normalized(floor(_e945));\n"
++    "            gl_FragDepth = _e947;\n"
 +    "            return;\n"
 +    "        }\n"
 +    "    } else {\n"
-+    "        {\n"
-+    "            let _e953 = native_depth;\n"
-+    "            let _e954 = zmax;\n"
-+    "            gl_FragDepth = (_e953 / _e954);\n"
-+    "            return;\n"
++    "        let _e948 = sh;\n"
++    "        if ((_e948.depth.x & 4u) != 0u) {\n"
++    "            {\n"
++    "                let _e955 = native_depth;\n"
++    "                integer_depth = floor(_e955);\n"
++    "                let _e958 = integer_depth;\n"
++    "                if (_e958 == 0f) {\n"
++    "                    local_31 = 0f;\n"
++    "                } else {\n"
++    "                    let _e962 = integer_depth;\n"
++    "                    local_31 = bitcast<f32>((bitcast<u32>((_e962 * 0.000000059604645f)) + 1u));\n"
++    "                }\n"
++    "                let _e972 = local_31;\n"
++    "                gl_FragDepth = _e972;\n"
++    "                return;\n"
++    "            }\n"
++    "        } else {\n"
++    "            {\n"
++    "                let _e973 = native_depth;\n"
++    "                let _e974 = zmax;\n"
++    "                gl_FragDepth = (_e973 / _e974);\n"
++    "                return;\n"
++    "            }\n"
 +    "        }\n"
 +    "    }\n"
 +    "}\n"
@@ -41784,6 +42077,40 @@ index 0000000..44a9f2f
 +    "    return vec4(0f);\n"
 +    "}\n"
 +    "\n"
++    "fn integer_d16_normalized(depth: f32) -> f32 {\n"
++    "    var depth_1: f32;\n"
++    "    var n_1: u32;\n"
++    "    var leading: u32;\n"
++    "    var repeated: u32;\n"
++    "    var significand: u32;\n"
++    "    var bits: u32;\n"
++    "\n"
++    "    depth_1 = depth;\n"
++    "    let _e90 = depth_1;\n"
++    "    n_1 = u32(_e90);\n"
++    "    let _e93 = n_1;\n"
++    "    if (_e93 == 0u) {\n"
++    "        return 0f;\n"
++    "    }\n"
++    "    let _e97 = n_1;\n"
++    "    if (_e97 >= 65535u) {\n"
++    "        return 1f;\n"
++    "    }\n"
++    "    let _e101 = n_1;\n"
++    "    leading = u32(i32(firstLeadingBit(_e101)));\n"
++    "    let _e106 = n_1;\n"
++    "    let _e109 = n_1;\n"
++    "    repeated = ((_e106 << 16u) | _e109);\n"
++    "    let _e112 = repeated;\n"
++    "    let _e114 = leading;\n"
++    "    significand = ((_e112 << (15u - _e114)) >> 8u);\n"
++    "    let _e120 = leading;\n"
++    "    let _e125 = significand;\n"
++    "    bits = (((_e120 + 111u) << 23u) | (_e125 & 8388607u));\n"
++    "    let _e130 = bits;\n"
++    "    return bitcast<f32>((_e130 + 1u));\n"
++    "}\n"
++    "\n"
 +    "fn main_1() {\n"
 +    "    var delta_1: vec2<f32>;\n"
 +    "    var point: vec2<f32>;\n"
@@ -41825,10 +42152,11 @@ index 0000000..44a9f2f
 +    "    var cmin: f32;\n"
 +    "    var cmax: f32;\n"
 +    "    var local_29: f32;\n"
++    "    var local_30: f32;\n"
 +    "    var native_max: f32;\n"
 +    "    var native_depth: f32;\n"
 +    "    var integer_depth: f32;\n"
-+    "    var local_30: f32;\n"
++    "    var local_31: f32;\n"
 +    "\n"
 +    "    let _e89 = line_endpoint_value(8i);\n"
 +    "    let _e92 = line_endpoint_value(0i);\n"
@@ -41937,7 +42265,7 @@ index 0000000..44a9f2f
 +    "    let _e325 = line_inv_w;\n"
 +    "    v_w = (1f / _e325);\n"
 +    "    let _e327 = sh;\n"
-+    "    if ((_e327.depth.x & 4u) != 0u) {\n"
++    "    if ((_e327.depth.x & 12u) != 0u) {\n"
 +    "        let _e334 = line_t;\n"
 +    "        let _e336 = line_endpoint_value(8i);\n"
 +    "        let _e339 = line_endpoint_value(0i);\n"
@@ -42130,7 +42458,7 @@ index 0000000..44a9f2f
 +    "    native_w = _e650;\n"
 +    "    let _e652 = w_buffer;\n"
 +    "    let _e653 = sh;\n"
-+    "    if (_e652 && ((_e653.depth.x & 4u) != 0u)) {\n"
++    "    if (_e652 && ((_e653.depth.x & 12u) != 0u)) {\n"
 +    "        {\n"
 +    "            let _e662 = line_endpoint_value(0i);\n"
 +    "            anchor_w = _e662.w;\n"
@@ -42189,41 +42517,58 @@ index 0000000..44a9f2f
 +    "        discard;\n"
 +    "    }\n"
 +    "    let _e737 = sh;\n"
-+    "    if ((_e737.depth.x & 4u) != 0u) {\n"
-+    "        local_29 = 16777215f;\n"
++    "    if ((_e737.depth.x & 8u) != 0u) {\n"
++    "        local_30 = 65535f;\n"
 +    "    } else {\n"
-+    "        let _e745 = zmax;\n"
-+    "        local_29 = _e745;\n"
++    "        let _e745 = sh;\n"
++    "        if ((_e745.depth.x & 4u) != 0u) {\n"
++    "            local_29 = 16777215f;\n"
++    "        } else {\n"
++    "            let _e753 = zmax;\n"
++    "            local_29 = _e753;\n"
++    "        }\n"
++    "        let _e755 = local_29;\n"
++    "        local_30 = _e755;\n"
 +    "    }\n"
-+    "    let _e747 = local_29;\n"
-+    "    native_max = _e747;\n"
-+    "    let _e749 = zd;\n"
-+    "    let _e750 = cmin;\n"
-+    "    let _e751 = cmax;\n"
-+    "    let _e754 = native_max;\n"
-+    "    native_depth = clamp(clamp(_e749, _e750, _e751), 0f, _e754);\n"
-+    "    let _e757 = sh;\n"
-+    "    if ((_e757.depth.x & 4u) != 0u) {\n"
++    "    let _e757 = local_30;\n"
++    "    native_max = _e757;\n"
++    "    let _e759 = zd;\n"
++    "    let _e760 = cmin;\n"
++    "    let _e761 = cmax;\n"
++    "    let _e764 = native_max;\n"
++    "    native_depth = clamp(clamp(_e759, _e760, _e761), 0f, _e764);\n"
++    "    let _e767 = sh;\n"
++    "    if ((_e767.depth.x & 8u) != 0u) {\n"
 +    "        {\n"
-+    "            let _e764 = native_depth;\n"
-+    "            integer_depth = floor(_e764);\n"
-+    "            let _e768 = integer_depth;\n"
-+    "            if (_e768 == 0f) {\n"
-+    "                local_30 = 0f;\n"
-+    "            } else {\n"
-+    "                let _e772 = integer_depth;\n"
-+    "                local_30 = bitcast<f32>((bitcast<u32>((_e772 * 0.000000059604645f)) + 1u));\n"
-+    "            }\n"
-+    "            let _e782 = local_30;\n"
-+    "            gl_FragDepth = _e782;\n"
++    "            let _e775 = native_depth;\n"
++    "            let _e777 = integer_d16_normalized(floor(_e775));\n"
++    "            gl_FragDepth = _e777;\n"
 +    "            return;\n"
 +    "        }\n"
 +    "    } else {\n"
-+    "        {\n"
-+    "            let _e783 = native_depth;\n"
-+    "            let _e784 = zmax;\n"
-+    "            gl_FragDepth = (_e783 / _e784);\n"
-+    "            return;\n"
++    "        let _e778 = sh;\n"
++    "        if ((_e778.depth.x & 4u) != 0u) {\n"
++    "            {\n"
++    "                let _e785 = native_depth;\n"
++    "                integer_depth = floor(_e785);\n"
++    "                let _e788 = integer_depth;\n"
++    "                if (_e788 == 0f) {\n"
++    "                    local_31 = 0f;\n"
++    "                } else {\n"
++    "                    let _e792 = integer_depth;\n"
++    "                    local_31 = bitcast<f32>((bitcast<u32>((_e792 * 0.000000059604645f)) + 1u));\n"
++    "                }\n"
++    "                let _e802 = local_31;\n"
++    "                gl_FragDepth = _e802;\n"
++    "                return;\n"
++    "            }\n"
++    "        } else {\n"
++    "            {\n"
++    "                let _e803 = native_depth;\n"
++    "                let _e804 = zmax;\n"
++    "                gl_FragDepth = (_e803 / _e804);\n"
++    "                return;\n"
++    "            }\n"
 +    "        }\n"
 +    "    }\n"
 +    "}\n"
@@ -44129,10 +44474,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..b484e41
+index 0000000..758c54d
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2385 @@
+@@ -0,0 +1,2389 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -45254,29 +45599,33 @@ index 0000000..b484e41
 +                quant_info.depth_stencil_state.compare_op=SDL_GPU_COMPAREOP_EQUAL;
 +                SDL_GPUGraphicsPipeline *quant=SDL_CreateGPUGraphicsPipeline(dev,&quant_info);
 +                CHECK(quant!=NULL,"integer D24 equality pipeline creates");
-+                if(quant)for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++) {
-+                    shade.depth[0]=4u|w_buffer|(clip?2u:0u);shade.depth[1]=0x4B800000u;shade.depth[3]=0x4B7FFFFFu;shade.depth[2]=0;
-+                    for(unsigned n=0;n<sizeof depth_quantization_cases/sizeof *depth_quantization_cases;n++) {
-+                        const DepthQuantizationCase *c=&depth_quantization_cases[n];
++                if(quant)for(unsigned bits=16;bits<=24;bits+=8)for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++) {
++                    float range=bits==16?65536.0f:16777216.0f;
++                    shade.depth[0]=(bits==16?8u:4u)|w_buffer|(clip?2u:0u);
++                    shade.depth[1]=bits==16?0x47800000u:0x4B800000u;shade.depth[3]=bits==16?0x477FFF00u:0x4B7FFFFFu;shade.depth[2]=0;
++                    const DepthQuantizationCase *cases=bits==16?depth16_quantization_cases:depth_quantization_cases;
++                    unsigned count=bits==16?sizeof depth16_quantization_cases/sizeof *cases:sizeof depth_quantization_cases/sizeof *cases;
++                    for(unsigned n=0;n<count;n++) {
++                        const DepthQuantizationCase *c=&cases[n];
 +                        if(w_buffer && c->input==0)continue;
-+                        for(unsigned v=0;v<3;v++) {tri[v][2]=w_buffer?0.5f:c->input/16777216.0f;tri[v][3]=w_buffer?c->input:1;}
++                        for(unsigned v=0;v<3;v++) {tri[v][2]=w_buffer?0.5f:c->input/range;tri[v][3]=w_buffer?c->input:1;}
 +                        Draw probe={.color=color,.depth=depth,.tex=white,.pipe=quant,.v=tri,.n=3,
 +                            .vertex_stride=sizeof tri[0],.fragment_uniforms=&shade,.fragment_size=sizeof shade,
-+                            .clear_color=1,.clear_argb=0xFF000000u,.clear_depth=1,.depth_value=depth_clear_reference(c->integer),
++                            .clear_color=1,.clear_argb=0xFF000000u,.clear_depth=1,.depth_value=bits==16?depth16_clear_reference(c->integer):depth_clear_reference(c->integer),
 +                            .scissor={24,24,8,8}};
 +                        draw(&probe);download(color,0,W,H,img);
-+                        CHECK(px(img,25,25)==0xFF00FF00u,"WebGPU integer D24 case %u W=%u clip=%u: %08X",n,w_buffer,clip,px(img,25,25));
++                        CHECK(px(img,25,25)==0xFF00FF00u,"WebGPU integer D%u case %u W=%u clip=%u: %08X",bits,n,w_buffer,clip,px(img,25,25));
 +                    }
 +                    {
 +                        const float z[3]={1.25f,4.75f,8.5f};
-+                        for(unsigned v=0;v<3;v++){tri[v][2]=w_buffer?0.5f:z[v]/16777216.0f;tri[v][3]=w_buffer?(float)(2u<<v):1;}
++                        for(unsigned v=0;v<3;v++){tri[v][2]=w_buffer?0.5f:z[v]/range;tri[v][3]=w_buffer?(float)(2u<<v):1;}
 +                        double b=100.5/W,c=100.5/H;unsigned expected=(unsigned)(w_buffer?1.0/((1.0-b-c)/2+b/4+c/8):(1-b-c)*z[0]+b*z[1]+c*z[2]);
 +                        Draw probe={.color=color,.depth=depth,.tex=white,.pipe=quant,.v=tri,.n=3,
 +                            .vertex_stride=sizeof tri[0],.fragment_uniforms=&shade,.fragment_size=sizeof shade,
-+                            .clear_color=1,.clear_argb=0xFF000000u,.clear_depth=1,.depth_value=depth_clear_reference(expected),
++                            .clear_color=1,.clear_argb=0xFF000000u,.clear_depth=1,.depth_value=bits==16?depth16_clear_reference(expected):depth_clear_reference(expected),
 +                            .scissor={96,96,8,8}};
 +                        draw(&probe);download(color,0,W,H,img);
-+                        CHECK(px(img,100,100)==0xFF00FF00u,"WebGPU varying D24 W=%u clip=%u expected %u: %08X",w_buffer,clip,expected,px(img,100,100));
++                        CHECK(px(img,100,100)==0xFF00FF00u,"WebGPU varying D%u W=%u clip=%u expected %u: %08X",bits,w_buffer,clip,expected,px(img,100,100));
 +                    }
 +                }
 +                SDL_ReleaseGPUGraphicsPipeline(dev,quant);
@@ -45335,12 +45684,12 @@ index 0000000..b484e41
 +                    CHECK(single && batch,"D24 analytic/indexed line equality pipelines create");
 +                    const unsigned probes[]={20,32,44};
 +                    if(single && batch)for(unsigned family=0;family<2;family++)
-+                    for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
++                    for(unsigned bits=16;bits<=24;bits+=8)for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
 +                    for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++) {
-+                        const DepthLineCase *c=&depth_line_cases[n];
-+                        shade.depth[0]=4u|w_buffer|(clip?2u:0u);shade.depth[1]=0x4B800000u;
++                        DepthLineCase adjusted=depth_line_case(n,bits);const DepthLineCase *c=&adjusted;
++                        shade.depth[0]=(bits==16?8u:4u)|w_buffer|(clip?2u:0u);shade.depth[1]=bits==16?0x47800000u:0x4B800000u;
 +                        memcpy(&shade.depth[2],&c->minimum,4);memcpy(&shade.depth[3],&c->maximum,4);
-+                        memcpy(uniform.base,&shade,sizeof shade);uniform.params[0]=1.0f/16777216.0f;uniform.params[1]=1;
++                        memcpy(uniform.base,&shade,sizeof shade);uniform.params[0]=1.0f/(bits==16?65536.0f:16777216.0f);uniform.params[1]=1;
 +                        memset(uniform.endpoint,0,sizeof uniform.endpoint);
 +                        float positions[2][4]={{0}};
 +                        int geometry=depth_line_clipped_positions(c,w_buffer,clip,positions);
@@ -45353,13 +45702,13 @@ index 0000000..b484e41
 +                        for(unsigned k=0;k<6;k++){vertices[k][0]=xy[corners[k]][0];vertices[k][1]=xy[corners[k]][1];}
 +                        for(unsigned p=0;p<3;p++) {
 +                            unsigned x=depth_line_probe_x(c,probes[p]),y=depth_line_probe_y(c,probes[p]);int visible;unsigned integer=depth_line_reference(c,probes[p],w_buffer,clip,&visible);
-+                            Draw probe=d;probe.pipe=single;probe.clear_argb=0xFF000000u;probe.depth_value=depth_clear_reference(integer);
++                            Draw probe=d;probe.pipe=single;probe.clear_argb=0xFF000000u;probe.depth_value=bits==16?depth16_clear_reference(integer):depth_clear_reference(integer);
 +                            probe.scissor=(SDL_Rect){(int)x-1,(int)y-2,3,6};
 +                            if(!geometry){probe.n=0;probe.reuse_vertices=1;}
 +                            if(family)draw_batched_line_probe_pipeline(&probe,1,0,1,uniform.base,uniform.endpoint,uniform.params,batch);
 +                            else draw(&probe);
 +                            download(color,0,W,H,img);uint32_t expected=visible?0xFF00FF00u:0xFF000000u;
-+                            CHECK(px(img,x,y)==expected,"WebGPU D24 line family=%u case=%u W=%u clip=%u x=%u y=%u: %08X expected %08X",family,n,w_buffer,clip,x,y,px(img,x,y),expected);
++                            CHECK(px(img,x,y)==expected,"WebGPU D%u line family=%u case=%u W=%u clip=%u x=%u y=%u: %08X expected %08X",bits,family,n,w_buffer,clip,x,y,px(img,x,y),expected);
 +                        }
 +                    }
 +                    SDL_ReleaseGPUGraphicsPipeline(dev,single);SDL_ReleaseGPUGraphicsPipeline(dev,batch);

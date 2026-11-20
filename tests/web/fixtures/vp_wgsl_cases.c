@@ -21,16 +21,41 @@ static void compact_line_depth_case(unsigned mask) {
     char *source=sg_vp_translate_line_wgsl(0,mask);if(!source)abort();
     save("compact-line.wgsl",source,strlen(source));free(source);
     save("compact-line-fragment.wgsl",k_sg_xf_linevp_frag_wgsl,strlen(k_sg_xf_linevp_frag_wgsl));
+    save("depth16-fragment.wgsl",k_sg_xf_frag_wgsl,strlen(k_sg_xf_frag_wgsl));
+    static uint32_t reference[65536];
+    for(unsigned n=0;n<65536;n++){float value=depth16_clear_reference(n);memcpy(&reference[n],&value,4);}
+    save("depth16-reference.bin",reference,sizeof reference);
     FILE *f=fopen("compact-line-depth.json","wb");if(!f)abort();
     fprintf(f,"{\"mask\":%u,\"vertexUniformBytes\":%zu,\"infoOffset\":%zu,\"shadeBytes\":%zu,\"depthOffset\":%zu,\"cases\":[",
             mask,sizeof s_vp.c+80,sizeof s_vp.c,sizeof(SgXfShade),offsetof(SgXfShade,depth));
     unsigned count=0;const unsigned probes[]={20,32,44};
-    for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
+    for(unsigned bits=16;bits<=24;bits+=8)for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
     for(unsigned w=0;w<2;w++)for(unsigned clip=0;clip<2;clip++)for(unsigned p=0;p<3;p++) {
-        const DepthLineCase *c=&depth_line_cases[n];int visible;
+        DepthLineCase adjusted=depth_line_case(n,bits);const DepthLineCase *c=&adjusted;int visible;
         unsigned integer=depth_line_reference(c,probes[p],w,clip,&visible);
-        fprintf(f,"%s{\"x\":[%.9g,%.9g],\"y\":[%.9g,%.9g],\"depth\":[%.9g,%.9g],\"minimum\":%.9g,\"maximum\":%.9g,\"w\":%u,\"clip\":%u,\"probe\":%u,\"probeY\":%u,\"integer\":%u,\"visible\":%d}",
-                count++?",":"",c->x[0],c->x[1],c->y[0],c->y[1],c->depth[0],c->depth[1],c->minimum,c->maximum,w,clip,depth_line_probe_x(c,probes[p]),depth_line_probe_y(c,probes[p]),integer,visible);
+        fprintf(f,"%s{\"bits\":%u,\"x\":[%.9g,%.9g],\"y\":[%.9g,%.9g],\"depth\":[%.9g,%.9g],\"minimum\":%.9g,\"maximum\":%.9g,\"w\":%u,\"clip\":%u,\"probe\":%u,\"probeY\":%u,\"integer\":%u,\"visible\":%d}",
+                count++?",":"",bits,c->x[0],c->x[1],c->y[0],c->y[1],c->depth[0],c->depth[1],c->minimum,c->maximum,w,clip,depth_line_probe_x(c,probes[p]),depth_line_probe_y(c,probes[p]),integer,visible);
+    }
+    fputs("]}\n",f);fclose(f);
+    f=fopen("compact-triangle-depth.json","wb");if(!f)abort();
+    fprintf(f,"{\"mask\":%u,\"vertexUniformBytes\":%zu,\"infoOffset\":%zu,\"shadeBytes\":%zu,\"depthOffset\":%zu,\"cases\":[",
+            mask,sizeof s_vp.c+80,sizeof s_vp.c,sizeof(SgXfShade),offsetof(SgXfShade,depth));
+    count=0;
+    for(unsigned bits=16;bits<=24;bits+=8)for(unsigned w=0;w<2;w++)for(unsigned clip=0;clip<2;clip++) {
+        const DepthQuantizationCase *cases=bits==16?depth16_quantization_cases:depth_quantization_cases;
+        unsigned length=bits==16?sizeof depth16_quantization_cases/sizeof *cases:sizeof depth_quantization_cases/sizeof *cases;
+        for(unsigned n=0;n<=length;n++) {
+            int varying=n==length;if(!varying && w && cases[n].input==0)continue;
+            float z[3];unsigned integer;
+            if(varying) {
+                z[0]=w?4:1.25f;z[1]=w?16:4.75f;z[2]=w?32:8.5f;
+                /* At (20.5,20.5), weights are exactly (1/2,1/4,1/4).
+                 * Z = 3.9375; harmonic W = 128/19, independently floored. */
+                integer=w?6:3;
+            } else {z[0]=z[1]=z[2]=cases[n].input;integer=cases[n].integer;}
+            fprintf(f,"%s{\"bits\":%u,\"x\":[8.5,56.5,8.5],\"y\":[8.5,8.5,56.5],\"depth\":[%.9g,%.9g,%.9g],\"minimum\":0,\"maximum\":%u,\"w\":%u,\"clip\":%u,\"probe\":20,\"probeY\":20,\"integer\":%u,\"visible\":1}",
+                    count++?",":"",bits,z[0],z[1],z[2],bits==16?65535u:16777215u,w,clip,integer);
+        }
     }
     fputs("]}\n",f);fclose(f);
 }

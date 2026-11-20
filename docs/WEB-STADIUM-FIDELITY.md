@@ -4505,3 +4505,68 @@ timing differ from the preceding unprofiled capture; the lower missing count
 is not an A/B improvement claim. No runtime timing policy changed in this
 follow-up. Host-wait and frame-delivery timing still need investigation, and
 the rendering/gameplay/audio fidelity and sustained 30 FPS goals remain open.
+
+### Integer D16 depth conversion (2026-11-20)
+
+The D16 audit reproduces 202 failed native assertions. Software preserves
+fractional D16 depths and does not reconstruct W for that format; clears
+decode the D24 high bits instead of D16's low sixteen bits; SDL GPU projection,
+clamping and fragment conversion still use the legacy D24 path. The reference
+is xemu's [integer-depth conversion](https://github.com/xemu-project/xemu/blob/711b416840c2a528cb989621b6456a72bd02d768/hw/xbox/nv2a/pgraph/glsl/psh.c#L1418)
+and [depth clear decoding](https://github.com/xemu-project/xemu/blob/711b416840c2a528cb989621b6456a72bd02d768/hw/xbox/nv2a/pgraph/pgraph.c#L2822).
+These are implementation references, not newly captured Xbox scene pixels.
+
+Integer D16 now decodes clears from the low sixteen bits, projects with an
+exact 65,536 scale, and clips/clamps and truncates in native 0–65,535 units.
+Both software and shader triangle interpolation reconstruct anchored W;
+analytic lines use the same integer-depth branch. A separate shade flag
+selects D16. Floating-depth and invalid-format guard probes stay separate.
+
+The GPU D16 encoder rounds the exact normalized integer upward to float using
+the repeated sixteen-bit binary fraction, avoiding reciprocal-dependent
+rounding. Its clear path uses independent double-precision division and
+upward float rounding. A compute entry added to the actual generated fragment
+module verifies every one of the 65,536 production encodings against that
+independent reference, with exact float-bit agreement.
+
+The native Vulkan suite passes 168 D16 software comparison/store probes, D16
+clear decoding (including nonzero high-word garbage), constant Z/W triangles,
+and 1,200 GPU plus 1,200 software line probes across D16/D24. The line matrix
+retains both orientations, vertical/steep/eye-plane cases, clip/clamp ranges
+and fill-offset isolation. The browser renderer suite passes 92 scalar/varying
+triangle pixels and 1,200 single/indexed line pixels across both formats.
+The real generated vertex-program paths pass another 600 instanced-line and
+92 triangle pixels, including varying harmonic W. The new triangle fixture
+initially omitted required unused attribute locations; using the production
+compact layout fixes that harness error without a renderer change.
+
+The existing 85 line-module compilations, 2,752 VP executions, 864 position
+checks and 20,480 rendered edge pixels pass. All fragment variants regenerate
+with Naga 27.0.0. The refreshed runtime patch reproduces 101 files from the
+unchanged pin and reverses cleanly. This establishes the exercised integer
+D16 conversion paths; floating formats, D16 stencil semantics, depth ownership
+and format switching, software polygon bias and exact Xbox image parity still
+need work. Audio continuity and a sustained 30 FPS floor remain unproven.
+
+
+The optimized game build and packaged launcher/static-host checks pass. A
+frozen retail check selects Dolphins at 49ers, inspects team/coach/intro/coin
+toss presentation, completes kickoff and an offensive play to second-and-seven
+at SF 23, then verifies pause, the VIP quit warning and return to the main
+menu. Eleven screenshots and eight audio snapshots are retained privately;
+all twenty frozen artifact hashes match at close. After that check, the root
+VP fixture strengthens varying W to 4/16/32 (harmonic result 128/19, integer 6),
+so retaining the anchor depth of 4 cannot pass. The original fixture is kept
+with the frozen evidence; this test-only change does not alter the game build.
+
+The retail case fails audio continuity: the final snapshot records 3,447
+affected blocks / 439,936 missing frames, with a longest continuous gap of
+4,224 frames (88 ms at 48 kHz). Seventy-two automatic underrun records are
+retained. The first gap is at AudioContext second 257.1066666666667; the last
+is at 638.4106458333333, with counters unchanged through the final snapshot
+at second 687.872. The extended capture includes time paused at the quit
+warning; these counts are not an A/B performance comparison. Observed frame
+windows also fall below 30 FPS. Expected startup TODO diagnostics remain;
+no WebGPU validation failure is reported. The owned browser and server are
+closed. This bounded scene check does not establish that retail exercised D16,
+full stadium/staff fidelity, audio accuracy or a sustained 30 FPS floor.

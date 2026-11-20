@@ -144,5 +144,7 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
     await require('./vp-position-check.cjs')(page, fs.readFileSync(path.join(dir, 'compact.wgsl'), 'utf8'),
       JSON.parse(fs.readFileSync(path.join(dir, 'compact.layout.json'), 'utf8')));
     await require('./vp-line-depth-check.cjs')(page,dir);
+    await require('./vp-line-depth-check.cjs')(page,dir,true);
+    await require('./vp-depth16-check.cjs')(page,dir);
   } finally { await browser.close(); }
 })().catch(e => {console.error(e); process.exitCode = 1;}).finally(() => server.close());

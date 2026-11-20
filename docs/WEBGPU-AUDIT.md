@@ -117,3 +117,8 @@ The [fill-offset scope fix](WEB-STADIUM-FIDELITY.md#polygon-fill-offset-leaking-
 prevents standalone lines from inheriting polygon-fill depth bias. A native
 GPU regression reproduces 211 failures before the fix; all 600 line probes
 pass afterward, and filled-polygon control draws retain their bias.
+
+The [integer D16 audit](WEB-STADIUM-FIDELITY.md#integer-d16-depth-conversion-2026-11-20)
+adds low-word clears, native-unit truncation and an exact projection scale.
+All 65,536 GPU depth encodings match an independent double-precision reference;
+software, Vulkan and browser triangle/line paths pass the expanded matrix.
