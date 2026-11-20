@@ -34,6 +34,7 @@ static SDL_GPUShader shaders[16];
 static char *sg_vp_translate_wgsl(uint32_t start) {
     (void)start; char *text=malloc(2);memcpy(text,"x",2);return text;
 }
+static char *sg_vp_translate_line_wgsl(uint32_t start,uint32_t mask) {(void)mask;return sg_vp_translate_wgsl(start);}
 static SDL_GPUShader *SDL_CreateGPUShader(void *device,const SDL_GPUShaderCreateInfo *info) {
     (void)device;(void)info;
     if(reject_shader)return NULL;
@@ -95,6 +96,16 @@ int main(void) {
     s_vp.start=VP_PROG_LEN;slot_a=0x11223344u;
     assert(!sg_vp_program(&slot_a) && slot_a==0x11223344u);
     puts("ok: invalid program starts do not allocate cache entries");
+    memset(s_sg_vp,0,sizeof s_sg_vp);compiled=0;
+    select_program(program_a);SDL_GPUShader *line_a=sg_vp_line_program(&slot_a);assert(line_a && compiled==2);
+    SDL_GPUShader *base_a=s_sg_vp[slot_a].vs;assert(base_a!=line_a);
+    select_program(program_b);SDL_GPUShader *line_b=sg_vp_line_program(&slot_b);assert(line_b && line_a!=line_b && slot_a!=slot_b && compiled==4);
+    select_program(program_a);assert(sg_vp_line_program(&slot_b)==line_a && compiled==4);
+    memset(s_sg_vp,0,sizeof s_sg_vp);compiled=0;
+    select_program(program_a);base_a=sg_vp_program(&slot_a);assert(base_a);reject_shader=1;
+    assert(!sg_vp_line_program(&slot_a));reject_shader=0;assert(sg_vp_program(&slot_a)==base_a && !sg_vp_line_program(&slot_a));
+    select_program(program_b);assert(sg_vp_line_program(&slot_b));
+    puts("ok: colliding line programs remain separate; failed line specialization preserves triangle shaders");
 }
 '''.replace('/* CACHE */', cache_types + lookup)
 out = root / 'build-web-tests/vp-cache'

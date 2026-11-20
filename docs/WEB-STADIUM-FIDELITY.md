@@ -2516,3 +2516,66 @@ and line overlays. No browser/GPU failure is reported. FPS averages after
 of 2,688 frames (56 ms). This dry matchup is not a rain throughput test or a
 controlled performance comparison. Full scene/audio/game-mode fidelity,
 broader stadium/staff parity and a sustained 30 FPS floor remain unfinished.
+
+
+### GPU line vertex programs and endpoint batching
+
+WebGPU now executes supported line vertex programs on paired endpoint inputs.
+Each instance supplies one segment; the generated vertex shader transforms
+both endpoints, applies the CPU path's homogeneous W/near-plane clipping and
+flat provoking color/specular rules, and emits conservative triangle candidates.
+The existing analytic fragment coverage determines the final pixels. Endpoint
+colors, four texture coordinates and fog travel in 58 flat varying components,
+within baseline WebGPU limits. Explicit varying declarations avoid a Naga GLSL
+array-interface translation issue found by actual pipeline validation.
+
+Line lists, strips and loops preserve submission order in a single instanced
+batch, replacing CPU vertex interpretation and twelve-segment uniform groups.
+Programs using more than eight input attributes, unsupported programs and
+allocation/pipeline failures retain the CPU route. Native backends continue
+using CPU line preparation. `RECOMP_SDLGPU_CPU_LINES=1` selects that route on
+WebGPU for comparison; `RECOMP_SDLGPU_NOVP=1` still disables all GPU VPs. The
+shared generated instruction arithmetic and triangle uniforms are reused.
+GPU candidates execute each endpoint program for six corners, so this change
+alone does not establish a throughput improvement.
+
+The new fixture extracts production input fetching, primitive assembly,
+paired packing, WGSL translation, CPU vertex interpretation, homogeneous line
+clipping and vertex layout generation. Intel hardware WebGPU and SwiftShader
+pass 78 full-frame differential cases against CPU-prepared endpoints, with
+exact coverage and channel differences at most two. All 34 pinned Xbox line
+width masks pass; the default width also checks the full 1,174-pixel RGB
+reference. Cases include relative constants/address registers, dot products,
+partial writes, non-unit/negative/invalid W, near clipping, degenerate and
+zero-width segments, texture alpha kill, specular and fog, flat list/strip/loop
+provoking rules, overlapping depth layers and 65 ordered translucent segments.
+Validation error scopes also reject silent GPU errors. Exact cache collision
+checks cover line specialization; failed line shaders preserve working triangle
+shaders.
+
+The shared translator retains 2,752 GPU instruction/register comparisons,
+864 position checks and 20,480 rendered edge-pixel checks on hardware WebGPU.
+The sanitized native Vulkan renderer suite, Linux kernel/video builds, browser
+game build and fetch/queue/uniform regressions pass. The fresh pinned runtime
+patch reproduces all 94 files and passes the reverse check. The preceding
+`db45c59` Build and Pages workflows both passed.
+
+
+The owned headless retail integration selects a rainy Kansas City/St. Louis
+matchup. The 100-second bench view shows player faces, uniform numerals and
+sideline equipment; the 130-second coin-toss view shows rain, stadium tiers,
+players/referee and readable overlay text. A representative five-second
+interval processes 3,044,850 line segments in 4,500 draws with zero CPU line
+VP fallbacks, confirming that the real game uses the new path. This visual
+inspection is not original-Xbox stadium/staff parity proof.
+
+
+The complete approximately 246-second retail run reports no browser/GPU
+failures. Its 20 five-second FPS averages after 150 seconds range from
+26.5 to 30.0. Audio records 12 affected blocks and 1,536 missing
+output frames (32 ms at 48 kHz), with a longest continuous gap of 512 frames
+(10.7 ms). Gameplay captures show the lineup, scoreboard and field markings
+through rain. Different teams/scenes and instrumentation prevent a controlled
+performance comparison with earlier captures. The 30 FPS floor, uninterrupted
+audio, full game-mode coverage and original-Xbox stadium/staff fidelity remain
+unfinished.

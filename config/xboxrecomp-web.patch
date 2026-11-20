@@ -2568,7 +2568,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      int draw_ready; /* shaders loaded: draws can be taken */
      SDL_GPUShader *flat2d_vs, *flat2d_fs;
      SDL_GPUShader *xf_vs, *xf_fs;
-+    SDL_GPUShader *flat2d_line_fs, *xf_line_fs, *lines_vs;
++    SDL_GPUShader *flat2d_line_fs, *xf_line_fs, *lines_vs, *xf_linevp_fs;
      SgPipeline pipes[SG_MAX_PIPELINES];
      int pipe_count;
      SDL_GPUBuffer *vertices;
@@ -2709,7 +2709,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +336,11 @@
+@@ -268,7 +336,12 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -2718,10 +2718,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +#endif
  #include "sdlgpu_vpcache.inc.c"
 +static SDL_GPUShader *sg_line_fragment(int xf);
++static SDL_GPUShader *sg_linevp_fragment(void);
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +378,17 @@
+@@ -306,12 +379,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
@@ -2868,7 +2869,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      const uint32_t  *indices; // Not indexed
      uint32_t index_count;
      SgTextureUse *tex;
-@@ -54,12 +63,42 @@
+@@ -54,12 +63,51 @@
                                  Uint32 samplers) {
      SDL_GPUShaderCreateInfo info = {
          .code = (const Uint8 *) code, .code_size = size, .entrypoint = "main",
@@ -2908,10 +2909,19 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +#endif
 +    return *shader;
 +}
++
++static SDL_GPUShader *sg_linevp_fragment(void) {
++#if defined(__EMSCRIPTEN__) && defined(SG_HAVE_SHADERS)
++    if(!s_sg.xf_linevp_fs)s_sg.xf_linevp_fs=sg_shader(k_sg_xf_linevp_frag_wgsl,strlen(k_sg_xf_linevp_frag_wgsl),SDL_GPU_SHADERSTAGE_FRAGMENT,8);
++    return s_sg.xf_linevp_fs;
++#else
++    return NULL;
++#endif
++}
 
  /* Load the shaders and the small fixed resources, once. */
  static int sg_draw_init(void) {
-@@ -78,13 +117,23 @@
+@@ -78,13 +126,23 @@
      if (s_sg.draw_ready || tried)
          return s_sg.draw_ready;
      tried = 1;
@@ -2937,7 +2947,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          fprintf(stderr, "  [SDLGPU] drawing unavailable: %s\n", SDL_GetError());
          return 0;
      }
-@@ -146,46 +195,95 @@
+@@ -146,46 +204,95 @@
      if (need <= *cap)
          return p;
      n = *cap ? *cap : 64;
@@ -3046,7 +3056,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      q->udata = (uint8_t *)g;
 
      if (!q->surface) {
-@@ -197,8 +295,11 @@
+@@ -197,8 +304,11 @@
      qd->pipe = d->pipe;
      qd->vertex_offset = q->vbytes;
      qd->vertex_count = d->vertex_count;
@@ -3058,7 +3068,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      qd->index_offset = q->ibytes;
      qd->index_count = d->index_count;
-@@ -222,18 +323,22 @@
+@@ -222,18 +332,22 @@
      qd->tex_count = d->tex_count;
      for (i = 0; i < (uint32_t) d->tex_count; i++) {
          SgTextureUse *t = &d->tex[i];
@@ -3084,7 +3094,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      qd->blend_constant = (SDL_FColor){
          (float) ((s_gpu.blend_color >> 16) & 0xFF) / 255.0f, (float) ((s_gpu.blend_color >> 8) & 0xFF) / 255.0f,
          (float) (s_gpu.blend_color & 0xFF) / 255.0f, (float) (s_gpu.blend_color >> 24) / 255.0f,
-@@ -241,9 +346,16 @@
+@@ -241,9 +355,16 @@
      qd->stencil_ref = (Uint8) (s_vp.stencil_ref & 0xFF);
      qd->vs_size = d->vs_uniform_size;
      qd->fs_size = d->fs_uniform_size;
@@ -3104,7 +3114,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      /* The GPU copy will be the newer one. Anything that reads the surface on
       * the CPU flushes the queue first (sg_cpu_access, sg_flip). */
-@@ -265,9 +377,12 @@
+@@ -265,9 +386,12 @@
          q->upload_surface = 0;
          return 1;
      }
@@ -3118,7 +3128,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (sg_vertex_buffer_reserve(q->vbytes) && sg_index_buffer_reserve(q->ibytes) && sg_upload_reserve(total)) {
          SDL_GPUCommandBuffer *cmd;
          uint8_t *stage = (uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.upload, true);
-@@ -278,10 +393,12 @@
+@@ -278,10 +402,12 @@
          }
          /* Transfer layout: vertices | indices | surface | textures */
          memcpy(stage, q->vdata, q->vbytes);
@@ -3133,7 +3143,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
 
-@@ -310,16 +427,18 @@
+@@ -310,16 +436,18 @@
              }
              for (i = 0; i < q->upload_count; i++) {
                  const SgQueuedUpload *u = &q->uploads[i];
@@ -3160,7 +3170,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          }
          {
              SDL_GPUColorTargetInfo target = {
-@@ -329,14 +448,22 @@
+@@ -329,14 +457,22 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
@@ -3184,7 +3194,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,29 +477,42 @@
+@@ -350,29 +486,42 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -3236,7 +3246,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          static int told;
          if (!told++)
              fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
-@@ -385,24 +525,24 @@
+@@ -385,24 +534,24 @@
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -3267,7 +3277,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          uint32_t cap = list->cap ? list->cap * 2 : 192;
          SgVertex *v = (SgVertex *) realloc(list->v, cap * sizeof *v);
          if (!v)
-@@ -410,18 +550,22 @@
+@@ -410,18 +559,22 @@
          list->v = v;
          list->cap = cap;
      }
@@ -3299,7 +3309,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
  }
 
  /* gpu_draw_batch(1). Returns 0 to leave the batch to the software path. */
-@@ -431,7 +575,7 @@
+@@ -431,7 +584,7 @@
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
 
@@ -3308,7 +3318,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          return 0; /* raster_batch keeps its counters */
      if (!sg_draw_init())
          return sg_fallback(SG_FB_SHADERS, 0);
-@@ -445,19 +589,27 @@
+@@ -445,19 +598,27 @@
          return sg_fallback(SG_FB_TEXTURE, 0); /* unreadable texture: software decides */
 
      list.count = 0;
@@ -3339,7 +3349,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          SgDraw d = {
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgVertex),
-@@ -466,7 +618,37 @@
+@@ -466,7 +627,37 @@
              .vs_uniform = surface_size, .vs_uniform_size = sizeof surface_size,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
@@ -3424,12 +3434,28 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
              uint32_t cm = (s_vp.cull_face == 0x0404) ? 1u : 2u; /* 0404 FRONT, 0405 BACK */
              uint32_t cw = (s_vp.front_face == 0x0900) ? 1u : 0u; /* 0900 CW, 0901 CCW */
              key->color |= (cm << 18) | (cw << 20);
-@@ -136,11 +143,17 @@
+@@ -132,16 +139,36 @@
+     return 1;
+ }
+
++static uint32_t sg_linevp_attributes(uint32_t mask,SDL_GPUVertexAttribute attributes[16]) {
++    unsigned inputs=0;for(uint32_t bits=mask;bits;bits&=bits-1u)inputs++;
++    if(inputs>8)return UINT32_MAX;
++    uint32_t count=0;
++    for(unsigned side=0;side<2;side++)for(unsigned a=0;a<16;a++)if(mask&(1u<<a)) {
++        attributes[count]=(SDL_GPUVertexAttribute){.location=count,.buffer_slot=0,
++            .format=SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,.offset=count*16};count++;
++    }
++    return count;
++}
++
+ static SDL_GPUGraphicsPipeline *sg_pipeline_create(const SgPipeKey *key) {
      const int xf = (key->color & SG_COLOR_XF) != 0;
      /* A vertex-program pipeline: its generated shader, 16 vec4 inputs. */
      const int vp = key->vs != 0;
 +    const int line = (key->color&SG_COLOR_NVLINE)!=0;
-+    SDL_GPUShader *fragment=(key->color&SG_COLOR_NVLINE)?sg_line_fragment(xf):(xf?s_sg.xf_fs:s_sg.flat2d_fs);
++    const int linevp=line && vp;
++    SDL_GPUShader *fragment=linevp?sg_linevp_fragment():line?sg_line_fragment(xf):(xf?s_sg.xf_fs:s_sg.flat2d_fs);
 +    if(!fragment)return NULL;
      SDL_GPUVertexAttribute vp_attrs[16];
      int k;
@@ -3442,15 +3468,19 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
 +        if (inmask & (1u << k)) input_offset += 16;
 +    }
      const uint32_t blend = key->color;
++    uint32_t linevp_attributes=linevp?sg_linevp_attributes(inmask,vp_attrs):0;
++    if(linevp_attributes==UINT32_MAX)return NULL;
      SDL_GPUStencilOpState stencil = {
          .fail_op = (SDL_GPUStencilOp) ((key->stencil >> 8) & 15u),
-@@ -150,8 +163,12 @@
+         .depth_fail_op = (SDL_GPUStencilOp) ((key->stencil >> 12) & 15u),
+@@ -150,8 +177,12 @@
      };
      SDL_GPUVertexBufferDescription buffer = {
          .slot = 0,
 -        .pitch = vp ? 256u : xf ? (Uint32)sizeof(SgXfVertex) : (Uint32)sizeof(SgVertex),
-+        .pitch = line ? (Uint32)sizeof(NvLineVertex) : vp ? sg_vp_input_stride(inmask) : xf ? (Uint32)sizeof(SgXfVertex) : (Uint32)sizeof(SgVertex),
-         .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX,
+-        .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX,
++        .pitch = linevp ? 2*sg_vp_input_stride(inmask) : line ? (Uint32)sizeof(NvLineVertex) : vp ? sg_vp_input_stride(inmask) : xf ? (Uint32)sizeof(SgXfVertex) : (Uint32)sizeof(SgVertex),
++        .input_rate = linevp ? SDL_GPU_VERTEXINPUTRATE_INSTANCE : SDL_GPU_VERTEXINPUTRATE_VERTEX,
 +    };
 +    SDL_GPUVertexAttribute line_attrs[2] = {
 +        {.location=0,.buffer_slot=0,.format=SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,.offset=0},
@@ -3458,24 +3488,24 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      };
      SDL_GPUVertexAttribute flat_attrs[3] = {
          {
-@@ -217,12 +234,12 @@
+@@ -217,12 +248,12 @@
 
      };
      SDL_GPUGraphicsPipelineCreateInfo info = {
 -        .vertex_shader = vp ? s_sg_vp[key->vs - 1].vs : xf ? s_sg.xf_vs : s_sg.flat2d_vs,
 -        .fragment_shader = xf ? s_sg.xf_fs : s_sg.flat2d_fs,
-+        .vertex_shader = line ? s_sg.lines_vs : vp ? s_sg_vp[key->vs - 1].vs : xf ? s_sg.xf_vs : s_sg.flat2d_vs,
++        .vertex_shader = linevp ? s_sg_vp[key->vs-1].line_vs : line ? s_sg.lines_vs : vp ? s_sg_vp[key->vs - 1].vs : xf ? s_sg.xf_vs : s_sg.flat2d_vs,
 +        .fragment_shader = fragment,
          .vertex_input_state = {
              .vertex_buffer_descriptions = &buffer, .num_vertex_buffers = 1,
 -            .vertex_attributes = vp ? vp_attrs : xf ? xf_attrs : flat_attrs,
 -            .num_vertex_attributes = vp ? 16 : xf ? 8 : 3,
-+            .vertex_attributes = line ? line_attrs : vp ? vp_attrs : xf ? xf_attrs : flat_attrs,
-+            .num_vertex_attributes = line ? 2 : vp ? 16 : xf ? 8 : 3,
++            .vertex_attributes = linevp ? vp_attrs : line ? line_attrs : vp ? vp_attrs : xf ? xf_attrs : flat_attrs,
++            .num_vertex_attributes = linevp ? linevp_attributes : line ? 2 : vp ? 16 : xf ? 8 : 3,
          },
          .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
          .rasterizer_state = {
-@@ -230,13 +247,12 @@
+@@ -230,13 +261,12 @@
              .cull_mode = ((blend >> 18) & 3u) == 1u ? SDL_GPU_CULLMODE_FRONT :
                           ((blend >> 18) & 3u) == 2u ? SDL_GPU_CULLMODE_BACK :
                                                        SDL_GPU_CULLMODE_NONE,
@@ -3492,7 +3522,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
          },
          .depth_stencil_state = {
              .enable_depth_test = (key->depth & 1u) != 0,
-@@ -277,18 +293,29 @@
+@@ -277,18 +307,29 @@
  }
 
  /* The pipeline for the current state; NULL when it cannot be drawn on the GPU. */
@@ -3527,7 +3557,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      p = &s_sg.pipes[s_sg.pipe_count];
      p->pipe = sg_pipeline_create(&key);
      if (!p->pipe) {
-@@ -297,6 +324,7 @@
+@@ -297,6 +338,7 @@
          return NULL;
      }
      p->key = key;
@@ -4266,10 +4296,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
 +}
 diff --git a/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
 new file mode 100644
-index 0000000..28bb6e7
+index 0000000..5dfe5bc
 --- /dev/null
 +++ b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,133 @@
 +/* NV2A vertex programs -> WGSL. Shares the native decoder's register and
 + * paired-MAC/ILU rules, with scalar component writes (WGSL forbids assigning
 + * to multi-component swizzles). Constant-writing programs stay on the CPU. */
@@ -4297,11 +4327,11 @@ index 0000000..28bb6e7
 +            sg_text(b, "      %s.%c = %s.%c;\n", dst, xyzw[k], src, xyzw[k]);
 +}
 +
-+static char *sg_vp_translate_wgsl(uint32_t start)
++static char *sg_vp_translate_wgsl_parts(uint32_t start, const char *prelude, const char *epilogue)
 +{
 +    SgText b = {0};
 +    if (start >= VP_PROG_LEN) return NULL;
-+    sg_text(&b, "%s", k_sg_vp_prelude_wgsl);
++    sg_text(&b, "%s", prelude);
 +    for (uint32_t slot = start; slot < VP_PROG_LEN; slot++) {
 +        const uint32_t *t = s_vp.prog[slot];
 +        uint32_t ilu = vp_field(t, 1, 25, 3), mac = vp_field(t, 1, 21, 4);
@@ -4371,9 +4401,37 @@ index 0000000..28bb6e7
 +        sg_text(&b, "    }\n");
 +        if (vp_field(t, 3, 0, 1)) break;
 +    }
-+    sg_text(&b, "%s", k_sg_vp_epilogue_wgsl);
++    sg_text(&b, "%s", epilogue);
 +    if (b.failed) { free(b.p); return NULL; }
 +    return b.p;
++}
++
++static char *sg_vp_translate_wgsl(uint32_t start) {
++    return sg_vp_translate_wgsl_parts(start,k_sg_vp_prelude_wgsl,k_sg_vp_epilogue_wgsl);
++}
++
++static char *sg_vp_translate_line_wgsl(uint32_t start,uint32_t mask) {
++    unsigned count=0;for(uint32_t bits=mask;bits;bits&=bits-1u)count++;
++    if(start>=VP_PROG_LEN || mask!=vp_input_mask(start) || count>8)return NULL;
++    char *program=sg_vp_translate_wgsl_parts(start,k_sg_linevp_prelude_wgsl,k_sg_linevp_epilogue_wgsl);
++    if(!program)return NULL;
++    SgText b={0};sg_text(&b,"%s\n%s\n",program,k_sg_linevp_support_wgsl);free(program);
++    if(mask) {
++        sg_text(&b,"struct LineInputs {\n");unsigned location=0;
++        for(unsigned side=0;side<2;side++)for(unsigned a=0;a<16;a++)if(mask&(1u<<a))
++            sg_text(&b," @location(%u) %c%u:vec4f,\n",location++,'a'+side,a);
++        sg_text(&b,"}\n@vertex fn main(vin:LineInputs,@builtin(vertex_index) corner:u32)->LineOutputs {\n");
++    } else sg_text(&b,"@vertex fn main(@builtin(vertex_index) corner:u32)->LineOutputs {\n");
++    for(unsigned side=0;side<2;side++) {
++        sg_text(&b,"let %c=VpInputs(",'a'+side);
++        for(unsigned a=0;a<16;a++) {
++            if(a)sg_text(&b,",");
++            if(mask&(1u<<a))sg_text(&b,"vin.%c%u",'a'+side,a);else sg_text(&b,"vec4f(0.0)");
++        }
++        sg_text(&b,");\n");
++    }
++    sg_text(&b,"return line_emit(line_transform(a),line_transform(b),corner);\n}\n");
++    if(b.failed){free(b.p);return NULL;}return b.p;
 +}
 diff --git a/src/kernel/sdlgpu/shaders/vp.wgsl b/src/kernel/sdlgpu/shaders/vp.wgsl
 new file mode 100644
@@ -27906,6 +27964,102 @@ diff --git a/tests/condition_srw_posix/test_main.c b/tests/condition_srw_posix/t
      /* Repeated immediate wake at release-to-wait exercises the lost-wakeup gap. */
      for (int shared=0;shared<2;shared++) {
          mode=shared ? CONDITION_VARIABLE_LOCKMODE_SHARED : 0;
+diff --git a/src/kernel/sdlgpu/shaders/vp_line.wgsl b/src/kernel/sdlgpu/shaders/vp_line.wgsl
+new file mode 100644
+index 0000000..14b03b7
+--- /dev/null
++++ b/src/kernel/sdlgpu/shaders/vp_line.wgsl
+@@ -0,0 +1,90 @@
++// Original projected endpoint values are flat varyings, never interpolated
++// across conservative candidate triangles. Fourteen vec4 + one vec2 = 58
++// components, within both the 60-component and 16-variable baseline limits.
++struct LineOutputs {
++    @builtin(position) position: vec4f,
++    @location(0) @interpolate(flat) ap: vec4f,
++    @location(1) @interpolate(flat) ac: vec4f,
++    @location(2) @interpolate(flat) aspec: vec4f,
++    @location(3) @interpolate(flat) at0: vec4f,
++    @location(4) @interpolate(flat) at1: vec4f,
++    @location(5) @interpolate(flat) at2: vec4f,
++    @location(6) @interpolate(flat) at3: vec4f,
++    @location(7) @interpolate(flat) bp: vec4f,
++    @location(8) @interpolate(flat) bc: vec4f,
++    @location(9) @interpolate(flat) bspec: vec4f,
++    @location(10) @interpolate(flat) bt0: vec4f,
++    @location(11) @interpolate(flat) bt1: vec4f,
++    @location(12) @interpolate(flat) bt2: vec4f,
++    @location(13) @interpolate(flat) bt3: vec4f,
++    @location(14) @interpolate(flat) fog: vec2f,
++}
++fn line_lerp(a: VpOutputs,b: VpOutputs,t:f32)->VpOutputs {
++    return VpOutputs(a.position+(b.position-a.position)*t,
++        a.color+(b.color-a.color)*t,a.specular+(b.specular-a.specular)*t,
++        a.t0+(b.t0-a.t0)*t,a.t1+(b.t1-a.t1)*t,a.t2+(b.t2-a.t2)*t,a.t3+(b.t3-a.t3)*t,
++        a.fog+(b.fog-a.fog)*t,a.w+(b.w-a.w)*t);
++}
++fn line_finite(p:vec4f)->bool {
++    return all((bitcast<vec4u>(p)&vec4u(0x7fffffffu))<vec4u(0x7f800000u));
++}
++fn line_emit(original_a:VpOutputs,original_b:VpOutputs,vertex:u32)->LineOutputs {
++    var a=original_a;var b=original_b;
++    let eps=0.001;let clip_depth=vc.lightp.z==0.0;
++    var valid=line_finite(a.position)&&line_finite(b.position);
++    if(vc.line.z!=0.0) {
++        if(vc.line.w!=0.0){b.color=a.color;b.specular=a.specular;}
++        else {a.color=b.color;a.specular=b.specular;}
++    }
++    if(a.position.w < -1.0 && b.position.w < -1.0){valid=false;}
++    let direct=(a.position.w>eps && b.position.w>eps &&
++        (!clip_depth || (a.position.z>=0.0 && b.position.z>=0.0))) ||
++        (vc.line.y==0.0 && a.position.w<=eps && b.position.w<=eps);
++    if(direct && (any(abs(a.position.xy)>=vec2f(1000000.0)) || any(abs(b.position.xy)>=vec2f(1000000.0)))){valid=false;}
++    if(valid && !direct) {
++        a.position=vec4f(a.position.xyz*a.position.w,a.position.w);
++        b.position=vec4f(b.position.xyz*b.position.w,b.position.w);
++        for(var plane=0u;plane<2u;plane++) {
++            if(plane==1u && !clip_depth){break;}
++            let da=select(a.position.w-eps,a.position.z,plane==1u);
++            let db=select(b.position.w-eps,b.position.z,plane==1u);
++            if(da<0.0 && db<0.0){valid=false;break;}
++            if((da<0.0)!=(db<0.0)) {
++                var c=line_lerp(a,b,da/(da-db));
++                if(plane==0u){c.position.w=eps;}else {c.position.z=0.0;}
++                if(da<0.0){a=c;}else {b=c;}
++            }
++        }
++        a.position=vec4f(a.position.xyz/a.position.w,a.position.w);
++        b.position=vec4f(b.position.xyz/b.position.w,b.position.w);
++    }
++    if(vc.line.y==0.0 && a.position.w>=-1.0 && a.position.w<=eps && b.position.w>=-1.0 && b.position.w<=eps) {
++        a.position.w=1.0;b.position.w=1.0;
++    }
++    a.position.x+=vc.info.w;b.position.x+=vc.info.w;
++    let delta=b.position.xy-a.position.xy;
++    let squared=dot(delta,delta);
++    valid=valid && line_finite(a.position) && line_finite(b.position) &&
++        vc.line.x>0.0 && squared>0.0 && !vinf(squared) &&
++        all(abs(a.position.xy)<=vec2f(1000000.0)) && all(abs(b.position.xy)<=vec2f(1000000.0));
++    var position=vec4f(2.0,2.0,0.5,1.0);
++    if(valid) {
++        let axis=select(0u,1u,abs(delta.x)>=abs(delta.y));
++        let extent=max(abs(delta.x),abs(delta.y))+0.5*min(abs(delta.x),abs(delta.y));
++        var strip=vec2f(-delta.y,delta.x)*(extent/squared);
++        if(strip[axis]<0.0){strip=-strip;}
++        let corner=array<u32,6>(0u,1u,2u,0u,2u,3u)[vertex%6u];
++        let end=corner==1u || corner==2u;
++        let side=select(-1.0,1.0,corner>=2u);
++        let base=select(a.position.xy,b.position.xy,end);
++        var pixel=base+strip*(side*0.5*vc.line.x);
++        if(delta.x==0.0 || delta.y==0.0){pixel[axis]+=1.0/512.0;}
++        let tangent=delta/sqrt(squared);var normal=vec2f(-tangent.y,tangent.x);
++        if(normal[axis]<0.0){normal=-normal;}
++        pixel+=select(-1.0,1.0,end)*tangent+side*normal;
++        let ndc=pixel/vc.info.xy*2.0-1.0;
++        position=vec4f(ndc.x,-ndc.y,0.5,1.0);
++    }
++    return LineOutputs(position,a.position,a.color,a.specular,a.t0,a.t1,a.t2,a.t3,
++        b.position,b.color,b.specular,b.t0,b.t1,b.t2,b.t3,vec2f(a.fog,b.fog));
++}
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -28085,7 +28239,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
-@@ -18,6 +18,8 @@
+@@ -18,15 +18,28 @@
 
  typedef struct {
      uint32_t       key, start;         /* written by the draw thread before publishing */
@@ -28094,7 +28248,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
      uint32_t       inmask;             /* inputs v0..v15 the program reads */
      SDL_AtomicInt  state;
      char          *src;                /* GLSL, handed to the worker */
-@@ -27,6 +29,15 @@
+     uint32_t      *spirv;              /* the worker's result */
+     size_t         words;
+     SDL_GPUShader *vs;                 /* READY */
++    SDL_GPUShader *line_vs;            /* same program, paired endpoint inputs */
++    int line_failed;
  } SgVpProg;
 
  static SgVpProg s_sg_vp[SG_VP_CACHE];
@@ -28110,7 +28268,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
  static struct {
      SDL_Thread    *thread;
-@@ -38,10 +49,12 @@
+@@ -38,10 +51,12 @@
  } s_sg_vpq;
 
  /* FNV-1a over the program's words, as gpu_vp_hash. */
@@ -28124,7 +28282,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
          for (k = 0; k < 4; k++)
              h = (h ^ s_vp.prog[slot][k]) * 16777619u;
          if (vp_field(s_vp.prog[slot], 3, 0, 1))
-@@ -50,21 +63,8 @@
+@@ -50,21 +65,8 @@
      return h;
  }
 
@@ -28148,7 +28306,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
  static int SDLCALL sg_vp_worker(void *arg)
  {
      (void)arg;
-@@ -99,6 +99,7 @@
+@@ -99,6 +101,7 @@
      }
      return 0;
  }
@@ -28156,7 +28314,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
  static int sg_vp_worker_start(void)
  {
-@@ -126,7 +127,20 @@
+@@ -126,7 +129,20 @@
   * the cache is full. *slot_out receives the cache slot. */
  static SDL_GPUShader *sg_vp_program(uint32_t *slot_out)
  {
@@ -28178,7 +28336,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
      for (i = 0; i < SG_VP_CACHE; i++) {
          uint32_t at = (key + i) & (SG_VP_CACHE - 1);
-@@ -134,13 +148,37 @@
+@@ -134,13 +150,37 @@
          int st = SDL_GetAtomicInt(&p->state);
 
          if (st == SG_VP_EMPTY) {
@@ -28219,7 +28377,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
              src = sg_vp_translate(s_vp.start, NULL);
              if (!src) {
                  SDL_SetAtomicInt(&p->state, SG_VP_FAILED);
-@@ -153,9 +191,17 @@
+@@ -153,9 +193,17 @@
              SDL_SignalCondition(s_sg_vpq.wake);
              SDL_UnlockMutex(s_sg_vpq.lock);
              return NULL;
@@ -28237,7 +28395,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
          if (st == SG_VP_SPIRV) {
              /* Compiled: make the SDL shader here, on the draw thread. */
-@@ -174,8 +220,9 @@
+@@ -174,8 +222,24 @@
          }
          if (st != SG_VP_READY)
              return NULL;
@@ -28249,6 +28407,21 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 -}
 \ No newline at end of file
 +}
++
++#ifdef __EMSCRIPTEN__
++static SDL_GPUShader *sg_vp_line_program(uint32_t *slot_out) {
++    if(!sg_vp_program(slot_out))return NULL;
++    SgVpProg *p=&s_sg_vp[*slot_out];
++    if(p->line_vs || p->line_failed)return p->line_vs;
++    char *source=sg_vp_translate_line_wgsl(s_vp.start,p->inmask);
++    if(!source){p->line_failed=1;return NULL;}
++    SDL_GPUShaderCreateInfo info={.code=(const Uint8*)source,.code_size=strlen(source),.entrypoint="main",
++        .format=SDL_GPU_SHADERFORMAT_WGSL,.stage=SDL_GPU_SHADERSTAGE_VERTEX,.num_uniform_buffers=1};
++    p->line_vs=SDL_CreateGPUShader(s_sg.dev,&info);free(source);
++    if(!p->line_vs)p->line_failed=1;
++    return p->line_vs;
++}
++#endif
 diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_xf.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_xf.inc.c
@@ -28571,7 +28744,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -377,15 +489,27 @@
+@@ -377,15 +489,101 @@
  }
 
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
@@ -28580,6 +28753,77 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 -static int sg_draw_vp(SgSurface *s, SgTextureUse tex[4], uint32_t sampled) {
 + * CPU path instead: program still compiling or not translatable, points,
 + * flat colours, or out of memory. */
++static void sg_vp_uniforms_fill(SgVpUniforms *u,SgSurface *s) {
++    memcpy(u->c, s_vp.c, sizeof u->c);
++    u->info[0] = (float) s->w;
++    u->info[1] = (float) s->h;
++    u->info[2] = SG_DEPTH_MAX;
++    u->info[3] = 0.0f;
++    u->clipr[0] = s_vp.clip_min;
++    u->clipr[1] = s_vp.clip_max;
++    u->clipr[2] = s_vp.clip_max > s_vp.clip_min ? 1.0f : 0.0f;
++    u->clipr[3] = 0.0f;
++    u->fogp[0] = s_fog.enable ? 1.0f : 0.0f;
++    memcpy(&u->fogp[1], &s_fog.mode, 4);
++    u->fogp[2] = s_fog.p[0];
++    u->fogp[3] = s_fog.p[1];
++    u->lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
++    u->lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
++    u->lightp[2] = ((s_vp.zminmax >> 4) & 0xFu) != 0 ? 1.0f : 0.0f;
++    u->lightp[3] = 0.0f;
++
++}
++
++#ifdef __EMSCRIPTEN__
++typedef struct {SgVpUniforms base;float line[4];} SgLineVpUniforms;
++typedef struct {SgXfShade base;float params[4];} SgLineVpShade;
++_Static_assert(sizeof(SgLineVpUniforms)<=4096,"line vertex constants fit");
++static struct {float *data;uint32_t capacity,count,stride;VertexInputs inputs;} s_linevp;
++static void sg_pack_line_vp(void *context,uint32_t a,uint32_t b,uint32_t provoking) {
++    (void)context;(void)provoking;
++    uint32_t indices[2]={a,b};
++    float *record=s_linevp.data+(size_t)s_linevp.count*2*s_linevp.stride/sizeof(float);
++    for(unsigned side=0;side<2;side++) {
++        float *out=record+side*s_linevp.stride/sizeof(float);
++        if(!s_linevp.inputs.active_count)memset(out,0,16);
++        for(unsigned k=0;k<s_linevp.inputs.active_count;k++)
++            vertex_inputs_fetch(&s_linevp.inputs,s_linevp.inputs.active[k],indices[side],out+k*4);
++    }
++    s_linevp.count++;
++}
++static int sg_draw_line_vp(SgSurface *surface,SgTextureUse tex[8],uint32_t sampled) {
++    /* Keep the CPU path available for visual and timing comparisons. */
++    if(getenv("RECOMP_SDLGPU_CPU_LINES"))return 0;
++    if(!s_gpu.line_width)return 1;
++    uint32_t slot=0;if(!sg_vp_line_program(&slot))return 0;
++    SDL_GPUGraphicsPipeline *pipe=sg_pipeline_current(1,slot+1);if(!pipe)return 0;
++    s_linevp.stride=sg_vp_input_stride(s_sg_vp[slot].inmask);
++    uint64_t bytes=(uint64_t)s_gpu.idx_count*2*s_linevp.stride;
++    if(bytes>UINT32_MAX)return 0;
++    if(bytes>s_linevp.capacity) {
++        void *grown=realloc(s_linevp.data,(size_t)bytes);if(!grown)return 0;
++        s_linevp.data=grown;s_linevp.capacity=(uint32_t)bytes;
++    }
++    uint32_t max_index=0;
++    for(uint32_t k=0;k<s_gpu.idx_count;k++)if(s_gpu.idx[k]>max_index)max_index=s_gpu.idx[k];
++    vertex_inputs_prepare(&s_linevp.inputs,s_sg_vp[slot].inmask,max_index);
++    s_linevp.count=0;batch_lines(sg_pack_line_vp,NULL);
++    if(!s_linevp.count)return 1;
++    SgLineVpUniforms uniforms={0};sg_vp_uniforms_fill(&uniforms.base,surface);
++    uniforms.line[0]=s_gpu.line_width/8.0f;uniforms.line[1]=s_vp.depth_test!=0;
++    uniforms.line[2]=s_gpu.shade_mode==0x1D00;uniforms.line[3]=s_gpu.provoking_vertex!=0;
++    SgLineVpShade shade={0};sg_xf_shade_fill(&shade.base,sampled);
++    shade.params[0]=1.0f/SG_DEPTH_MAX;shade.params[1]=s_gpu.line_width/8.0f;
++    SgDraw draw={.surface=surface,.pipe=pipe,.vertices=s_linevp.data,
++        .vertex_bytes=s_linevp.count*2*s_linevp.stride,.vertex_count=6,.instance_count=s_linevp.count,
++        .tex=tex,.tex_count=8,.vs_uniform=&uniforms,.vs_uniform_size=sizeof uniforms,
++        .fs_uniform=&shade,.fs_uniform_size=sizeof shade};
++    if(!sg_queue_draw(&draw))return 0;
++    s_sg_stats.gpuvp++;s_sg_stats.line_draws++;s_sg_stats.line_segments+=s_linevp.count;
++    return 1;
++}
++#endif
++
 +static int sg_draw_vp(SgSurface *s, SgTextureUse tex[8], uint32_t sampled) {
      const uint16_t *src = s_gpu.idx;
      uint32_t n = s_gpu.idx_count, i, ni = 0, slot = 0;
@@ -28587,9 +28831,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
      if (!sg_vp_wanted())
          return 0;
-+    /* Host line primitives omit NV2A's angle-dependent width. CPU VP
-+     * preparation supplies explicit geometry on every SDL backend. */
++    /* WebGPU transforms paired endpoints and expands conservative candidates.
++     * Other backends and unsupported programs use CPU VP preparation. */
 +    if(primitive_is_lines(s_gpu.prim)) {
++#ifdef __EMSCRIPTEN__
++        if(sg_draw_line_vp(s,tex,sampled))return 1;
++#endif
 +        s_sg_stats.vp_lines++;s_sg_stats.vp_line_indices+=n;
 +        return 0;
 +    }
@@ -28602,7 +28849,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
          case NV_PRIM_TRIANGLE_STRIP:
-@@ -395,20 +519,45 @@
+@@ -395,20 +593,45 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
@@ -28656,7 +28903,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +570,15 @@
+@@ -421,7 +644,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -28673,8 +28920,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +626,10 @@
-         float zmax = SG_DEPTH_MAX;
+@@ -466,35 +697,19 @@
+     {
+         static SgVpUniforms u; /* 3 KB: not on the stack */
+         SgXfShade shade;
+-        float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
 -            .vertices = s_sgvp.in, .vertex_bytes = s_sgvp.nv * (uint32_t) sizeof *s_sgvp.in,
@@ -28686,17 +28936,30 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +651,8 @@
-         u.fogp[3] = s_fog.p[1];
-         u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
-         u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
+
+         /* The program's constants and the epilogue's parameters (as
+          * gpu_vp_bind fills them; our surfaces have no x offset). */
+-        memcpy(u.c, s_vp.c, sizeof u.c);
+-        u.info[0] = (float) s->w;
+-        u.info[1] = (float) s->h;
+-        u.info[2] = zmax;
+-        u.info[3] = 0.0f;
+-        u.clipr[0] = s_vp.clip_min;
+-        u.clipr[1] = s_vp.clip_max;
+-        u.clipr[2] = s_vp.clip_max > s_vp.clip_min ? 1.0f : 0.0f;
+-        u.clipr[3] = 0.0f;
+-        u.fogp[0] = s_fog.enable ? 1.0f : 0.0f;
+-        memcpy(&u.fogp[1], &s_fog.mode, 4);
+-        u.fogp[2] = s_fog.p[0];
+-        u.fogp[3] = s_fog.p[1];
+-        u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
+-        u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
 -        u.lightp[2] = u.lightp[3] = 0.0f;
-+        u.lightp[2] = ((s_vp.zminmax >> 4) & 0xFu) != 0 ? 1.0f : 0.0f;
-+        u.lightp[3] = 0.0f;
++        sg_vp_uniforms_fill(&u,s);
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,13 +666,13 @@
+@@ -508,13 +723,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -28712,7 +28975,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +690,43 @@
+@@ -532,31 +747,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -28762,7 +29025,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,15 +739,43 @@
+@@ -569,15 +796,43 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,
@@ -28855,7 +29118,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      uvec4 factor0[2];     // combiner constants C0, per stage (UNIQUE_C0) or [0]
      uvec4 factor1[2];     // combiner constants C1
      uvec4 color_icw[2];   // per stage: RGB input words
-@@ -47,8 +57,21 @@
+@@ -47,8 +57,23 @@
      uvec4 alpha_ocw[2];   //            alpha output words
      uvec4 fog;            // x: fog color, low byte red
      uvec4 mode;           // per stage: texture-shader mode (stage program, 5 bits each)
@@ -28868,17 +29131,19 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +    vec4 bump_lum[3];     // x scale, y offset
 +    vec4 lod_bias;        // signed guest bias per texture stage, in mip levels
 +#ifdef NV2A_LINE
++#ifndef NV2A_LINE_VP
 +#ifdef NV2A_LINE_BATCH
 +    vec4 line_endpoint[192]; // 12 original endpoint pairs
 +#else
 +    vec4 line_endpoint[16]; // two std140 128-byte original endpoints
++#endif
 +#endif
 +    vec4 line_params;       // x: vertex depth scale; y: line width
 +#endif
  } sh;
 
  // Same nudge as flat2d.frag: exact texel boundaries land on the same texel
-@@ -93,28 +116,74 @@
+@@ -93,28 +118,74 @@
 
  // Normalised coordinates -> the point-sampled texel, wrapped or clamped as
  // the software path does (raster_triangle_xf + wrap_coord).
@@ -28961,7 +29226,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      vec3 a = max(abs(d), vec3(1e-8));
      vec2 uv;
      if (a.x > a.y && a.x > a.z)      uv = (d.x > 0.0 ? vec2(-d.z, d.y) : vec2(d.z, d.y)) / a.x;
-@@ -123,27 +192,80 @@
+@@ -123,27 +194,80 @@
      return tex2d(s, uv * 0.5 + 0.5);
  }
 
@@ -29055,7 +29320,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 
  // One mapped input byte: register (bits 0-3), alpha channel (bit 4),
  // mapping (bits 5-7). For alpha inputs every component holds the value.
-@@ -155,41 +277,40 @@
+@@ -155,41 +279,40 @@
      vec3 x = is_alpha ? vec3(chan_alpha ? r.a : r.b)
                        : (chan_alpha ? vec3(r.a) : r.rgb);
      vec3 p = max(x, 0.0);
@@ -29124,7 +29389,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
  {
      uint flags = ocw >> 12, mapping = flags & 0x38u;
      uint ab_dst = (ocw >> 4) & 0xFu, cd_dst = ocw & 0xFu, ms_dst = (ocw >> 8) & 0xFu;
-@@ -211,15 +332,21 @@
+@@ -211,15 +334,21 @@
      cd = comb_map3(cd, mapping);
      ms = comb_map3(ms, mapping);
 
@@ -29152,7 +29417,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      }
  }
 
-@@ -248,10 +375,10 @@
+@@ -248,10 +377,10 @@
          int c1 = (control & 0x10000u) != 0u ? s : 0;   // UNIQUE_C1
          src_r[1] = unpack_argb(value8(sh.factor0, c0));
          src_r[2] = unpack_argb(value8(sh.factor1, c1));
@@ -29167,11 +29432,47 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
      }
 
      vec4 result;
-@@ -300,18 +427,93 @@
+@@ -300,18 +429,129 @@
      }
  }
 
-+#ifdef NV2A_LINE_BATCH
++#ifdef NV2A_LINE_VP
++layout(location=0) flat in vec4 v_line_0;
++layout(location=1) flat in vec4 v_line_1;
++layout(location=2) flat in vec4 v_line_2;
++layout(location=3) flat in vec4 v_line_3;
++layout(location=4) flat in vec4 v_line_4;
++layout(location=5) flat in vec4 v_line_5;
++layout(location=6) flat in vec4 v_line_6;
++layout(location=7) flat in vec4 v_line_7;
++layout(location=8) flat in vec4 v_line_8;
++layout(location=9) flat in vec4 v_line_9;
++layout(location=10) flat in vec4 v_line_10;
++layout(location=11) flat in vec4 v_line_11;
++layout(location=12) flat in vec4 v_line_12;
++layout(location=13) flat in vec4 v_line_13;
++layout(location=14) flat in vec2 v_line_fog;
++vec4 line_endpoint_value(int i) {
++    if(i==0)return v_line_0;
++    if(i==1)return v_line_1;
++    if(i==2)return v_line_2;
++    if(i==3)return v_line_3;
++    if(i==4)return v_line_4;
++    if(i==5)return v_line_5;
++    if(i==6)return v_line_6;
++    if(i==7)return vec4(v_line_fog.x,0,0,0);
++    if(i==8)return v_line_7;
++    if(i==9)return v_line_8;
++    if(i==10)return v_line_9;
++    if(i==11)return v_line_10;
++    if(i==12)return v_line_11;
++    if(i==13)return v_line_12;
++    if(i==14)return v_line_13;
++    if(i==15)return vec4(v_line_fog.y,0,0,0);
++    return vec4(0);
++}
++#define LINE_ENDPOINT(i) line_endpoint_value(i)
++#elif defined(NV2A_LINE_BATCH)
 +layout(location=0) flat in float v_line_index;
 +#define LINE_ENDPOINT(i) sh.line_endpoint[int(v_line_index)*16+(i)]
 +#else
@@ -29265,7 +29566,7 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
          c8 = to8(comb_eval(t0, v_col, v_spec, tn));
      } else if (sampled0) {
          // modulate(texel, argb): (t * c + 127) / 255 per channel, in integers.
-@@ -323,10 +525,14 @@
+@@ -323,10 +563,14 @@
      if (sh.alpha.x != 0u && !alpha_pass(c8.a))
          discard;
      out_color = vec4(c8) / 255.0;
@@ -31271,10 +31572,10 @@ index 0000000..b6d2e75
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..ad8c167
+index 0000000..03181d1
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
-@@ -0,0 +1,6958 @@
+@@ -0,0 +1,9178 @@
 +/* Generated by tools/gen-wgsl.py from src/kernel/sdlgpu/shaders: do not edit. */
 +#pragma once
 +
@@ -38077,6 +38378,1981 @@ index 0000000..ad8c167
 +    "    return FragmentOutput(_e114, _e116);\n"
 +    "}\n";
 +
++static const char k_sg_xf_linevp_frag_wgsl[] =
++    "diagnostic(off, derivative_uniformity);\n"
++    "\n"
++    "struct Shade {\n"
++    "    prog: vec4<u32>,\n"
++    "    misc: vec4<u32>,\n"
++    "    alpha: vec4<u32>,\n"
++    "    tex: array<vec4<u32>, 4>,\n"
++    "    factor0_: array<vec4<u32>, 2>,\n"
++    "    factor1_: array<vec4<u32>, 2>,\n"
++    "    color_icw: array<vec4<u32>, 2>,\n"
++    "    color_ocw: array<vec4<u32>, 2>,\n"
++    "    alpha_icw: array<vec4<u32>, 2>,\n"
++    "    alpha_ocw: array<vec4<u32>, 2>,\n"
++    "    fog: vec4<u32>,\n"
++    "    mode: vec4<u32>,\n"
++    "    rect: vec4<u32>,\n"
++    "    depth: vec4<u32>,\n"
++    "    depth_offset: vec4<f32>,\n"
++    "    border: vec4<u32>,\n"
++    "    bump_mat: array<vec4<f32>, 3>,\n"
++    "    bump_lum: array<vec4<f32>, 3>,\n"
++    "    lod_bias: vec4<f32>,\n"
++    "    line_params: vec4<f32>,\n"
++    "}\n"
++    "\n"
++    "struct CombStageResult {\n"
++    "    ab: vec3<f32>,\n"
++    "    cd: vec3<f32>,\n"
++    "    ms: vec3<f32>,\n"
++    "    dst: vec3<u32>,\n"
++    "    flags: u32,\n"
++    "}\n"
++    "\n"
++    "struct FragmentOutput {\n"
++    "    @location(0) out_color: vec4<f32>,\n"
++    "    @builtin(frag_depth) gl_FragDepth: f32,\n"
++    "}\n"
++    "\n"
++    "const TEXEL_BIAS: f32 = 0.001953125f;\n"
++    "\n"
++    "var<private> v_col: vec4<f32>;\n"
++    "var<private> v_spec: vec4<f32>;\n"
++    "var<private> v_t0_: vec4<f32>;\n"
++    "var<private> v_t1_: vec4<f32>;\n"
++    "var<private> v_t2_: vec4<f32>;\n"
++    "var<private> v_t3_: vec4<f32>;\n"
++    "var<private> v_fog: f32;\n"
++    "var<private> v_w: f32;\n"
++    "var<private> line_z: f32;\n"
++    "var<private> line_inv_w: f32;\n"
++    "var<private> out_color: vec4<f32>;\n"
++    "@group(2) @binding(0) \n"
++    "var tex0_t: texture_2d<f32>;\n"
++    "@group(2) @binding(8) \n"
++    "var tex0_s: sampler;\n"
++    "@group(2) @binding(1) \n"
++    "var tex1_t: texture_2d<f32>;\n"
++    "@group(2) @binding(9) \n"
++    "var tex1_s: sampler;\n"
++    "@group(2) @binding(2) \n"
++    "var tex2_t: texture_2d<f32>;\n"
++    "@group(2) @binding(10) \n"
++    "var tex2_s: sampler;\n"
++    "@group(2) @binding(3) \n"
++    "var tex3_t: texture_2d<f32>;\n"
++    "@group(2) @binding(11) \n"
++    "var tex3_s: sampler;\n"
++    "@group(2) @binding(4) \n"
++    "var cube0_t: texture_cube<f32>;\n"
++    "@group(2) @binding(12) \n"
++    "var cube0_s: sampler;\n"
++    "@group(2) @binding(5) \n"
++    "var cube1_t: texture_cube<f32>;\n"
++    "@group(2) @binding(13) \n"
++    "var cube1_s: sampler;\n"
++    "@group(2) @binding(6) \n"
++    "var cube2_t: texture_cube<f32>;\n"
++    "@group(2) @binding(14) \n"
++    "var cube2_s: sampler;\n"
++    "@group(2) @binding(7) \n"
++    "var cube3_t: texture_cube<f32>;\n"
++    "@group(2) @binding(15) \n"
++    "var cube3_s: sampler;\n"
++    "@group(3) @binding(0) \n"
++    "var<uniform> sh: Shade;\n"
++    "var<private> stage_coord: array<vec4<f32>, 4>;\n"
++    "var<private> stage_value: array<vec4<f32>, 4>;\n"
++    "var<private> stage_dot: array<f32, 4>;\n"
++    "var<private> src_r: array<vec4<f32>, 16>;\n"
++    "var<private> v_line_0_1: vec4<f32>;\n"
++    "var<private> v_line_1_1: vec4<f32>;\n"
++    "var<private> v_line_2_1: vec4<f32>;\n"
++    "var<private> v_line_3_1: vec4<f32>;\n"
++    "var<private> v_line_4_1: vec4<f32>;\n"
++    "var<private> v_line_5_1: vec4<f32>;\n"
++    "var<private> v_line_6_1: vec4<f32>;\n"
++    "var<private> v_line_7_1: vec4<f32>;\n"
++    "var<private> v_line_8_1: vec4<f32>;\n"
++    "var<private> v_line_9_1: vec4<f32>;\n"
++    "var<private> v_line_10_1: vec4<f32>;\n"
++    "var<private> v_line_11_1: vec4<f32>;\n"
++    "var<private> v_line_12_1: vec4<f32>;\n"
++    "var<private> v_line_13_1: vec4<f32>;\n"
++    "var<private> v_line_fog_1: vec2<f32>;\n"
++    "var<private> gl_FragCoord_1: vec4<f32>;\n"
++    "var<private> gl_FragDepth: f32;\n"
++    "\n"
++    "fn value8_(packed: array<vec4<u32>, 2>, s: i32) -> u32 {\n"
++    "    var packed_1: array<vec4<u32>, 2>;\n"
++    "    var s_1: i32;\n"
++    "\n"
++    "    packed_1 = packed;\n"
++    "    s_1 = s;\n"
++    "    let _e73 = s_1;\n"
++    "    let _e76 = s_1;\n"
++    "    let _e82 = packed_1[(_e76 >> 2u)][(_e73 & 3i)];\n"
++    "    return _e82;\n"
++    "}\n"
++    "\n"
++    "fn unpack_argb(c: u32) -> vec4<f32> {\n"
++    "    var c_1: u32;\n"
++    "\n"
++    "    c_1 = c;\n"
++    "    let _e71 = c_1;\n"
++    "    let _e78 = c_1;\n"
++    "    let _e85 = c_1;\n"
++    "    let _e89 = c_1;\n"
++    "    return (vec4<f32>(f32(((_e71 >> 16u) & 255u)), f32(((_e78 >> 8u) & 255u)), f32((_e85 & 255u)), f32((_e89 >> 24u))) / vec4(255f));\n"
++    "}\n"
++    "\n"
++    "fn wrap_coord(c_2: u32, size: u32, mode: u32) -> u32 {\n"
++    "    var c_3: u32;\n"
++    "    var size_1: u32;\n"
++    "    var mode_1: u32;\n"
++    "    var local: u32;\n"
++    "\n"
++    "    c_3 = c_2;\n"
++    "    size_1 = size;\n"
++    "    mode_1 = mode;\n"
++    "    let _e75 = size_1;\n"
++    "    if (_e75 == 0u) {\n"
++    "        return 0u;\n"
++    "    }\n"
++    "    let _e79 = mode_1;\n"
++    "    if (_e79 == 1u) {\n"
++    "        let _e82 = c_3;\n"
++    "        let _e83 = size_1;\n"
++    "        return (_e82 % _e83);\n"
++    "    }\n"
++    "    let _e85 = c_3;\n"
++    "    let _e86 = size_1;\n"
++    "    if (_e85 >= _e86) {\n"
++    "        let _e88 = size_1;\n"
++    "        local = (_e88 - 1u);\n"
++    "    } else {\n"
++    "        let _e91 = c_3;\n"
++    "        local = _e91;\n"
++    "    }\n"
++    "    let _e93 = local;\n"
++    "    return _e93;\n"
++    "}\n"
++    "\n"
++    "fn shift_negative(c_4: f32, size_2: f32) -> f32 {\n"
++    "    var c_5: f32;\n"
++    "    var size_3: f32;\n"
++    "    var local_1: f32;\n"
++    "\n"
++    "    c_5 = c_4;\n"
++    "    size_3 = size_2;\n"
++    "    let _e73 = c_5;\n"
++    "    if (_e73 < 0f) {\n"
++    "        let _e76 = c_5;\n"
++    "        let _e77 = size_3;\n"
++    "        let _e78 = c_5;\n"
++    "        let _e80 = size_3;\n"
++    "        local_1 = (_e76 + (_e77 * (floor((-(_e78) / _e80)) + 1f)));\n"
++    "    } else {\n"
++    "        let _e87 = c_5;\n"
++    "        local_1 = _e87;\n"
++    "    }\n"
++    "    let _e89 = local_1;\n"
++    "    return _e89;\n"
++    "}\n"
++    "\n"
++    "fn texel(s_2: i32, at: vec2<i32>) -> vec4<f32> {\n"
++    "    var s_3: i32;\n"
++    "    var at_1: vec2<i32>;\n"
++    "\n"
++    "    s_3 = s_2;\n"
++    "    at_1 = at;\n"
++    "    let _e73 = s_3;\n"
++    "    if (_e73 == 0i) {\n"
++    "        let _e76 = at_1;\n"
++    "        let _e78 = textureLoad(tex0_t, _e76, 0i);\n"
++    "        return _e78;\n"
++    "    }\n"
++    "    let _e79 = s_3;\n"
++    "    if (_e79 == 1i) {\n"
++    "        let _e82 = at_1;\n"
++    "        let _e84 = textureLoad(tex1_t, _e82, 0i);\n"
++    "        return _e84;\n"
++    "    }\n"
++    "    let _e85 = s_3;\n"
++    "    if (_e85 == 2i) {\n"
++    "        let _e88 = at_1;\n"
++    "        let _e90 = textureLoad(tex2_t, _e88, 0i);\n"
++    "        return _e90;\n"
++    "    }\n"
++    "    let _e91 = at_1;\n"
++    "    let _e93 = textureLoad(tex3_t, _e91, 0i);\n"
++    "    return _e93;\n"
++    "}\n"
++    "\n"
++    "fn border_coverage(uv: vec2<f32>, size_4: vec2<f32>, linear_filter: bool) -> vec2<f32> {\n"
++    "    var uv_1: vec2<f32>;\n"
++    "    var size_5: vec2<f32>;\n"
++    "    var linear_filter_1: bool;\n"
++    "\n"
++    "    uv_1 = uv;\n"
++    "    size_5 = size_4;\n"
++    "    linear_filter_1 = linear_filter;\n"
++    "    let _e75 = linear_filter_1;\n"
++    "    if _e75 {\n"
++    "        let _e76 = uv_1;\n"
++    "        let _e77 = size_5;\n"
++    "        let _e88 = uv_1;\n"
++    "        let _e91 = size_5;\n"
++    "        return (clamp(((_e76 * _e77) + vec2(0.5f)), vec2(0f), vec2(1f)) * clamp((((vec2(1f) - _e88) * _e91) + vec2(0.5f)), vec2(0f), vec2(1f)));\n"
++    "    }\n"
++    "    let _e102 = uv_1;\n"
++    "    let _e111 = uv_1;\n"
++    "    return (select(vec2(0f), vec2(1f), (_e102 >= vec2(0f))) * select(vec2(0f), vec2(1f), (_e111 < vec2(1f))));\n"
++    "}\n"
++    "\n"
++    "fn tex2d(s_4: i32, nuv: vec2<f32>) -> vec4<f32> {\n"
++    "    var s_5: i32;\n"
++    "    var nuv_1: vec2<f32>;\n"
++    "    var c_6: vec4<f32>;\n"
++    "    var flags: u32;\n"
++    "    var size_6: vec2<f32>;\n"
++    "    var dx: vec2<f32>;\n"
++    "    var dy: vec2<f32>;\n"
++    "    var rho2_: f32;\n"
++    "    var levels: u32;\n"
++    "    var local_2: f32;\n"
++    "    var max_lod: f32;\n"
++    "    var min_lod: f32 = 0f;\n"
++    "    var local_3: u32;\n"
++    "    var linear_filter_2: bool;\n"
++    "    var local_4: f32;\n"
++    "    var lod: f32;\n"
++    "    var mip_linear: bool;\n"
++    "    var local_5: f32;\n"
++    "    var level: f32;\n"
++    "    var coverage: vec2<f32>;\n"
++    "    var next: vec2<f32>;\n"
++    "    var local_6: f32;\n"
++    "    var local_7: f32;\n"
++    "    var inside: f32;\n"
++    "\n"
++    "    s_5 = s_4;\n"
++    "    nuv_1 = nuv;\n"
++    "    let _e74 = s_5;\n"
++    "    if (_e74 == 0i) {\n"
++    "        let _e77 = nuv_1;\n"
++    "        let _e78 = s_5;\n"
++    "        let _e81 = sh.lod_bias[_e78];\n"
++    "        let _e82 = textureSampleBias(tex0_t, tex0_s, _e77, _e81);\n"
++    "        c_6 = _e82;\n"
++    "    } else {\n"
++    "        let _e83 = s_5;\n"
++    "        if (_e83 == 1i) {\n"
++    "            let _e86 = nuv_1;\n"
++    "            let _e87 = s_5;\n"
++    "            let _e90 = sh.lod_bias[_e87];\n"
++    "            let _e91 = textureSampleBias(tex1_t, tex1_s, _e86, _e90);\n"
++    "            c_6 = _e91;\n"
++    "        } else {\n"
++    "            let _e92 = s_5;\n"
++    "            if (_e92 == 2i) {\n"
++    "                let _e95 = nuv_1;\n"
++    "                let _e96 = s_5;\n"
++    "                let _e99 = sh.lod_bias[_e96];\n"
++    "                let _e100 = textureSampleBias(tex2_t, tex2_s, _e95, _e99);\n"
++    "                c_6 = _e100;\n"
++    "            } else {\n"
++    "                let _e101 = nuv_1;\n"
++    "                let _e102 = s_5;\n"
++    "                let _e105 = sh.lod_bias[_e102];\n"
++    "                let _e106 = textureSampleBias(tex3_t, tex3_s, _e101, _e105);\n"
++    "                c_6 = _e106;\n"
++    "            }\n"
++    "        }\n"
++    "    }\n"
++    "    let _e107 = sh;\n"
++    "    let _e112 = s_5;\n"
++    "    if ((_e107.misc.w & (1u << u32((8i + _e112)))) != 0u) {\n"
++    "        c_6.w = 1f;\n"
++    "    }\n"
++    "    let _e121 = s_5;\n"
++    "    let _e124 = sh.rect[_e121];\n"
++    "    flags = _e124;\n"
++    "    let _e126 = flags;\n"
++    "    if ((_e126 & 6u) != 0u) {\n"
++    "        {\n"
++    "            let _e131 = s_5;\n"
++    "            let _e134 = sh.tex[_e131];\n"
++    "            size_6 = max(vec2<f32>(_e134.xy), vec2(1f));\n"
++    "            let _e141 = nuv_1;\n"
++    "            let _e142 = dpdx(_e141);\n"
++    "            let _e143 = size_6;\n"
++    "            dx = (_e142 * _e143);\n"
++    "            let _e146 = nuv_1;\n"
++    "            let _e147 = dpdy(_e146);\n"
++    "            let _e148 = size_6;\n"
++    "            dy = (_e147 * _e148);\n"
++    "            let _e151 = dx;\n"
++    "            let _e152 = dx;\n"
++    "            let _e154 = dy;\n"
++    "            let _e155 = dy;\n"
++    "            let _e159 = s_5;\n"
++    "            let _e162 = sh.lod_bias[_e159];\n"
++    "            rho2_ = (max(dot(_e151, _e152), dot(_e154, _e155)) * exp2((2f * _e162)));\n"
++    "            let _e167 = flags;\n"
++    "            levels = ((_e167 >> 16u) & 15u);\n"
++    "            let _e174 = levels;\n"
++    "            if (_e174 != 0u) {\n"
++    "                let _e177 = levels;\n"
++    "                local_2 = f32((_e177 - 1u));\n"
++    "            } else {\n"
++    "                let _e181 = size_6;\n"
++    "                let _e183 = size_6;\n"
++    "                local_2 = floor(log2(max(_e181.x, _e183.y)));\n"
++    "            }\n"
++    "            let _e189 = local_2;\n"
++    "            max_lod = _e189;\n"
++    "            let _e193 = flags;\n"
++    "            if ((_e193 & 268435456u) != 0u) {\n"
++    "                {\n"
++    "                    let _e198 = max_lod;\n"
++    "                    let _e199 = s_5;\n"
++    "                    let _e202 = sh.tex[_e199];\n"
++    "                    max_lod = min(_e198, (f32(((_e202.w >> 16u) & 4095u)) / 256f));\n"
++    "                    let _e213 = max_lod;\n"
++    "                    let _e214 = s_5;\n"
++    "                    let _e217 = sh.tex[_e214];\n"
++    "                    min_lod = min(_e213, (f32(((_e217.z >> 16u) & 4095u)) / 256f));\n"
++    "                }\n"
++    "            }\n"
++    "            let _e228 = flags;\n"
++    "            let _e229 = rho2_;\n"
++    "            let _e232 = min_lod;\n"
++    "            if ((_e229 <= 1f) && (_e232 <= 0f)) {\n"
++    "                local_3 = 256u;\n"
++    "            } else {\n"
++    "                local_3 = 512u;\n"
++    "            }\n"
++    "            let _e239 = local_3;\n"
++    "            linear_filter_2 = ((_e228 & _e239) != 0u);\n"
++    "            let _e244 = flags;\n"
++    "            if ((_e244 & 2048u) != 0u) {\n"
++    "                let _e250 = rho2_;\n"
++    "                let _e255 = min_lod;\n"
++    "                let _e256 = max_lod;\n"
++    "                local_4 = clamp((0.5f * log2(max(_e250, 0.00000000000000000001f))), _e255, _e256);\n"
++    "            } else {\n"
++    "                local_4 = 0f;\n"
++    "            }\n"
++    "            let _e260 = local_4;\n"
++    "            lod = _e260;\n"
++    "            let _e262 = flags;\n"
++    "            mip_linear = ((_e262 & 1024u) != 0u);\n"
++    "            let _e268 = mip_linear;\n"
++    "            if _e268 {\n"
++    "                let _e269 = lod;\n"
++    "                local_5 = floor(_e269);\n"
++    "            } else {\n"
++    "                let _e271 = lod;\n"
++    "                local_5 = floor((_e271 + 0.5f));\n"
++    "            }\n"
++    "            let _e276 = local_5;\n"
++    "            level = _e276;\n"
++    "            let _e278 = nuv_1;\n"
++    "            let _e279 = size_6;\n"
++    "            let _e280 = level;\n"
++    "            let _e288 = linear_filter_2;\n"
++    "            let _e289 = border_coverage(_e278, max(floor((_e279 / vec2(exp2(_e280)))), vec2(1f)), _e288);\n"
++    "            coverage = _e289;\n"
++    "            let _e291 = mip_linear;\n"
++    "            if _e291 {\n"
++    "                {\n"
++    "                    let _e292 = nuv_1;\n"
++    "                    let _e293 = size_6;\n"
++    "                    let _e294 = level;\n"
++    "                    let _e304 = linear_filter_2;\n"
++    "                    let _e305 = border_coverage(_e292, max(floor((_e293 / vec2(exp2((_e294 + 1f))))), vec2(1f)), _e304);\n"
++    "                    next = _e305;\n"
++    "                    let _e307 = coverage;\n"
++    "                    let _e308 = next;\n"
++    "                    let _e309 = lod;\n"
++    "                    coverage = mix(_e307, _e308, vec2(fract(_e309)));\n"
++    "                }\n"
++    "            }\n"
++    "            let _e313 = flags;\n"
++    "            if ((_e313 & 2u) != 0u) {\n"
++    "                let _e318 = coverage;\n"
++    "                local_6 = _e318.x;\n"
++    "            } else {\n"
++    "                local_6 = 1f;\n"
++    "            }\n"
++    "            let _e322 = local_6;\n"
++    "            let _e323 = flags;\n"
++    "            if ((_e323 & 4u) != 0u) {\n"
++    "                let _e328 = coverage;\n"
++    "                local_7 = _e328.y;\n"
++    "            } else {\n"
++    "                local_7 = 1f;\n"
++    "            }\n"
++    "            let _e332 = local_7;\n"
++    "            inside = (_e322 * _e332);\n"
++    "            let _e335 = s_5;\n"
++    "            let _e338 = sh.border[_e335];\n"
++    "            let _e339 = unpack_argb(_e338);\n"
++    "            let _e340 = c_6;\n"
++    "            let _e341 = inside;\n"
++    "            c_6 = mix(_e339, _e340, vec4(_e341));\n"
++    "        }\n"
++    "    }\n"
++    "    let _e344 = c_6;\n"
++    "    return _e344;\n"
++    "}\n"
++    "\n"
++    "fn tex2dc(s_6: i32, uv_2: vec2<f32>) -> vec4<f32> {\n"
++    "    var s_7: i32;\n"
++    "    var uv_3: vec2<f32>;\n"
++    "\n"
++    "    s_7 = s_6;\n"
++    "    uv_3 = uv_2;\n"
++    "    let _e73 = s_7;\n"
++    "    let _e76 = sh.rect[_e73];\n"
++    "    if ((_e76 & 1u) != 0u) {\n"
++    "        let _e81 = uv_3;\n"
++    "        let _e82 = s_7;\n"
++    "        let _e85 = sh.tex[_e82];\n"
++    "        uv_3 = (_e81 / vec2<f32>(_e85.xy));\n"
++    "    }\n"
++    "    let _e89 = s_7;\n"
++    "    let _e90 = uv_3;\n"
++    "    let _e91 = tex2d(_e89, _e90);\n"
++    "    return _e91;\n"
++    "}\n"
++    "\n"
++    "fn texcube(s_8: i32, direction: vec3<f32>) -> vec4<f32> {\n"
++    "    var s_9: i32;\n"
++    "    var direction_1: vec3<f32>;\n"
++    "\n"
++    "    s_9 = s_8;\n"
++    "    direction_1 = direction;\n"
++    "    let _e73 = s_9;\n"
++    "    if (_e73 == 0i) {\n"
++    "        let _e76 = direction_1;\n"
++    "        let _e77 = s_9;\n"
++    "        let _e80 = sh.lod_bias[_e77];\n"
++    "        let _e81 = textureSampleBias(cube0_t, cube0_s, _e76, _e80);\n"
++    "        return _e81;\n"
++    "    }\n"
++    "    let _e82 = s_9;\n"
++    "    if (_e82 == 1i) {\n"
++    "        let _e85 = direction_1;\n"
++    "        let _e86 = s_9;\n"
++    "        let _e89 = sh.lod_bias[_e86];\n"
++    "        let _e90 = textureSampleBias(cube1_t, cube1_s, _e85, _e89);\n"
++    "        return _e90;\n"
++    "    }\n"
++    "    let _e91 = s_9;\n"
++    "    if (_e91 == 2i) {\n"
++    "        let _e94 = direction_1;\n"
++    "        let _e95 = s_9;\n"
++    "        let _e98 = sh.lod_bias[_e95];\n"
++    "        let _e99 = textureSampleBias(cube2_t, cube2_s, _e94, _e98);\n"
++    "        return _e99;\n"
++    "    }\n"
++    "    let _e100 = direction_1;\n"
++    "    let _e101 = s_9;\n"
++    "    let _e104 = sh.lod_bias[_e101];\n"
++    "    let _e105 = textureSampleBias(cube3_t, cube3_s, _e100, _e104);\n"
++    "    return _e105;\n"
++    "}\n"
++    "\n"
++    "fn texdir(s_10: i32, d: vec3<f32>) -> vec4<f32> {\n"
++    "    var s_11: i32;\n"
++    "    var d_1: vec3<f32>;\n"
++    "    var a: vec3<f32>;\n"
++    "    var uv_4: vec2<f32>;\n"
++    "    var local_8: vec2<f32>;\n"
++    "    var local_9: vec2<f32>;\n"
++    "    var local_10: vec2<f32>;\n"
++    "\n"
++    "    s_11 = s_10;\n"
++    "    d_1 = d;\n"
++    "    let _e73 = sh;\n"
++    "    let _e77 = s_11;\n"
++    "    if ((_e73.misc.w & (1u << u32(_e77))) != 0u) {\n"
++    "        let _e83 = s_11;\n"
++    "        let _e84 = d_1;\n"
++    "        let _e85 = texcube(_e83, _e84);\n"
++    "        return _e85;\n"
++    "    }\n"
++    "    let _e86 = d_1;\n"
++    "    a = max(abs(_e86), vec3(0.00000001f));\n"
++    "    let _e93 = a;\n"
++    "    let _e95 = a;\n"
++    "    let _e98 = a;\n"
++    "    let _e100 = a;\n"
++    "    if ((_e93.x > _e95.y) && (_e98.x > _e100.z)) {\n"
++    "        let _e104 = d_1;\n"
++    "        if (_e104.x > 0f) {\n"
++    "            let _e108 = d_1;\n"
++    "            let _e111 = d_1;\n"
++    "            local_8 = vec2<f32>(-(_e108.z), _e111.y);\n"
++    "        } else {\n"
++    "            let _e114 = d_1;\n"
++    "            let _e116 = d_1;\n"
++    "            local_8 = vec2<f32>(_e114.z, _e116.y);\n"
++    "        }\n"
++    "        let _e120 = local_8;\n"
++    "        let _e121 = a;\n"
++    "        uv_4 = (_e120 / vec2(_e121.x));\n"
++    "    } else {\n"
++    "        let _e125 = a;\n"
++    "        let _e127 = a;\n"
++    "        let _e130 = a;\n"
++    "        let _e132 = a;\n"
++    "        if ((_e125.y > _e127.x) && (_e130.y > _e132.z)) {\n"
++    "            let _e136 = d_1;\n"
++    "            if (_e136.y > 0f) {\n"
++    "                let _e140 = d_1;\n"
++    "                let _e142 = d_1;\n"
++    "                local_9 = vec2<f32>(_e140.x, -(_e142.z));\n"
++    "            } else {\n"
++    "                let _e146 = d_1;\n"
++    "                let _e148 = d_1;\n"
++    "                local_9 = vec2<f32>(_e146.x, _e148.z);\n"
++    "            }\n"
++    "            let _e152 = local_9;\n"
++    "            let _e153 = a;\n"
++    "            uv_4 = (_e152 / vec2(_e153.y));\n"
++    "        } else {\n"
++    "            let _e157 = d_1;\n"
++    "            if (_e157.z > 0f) {\n"
++    "                let _e161 = d_1;\n"
++    "                let _e163 = d_1;\n"
++    "                local_10 = vec2<f32>(_e161.x, _e163.y);\n"
++    "            } else {\n"
++    "                let _e166 = d_1;\n"
++    "                let _e169 = d_1;\n"
++    "                local_10 = vec2<f32>(-(_e166.x), _e169.y);\n"
++    "            }\n"
++    "            let _e173 = local_10;\n"
++    "            let _e174 = a;\n"
++    "            uv_4 = (_e173 / vec2(_e174.z));\n"
++    "        }\n"
++    "    }\n"
++    "    let _e178 = s_11;\n"
++    "    let _e179 = uv_4;\n"
++    "    let _e185 = tex2d(_e178, ((_e179 * 0.5f) + vec2(0.5f)));\n"
++    "    return _e185;\n"
++    "}\n"
++    "\n"
++    "fn dotmap(s_12: i32, value: vec4<f32>) -> vec3<f32> {\n"
++    "    var s_13: i32;\n"
++    "    var value_1: vec4<f32>;\n"
++    "    var mapping: u32;\n"
++    "    var v: vec3<f32>;\n"
++    "\n"
++    "    s_13 = s_12;\n"
++    "    value_1 = value;\n"
++    "    let _e73 = s_13;\n"
++    "    let _e76 = sh.tex[_e73];\n"
++    "    mapping = (_e76.z & 15u);\n"
++    "    let _e81 = value_1;\n"
++    "    v = (_e81.xyz * 255f);\n"
++    "    let _e86 = mapping;\n"
++    "    if (_e86 == 1u) {\n"
++    "        let _e89 = v;\n"
++    "        return ((_e89 - vec3(128f)) / vec3(127f));\n"
++    "    }\n"
++    "    let _e96 = mapping;\n"
++    "    if (_e96 == 2u) {\n"
++    "        let _e99 = v;\n"
++    "        let _e106 = v;\n"
++    "        let _e113 = v;\n"
++    "        return select(((_e99 + vec3(0.5f)) / vec3(127.5f)), ((_e106 - vec3(255.5f)) / vec3(127.5f)), (_e113 >= vec3(128f)));\n"
++    "    }\n"
++    "    let _e118 = mapping;\n"
++    "    if (_e118 == 3u) {\n"
++    "        let _e121 = v;\n"
++    "        let _e125 = v;\n"
++    "        let _e132 = v;\n"
++    "        return select((_e121 / vec3(127f)), ((_e125 - vec3(256f)) / vec3(127f)), (_e132 >= vec3(128f)));\n"
++    "    }\n"
++    "    let _e137 = value_1;\n"
++    "    return _e137.xyz;\n"
++    "}\n"
++    "\n"
++    "fn stage_sample(s_14: i32, pt: vec4<f32>, m: u32, on: bool) -> vec4<f32> {\n"
++    "    var s_15: i32;\n"
++    "    var pt_1: vec4<f32>;\n"
++    "    var m_1: u32;\n"
++    "    var on_1: bool;\n"
++    "    var previous: vec4<f32>;\n"
++    "    var local_11: f32;\n"
++    "    var w: f32;\n"
++    "    var encoded: vec2<f32>;\n"
++    "    var delta: vec2<f32>;\n"
++    "    var matrix: vec4<f32>;\n"
++    "    var uv_5: vec2<f32>;\n"
++    "    var color: vec4<f32>;\n"
++    "    var dn: f32;\n"
++    "    var n: vec3<f32>;\n"
++    "    var eye: vec3<f32>;\n"
++    "\n"
++    "    s_15 = s_14;\n"
++    "    pt_1 = pt;\n"
++    "    m_1 = m;\n"
++    "    on_1 = on;\n"
++    "    let _e80 = m_1;\n"
++    "    if (_e80 == 0u) {\n"
++    "        return vec4<f32>(0f, 0f, 0f, 1f);\n"
++    "    }\n"
++    "    let _e88 = m_1;\n"
++    "    if (_e88 == 4u) {\n"
++    "        let _e91 = pt_1;\n"
++    "        return clamp(_e91, vec4(0f), vec4(1f));\n"
++    "    }\n"
++    "    let _e97 = m_1;\n"
++    "    if (_e97 == 5u) {\n"
++    "        return vec4(0f);\n"
++    "    }\n"
++    "    let _e102 = s_15;\n"
++    "    let _e105 = sh.tex[_e102];\n"
++    "    let _e112 = stage_value[min((_e105.w & 15u), 3u)];\n"
++    "    previous = _e112;\n"
++    "    let _e114 = m_1;\n"
++    "    if (_e114 == 17u) {\n"
++    "        {\n"
++    "            let _e117 = s_15;\n"
++    "            let _e119 = pt_1;\n"
++    "            let _e121 = s_15;\n"
++    "            let _e122 = previous;\n"
++    "            let _e123 = dotmap(_e121, _e122);\n"
++    "            stage_dot[_e117] = dot(_e119.xyz, _e123);\n"
++    "            return vec4(0f);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e127 = on_1;\n"
++    "    if !(_e127) {\n"
++    "        return vec4(1f);\n"
++    "    }\n"
++    "    let _e131 = m_1;\n"
++    "    let _e134 = m_1;\n"
++    "    if ((_e131 == 1u) || (_e134 == 2u)) {\n"
++    "        {\n"
++    "            let _e138 = sh;\n"
++    "            let _e142 = s_15;\n"
++    "            if ((_e138.misc.w & (1u << u32(_e142))) != 0u) {\n"
++    "                let _e148 = s_15;\n"
++    "                let _e149 = pt_1;\n"
++    "                let _e151 = texcube(_e148, _e149.xyz);\n"
++    "                return _e151;\n"
++    "            }\n"
++    "            let _e152 = m_1;\n"
++    "            let _e155 = m_1;\n"
++    "            let _e159 = pt_1;\n"
++    "            if (((_e152 == 1u) || (_e155 == 2u)) && (_e159.w != 0f)) {\n"
++    "                let _e164 = pt_1;\n"
++    "                local_11 = _e164.w;\n"
++    "            } else {\n"
++    "                local_11 = 1f;\n"
++    "            }\n"
++    "            let _e168 = local_11;\n"
++    "            w = _e168;\n"
++    "            let _e170 = s_15;\n"
++    "            let _e171 = pt_1;\n"
++    "            let _e173 = w;\n"
++    "            let _e176 = tex2dc(_e170, (_e171.xy / vec2(_e173)));\n"
++    "            return _e176;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e177 = m_1;\n"
++    "    let _e180 = m_1;\n"
++    "    let _e184 = s_15;\n"
++    "    if (((_e177 == 6u) || (_e180 == 7u)) && (_e184 >= 1i)) {\n"
++    "        {\n"
++    "            let _e188 = previous;\n"
++    "            encoded = (_e188.zy * 255f);\n"
++    "            let _e193 = encoded;\n"
++    "            let _e194 = encoded;\n"
++    "            let _e198 = encoded;\n"
++    "            delta = (select(_e193, (_e194 - vec2(256f)), (_e198 >= vec2(128f))) / vec2(127f));\n"
++    "            let _e207 = s_15;\n"
++    "            let _e212 = sh.bump_mat[(_e207 - 1i)];\n"
++    "            matrix = _e212;\n"
++    "            let _e214 = pt_1;\n"
++    "            let _e216 = matrix;\n"
++    "            let _e218 = delta;\n"
++    "            let _e221 = matrix;\n"
++    "            let _e223 = delta;\n"
++    "            let _e227 = matrix;\n"
++    "            let _e229 = delta;\n"
++    "            let _e232 = matrix;\n"
++    "            let _e234 = delta;\n"
++    "            uv_5 = (_e214.xy + vec2<f32>(((_e216.x * _e218.x) + (_e221.z * _e223.y)), ((_e227.y * _e229.x) + (_e232.w * _e234.y))));\n"
++    "            let _e241 = s_15;\n"
++    "            let _e242 = uv_5;\n"
++    "            let _e243 = tex2dc(_e241, _e242);\n"
++    "            color = _e243;\n"
++    "            let _e245 = m_1;\n"
++    "            if (_e245 == 7u) {\n"
++    "                let _e248 = color;\n"
++    "                let _e249 = s_15;\n"
++    "                let _e254 = sh.bump_lum[(_e249 - 1i)];\n"
++    "                let _e256 = previous;\n"
++    "                let _e259 = s_15;\n"
++    "                let _e264 = sh.bump_lum[(_e259 - 1i)];\n"
++    "                color = (_e248 * ((_e254.x * _e256.x) + _e264.y));\n"
++    "            }\n"
++    "            let _e268 = color;\n"
++    "            return _e268;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e269 = m_1;\n"
++    "    if (_e269 == 3u) {\n"
++    "        let _e272 = s_15;\n"
++    "        let _e273 = pt_1;\n"
++    "        let _e275 = texdir(_e272, _e273.xyz);\n"
++    "        return _e275;\n"
++    "    }\n"
++    "    let _e276 = m_1;\n"
++    "    let _e279 = s_15;\n"
++    "    if ((_e276 == 9u) && (_e279 >= 1i)) {\n"
++    "        {\n"
++    "            let _e283 = s_15;\n"
++    "            let _e285 = pt_1;\n"
++    "            let _e287 = s_15;\n"
++    "            let _e288 = previous;\n"
++    "            let _e289 = dotmap(_e287, _e288);\n"
++    "            stage_dot[_e283] = dot(_e285.xyz, _e289);\n"
++    "            let _e291 = s_15;\n"
++    "            let _e292 = s_15;\n"
++    "            let _e296 = stage_dot[(_e292 - 1i)];\n"
++    "            let _e297 = s_15;\n"
++    "            let _e299 = stage_dot[_e297];\n"
++    "            let _e301 = tex2dc(_e291, vec2<f32>(_e296, _e299));\n"
++    "            return _e301;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e302 = m_1;\n"
++    "    let _e305 = s_15;\n"
++    "    if ((_e302 == 11u) && (_e305 == 2i)) {\n"
++    "        {\n"
++    "            let _e309 = s_15;\n"
++    "            let _e311 = pt_1;\n"
++    "            let _e313 = s_15;\n"
++    "            let _e314 = previous;\n"
++    "            let _e315 = dotmap(_e313, _e314);\n"
++    "            stage_dot[_e309] = dot(_e311.xyz, _e315);\n"
++    "            let _e319 = stage_coord[3];\n"
++    "            let _e325 = sh.tex[3];\n"
++    "            let _e332 = stage_value[min((_e325.w & 15u), 3u)];\n"
++    "            let _e333 = dotmap(3i, _e332);\n"
++    "            dn = dot(_e319.xyz, _e333);\n"
++    "            let _e336 = s_15;\n"
++    "            let _e339 = stage_dot[1];\n"
++    "            let _e342 = stage_dot[2];\n"
++    "            let _e343 = dn;\n"
++    "            let _e345 = texdir(_e336, vec3<f32>(_e339, _e342, _e343));\n"
++    "            return _e345;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e346 = m_1;\n"
++    "    let _e349 = s_15;\n"
++    "    if ((_e346 == 12u) && (_e349 == 3i)) {\n"
++    "        {\n"
++    "            let _e353 = s_15;\n"
++    "            let _e355 = pt_1;\n"
++    "            let _e357 = s_15;\n"
++    "            let _e358 = previous;\n"
++    "            let _e359 = dotmap(_e357, _e358);\n"
++    "            stage_dot[_e353] = dot(_e355.xyz, _e359);\n"
++    "            let _e363 = stage_dot[1];\n"
++    "            let _e366 = stage_dot[2];\n"
++    "            let _e369 = stage_dot[3];\n"
++    "            n = vec3<f32>(_e363, _e366, _e369);\n"
++    "            let _e374 = stage_coord[1];\n"
++    "            let _e378 = stage_coord[2];\n"
++    "            let _e382 = stage_coord[3];\n"
++    "            eye = vec3<f32>(_e374.w, _e378.w, _e382.w);\n"
++    "            let _e386 = s_15;\n"
++    "            let _e388 = n;\n"
++    "            let _e390 = n;\n"
++    "            let _e391 = eye;\n"
++    "            let _e394 = n;\n"
++    "            let _e395 = n;\n"
++    "            let _e401 = eye;\n"
++    "            let _e403 = texdir(_e386, ((((2f * _e388) * dot(_e390, _e391)) / vec3(max(dot(_e394, _e395), 0.00000001f))) - _e401));\n"
++    "            return _e403;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e404 = m_1;\n"
++    "    let _e407 = m_1;\n"
++    "    let _e411 = s_15;\n"
++    "    if (((_e404 == 13u) || (_e407 == 14u)) && (_e411 == 3i)) {\n"
++    "        {\n"
++    "            let _e415 = s_15;\n"
++    "            let _e417 = pt_1;\n"
++    "            let _e419 = s_15;\n"
++    "            let _e420 = previous;\n"
++    "            let _e421 = dotmap(_e419, _e420);\n"
++    "            stage_dot[_e415] = dot(_e417.xyz, _e421);\n"
++    "            let _e423 = s_15;\n"
++    "            let _e426 = stage_dot[1];\n"
++    "            let _e429 = stage_dot[2];\n"
++    "            let _e432 = stage_dot[3];\n"
++    "            let _e434 = texdir(_e423, vec3<f32>(_e426, _e429, _e432));\n"
++    "            return _e434;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e435 = m_1;\n"
++    "    if (_e435 == 15u) {\n"
++    "        let _e438 = s_15;\n"
++    "        let _e439 = previous;\n"
++    "        let _e441 = tex2d(_e438, _e439.wx);\n"
++    "        return _e441;\n"
++    "    }\n"
++    "    let _e442 = m_1;\n"
++    "    if (_e442 == 16u) {\n"
++    "        let _e445 = s_15;\n"
++    "        let _e446 = previous;\n"
++    "        let _e448 = tex2d(_e445, _e446.yz);\n"
++    "        return _e448;\n"
++    "    }\n"
++    "    return vec4<f32>(0f, 0f, 0f, 1f);\n"
++    "}\n"
++    "\n"
++    "fn comb_input(in_byte: u32, is_alpha: bool) -> vec3<f32> {\n"
++    "    var in_byte_1: u32;\n"
++    "    var is_alpha_1: bool;\n"
++    "    var r: vec4<f32>;\n"
++    "    var chan_alpha: bool;\n"
++    "    var mapping_1: u32;\n"
++    "    var local_12: f32;\n"
++    "    var local_13: vec3<f32>;\n"
++    "    var local_14: vec3<f32>;\n"
++    "    var x: vec3<f32>;\n"
++    "    var p: vec3<f32>;\n"
++    "    var result: vec3<f32>;\n"
++    "\n"
++    "    in_byte_1 = in_byte;\n"
++    "    is_alpha_1 = is_alpha;\n"
++    "    let _e77 = in_byte_1;\n"
++    "    let _e81 = src_r[(_e77 & 15u)];\n"
++    "    r = _e81;\n"
++    "    let _e83 = in_byte_1;\n"
++    "    chan_alpha = ((_e83 & 16u) != 0u);\n"
++    "    let _e89 = in_byte_1;\n"
++    "    mapping_1 = (_e89 & 224u);\n"
++    "    let _e93 = is_alpha_1;\n"
++    "    if _e93 {\n"
++    "        let _e94 = chan_alpha;\n"
++    "        if _e94 {\n"
++    "            let _e95 = r;\n"
++    "            local_12 = _e95.w;\n"
++    "        } else {\n"
++    "            let _e97 = r;\n"
++    "            local_12 = _e97.z;\n"
++    "        }\n"
++    "        let _e100 = local_12;\n"
++    "        local_14 = vec3(_e100);\n"
++    "    } else {\n"
++    "        let _e102 = chan_alpha;\n"
++    "        if _e102 {\n"
++    "            let _e103 = r;\n"
++    "            local_13 = vec3(_e103.w);\n"
++    "        } else {\n"
++    "            let _e106 = r;\n"
++    "            local_13 = _e106.xyz;\n"
++    "        }\n"
++    "        let _e109 = local_13;\n"
++    "        local_14 = _e109;\n"
++    "    }\n"
++    "    let _e111 = local_14;\n"
++    "    x = _e111;\n"
++    "    let _e113 = x;\n"
++    "    p = max(_e113, vec3(0f));\n"
++    "    let _e118 = x;\n"
++    "    result = -(_e118);\n"
++    "    let _e121 = result;\n"
++    "    let _e122 = x;\n"
++    "    let _e123 = mapping_1;\n"
++    "    result = select(_e121, _e122, vec3((_e123 == 192u)));\n"
++    "    let _e128 = result;\n"
++    "    let _e129 = p;\n"
++    "    let _e134 = mapping_1;\n"
++    "    result = select(_e128, (-(_e129) + vec3(0.5f)), vec3((_e134 == 160u)));\n"
++    "    let _e139 = result;\n"
++    "    let _e140 = p;\n"
++    "    let _e144 = mapping_1;\n"
++    "    result = select(_e139, (_e140 - vec3(0.5f)), vec3((_e144 == 128u)));\n"
++    "    let _e149 = result;\n"
++    "    let _e152 = p;\n"
++    "    let _e157 = mapping_1;\n"
++    "    result = select(_e149, ((-2f * _e152) + vec3(1f)), vec3((_e157 == 96u)));\n"
++    "    let _e162 = result;\n"
++    "    let _e164 = p;\n"
++    "    let _e169 = mapping_1;\n"
++    "    result = select(_e162, ((2f * _e164) - vec3(1f)), vec3((_e169 == 64u)));\n"
++    "    let _e174 = result;\n"
++    "    let _e176 = p;\n"
++    "    let _e182 = mapping_1;\n"
++    "    result = select(_e174, (vec3(1f) - min(_e176, vec3(1f))), vec3((_e182 == 32u)));\n"
++    "    let _e187 = result;\n"
++    "    let _e188 = p;\n"
++    "    let _e189 = mapping_1;\n"
++    "    return select(_e187, _e188, vec3((_e189 == 0u)));\n"
++    "}\n"
++    "\n"
++    "fn comb_map3_(x_1: vec3<f32>, mapping_2: u32) -> vec3<f32> {\n"
++    "    var x_2: vec3<f32>;\n"
++    "    var mapping_3: u32;\n"
++    "    var result_1: vec3<f32>;\n"
++    "\n"
++    "    x_2 = x_1;\n"
++    "    mapping_3 = mapping_2;\n"
++    "    let _e77 = x_2;\n"
++    "    let _e78 = x_2;\n"
++    "    let _e82 = mapping_3;\n"
++    "    result_1 = select(_e77, (_e78 - vec3(0.5f)), vec3((_e82 == 8u)));\n"
++    "    let _e88 = result_1;\n"
++    "    let _e89 = x_2;\n"
++    "    let _e92 = mapping_3;\n"
++    "    result_1 = select(_e88, (_e89 * 2f), vec3((_e92 == 16u)));\n"
++    "    let _e97 = result_1;\n"
++    "    let _e98 = x_2;\n"
++    "    let _e104 = mapping_3;\n"
++    "    result_1 = select(_e97, ((_e98 - vec3(0.5f)) * 2f), vec3((_e104 == 24u)));\n"
++    "    let _e109 = result_1;\n"
++    "    let _e110 = x_2;\n"
++    "    let _e113 = mapping_3;\n"
++    "    result_1 = select(_e109, (_e110 * 4f), vec3((_e113 == 32u)));\n"
++    "    let _e118 = result_1;\n"
++    "    let _e119 = x_2;\n"
++    "    let _e122 = mapping_3;\n"
++    "    result_1 = select(_e118, (_e119 * 0.5f), vec3((_e122 == 48u)));\n"
++    "    let _e127 = result_1;\n"
++    "    return clamp(_e127, vec3(-1f), vec3(1f));\n"
++    "}\n"
++    "\n"
++    "fn comb_stage(icw: u32, ocw: u32, is_alpha_2: bool) -> CombStageResult {\n"
++    "    var icw_1: u32;\n"
++    "    var ocw_1: u32;\n"
++    "    var is_alpha_3: bool;\n"
++    "    var flags_1: u32;\n"
++    "    var mapping_4: u32;\n"
++    "    var ab_dst: u32;\n"
++    "    var cd_dst: u32;\n"
++    "    var ms_dst: u32;\n"
++    "    var A: vec3<f32>;\n"
++    "    var B: vec3<f32>;\n"
++    "    var C: vec3<f32>;\n"
++    "    var D: vec3<f32>;\n"
++    "    var local_15: vec3<f32>;\n"
++    "    var ab: vec3<f32>;\n"
++    "    var local_16: vec3<f32>;\n"
++    "    var cd: vec3<f32>;\n"
++    "    var local_17: bool;\n"
++    "    var mux_cd: bool;\n"
++    "    var local_18: vec3<f32>;\n"
++    "    var local_19: vec3<f32>;\n"
++    "    var ms: vec3<f32>;\n"
++    "\n"
++    "    icw_1 = icw;\n"
++    "    ocw_1 = ocw;\n"
++    "    is_alpha_3 = is_alpha_2;\n"
++    "    let _e79 = ocw_1;\n"
++    "    flags_1 = (_e79 >> 12u);\n"
++    "    let _e84 = flags_1;\n"
++    "    mapping_4 = (_e84 & 56u);\n"
++    "    let _e88 = ocw_1;\n"
++    "    ab_dst = ((_e88 >> 4u) & 15u);\n"
++    "    let _e95 = ocw_1;\n"
++    "    cd_dst = (_e95 & 15u);\n"
++    "    let _e99 = ocw_1;\n"
++    "    ms_dst = ((_e99 >> 8u) & 15u);\n"
++    "    let _e106 = icw_1;\n"
++    "    let _e112 = is_alpha_3;\n"
++    "    let _e113 = comb_input(((_e106 >> 24u) & 255u), _e112);\n"
++    "    A = _e113;\n"
++    "    let _e115 = icw_1;\n"
++    "    let _e121 = is_alpha_3;\n"
++    "    let _e122 = comb_input(((_e115 >> 16u) & 255u), _e121);\n"
++    "    B = _e122;\n"
++    "    let _e124 = icw_1;\n"
++    "    let _e130 = is_alpha_3;\n"
++    "    let _e131 = comb_input(((_e124 >> 8u) & 255u), _e130);\n"
++    "    C = _e131;\n"
++    "    let _e133 = icw_1;\n"
++    "    let _e136 = is_alpha_3;\n"
++    "    let _e137 = comb_input((_e133 & 255u), _e136);\n"
++    "    D = _e137;\n"
++    "    let _e139 = is_alpha_3;\n"
++    "    let _e141 = flags_1;\n"
++    "    if (!(_e139) && ((_e141 & 2u) != 0u)) {\n"
++    "        let _e147 = A;\n"
++    "        let _e149 = B;\n"
++    "        let _e152 = A;\n"
++    "        let _e154 = B;\n"
++    "        let _e158 = A;\n"
++    "        let _e160 = B;\n"
++    "        local_15 = vec3((((_e147.x * _e149.x) + (_e152.y * _e154.y)) + (_e158.z * _e160.z)));\n"
++    "    } else {\n"
++    "        let _e165 = A;\n"
++    "        let _e166 = B;\n"
++    "        local_15 = (_e165 * _e166);\n"
++    "    }\n"
++    "    let _e169 = local_15;\n"
++    "    ab = _e169;\n"
++    "    let _e171 = is_alpha_3;\n"
++    "    let _e173 = flags_1;\n"
++    "    if (!(_e171) && ((_e173 & 1u) != 0u)) {\n"
++    "        let _e179 = C;\n"
++    "        let _e181 = D;\n"
++    "        let _e184 = C;\n"
++    "        let _e186 = D;\n"
++    "        let _e190 = C;\n"
++    "        let _e192 = D;\n"
++    "        local_16 = vec3((((_e179.x * _e181.x) + (_e184.y * _e186.y)) + (_e190.z * _e192.z)));\n"
++    "    } else {\n"
++    "        let _e197 = C;\n"
++    "        let _e198 = D;\n"
++    "        local_16 = (_e197 * _e198);\n"
++    "    }\n"
++    "    let _e201 = local_16;\n"
++    "    cd = _e201;\n"
++    "    let _e203 = sh;\n"
++    "    if ((_e203.prog.x & 256u) != 0u) {\n"
++    "        let _e212 = src_r[12];\n"
++    "        local_17 = (_e212.w >= 0.5f);\n"
++    "    } else {\n"
++    "        let _e218 = src_r[12];\n"
++    "        local_17 = ((u32(((_e218.w * 255f) + 0.5f)) & 1u) != 0u);\n"
++    "    }\n"
++    "    let _e230 = local_17;\n"
++    "    mux_cd = _e230;\n"
++    "    let _e232 = flags_1;\n"
++    "    if ((_e232 & 4u) != 0u) {\n"
++    "        let _e237 = mux_cd;\n"
++    "        if _e237 {\n"
++    "            let _e238 = cd;\n"
++    "            local_18 = _e238;\n"
++    "        } else {\n"
++    "            let _e239 = ab;\n"
++    "            local_18 = _e239;\n"
++    "        }\n"
++    "        let _e241 = local_18;\n"
++    "        local_19 = _e241;\n"
++    "    } else {\n"
++    "        let _e242 = ab;\n"
++    "        let _e243 = cd;\n"
++    "        local_19 = (_e242 + _e243);\n"
++    "    }\n"
++    "    let _e246 = local_19;\n"
++    "    ms = _e246;\n"
++    "    let _e248 = ab;\n"
++    "    let _e249 = mapping_4;\n"
++    "    let _e250 = comb_map3_(_e248, _e249);\n"
++    "    ab = _e250;\n"
++    "    let _e251 = cd;\n"
++    "    let _e252 = mapping_4;\n"
++    "    let _e253 = comb_map3_(_e251, _e252);\n"
++    "    cd = _e253;\n"
++    "    let _e254 = ms;\n"
++    "    let _e255 = mapping_4;\n"
++    "    let _e256 = comb_map3_(_e254, _e255);\n"
++    "    ms = _e256;\n"
++    "    let _e257 = ab;\n"
++    "    let _e258 = cd;\n"
++    "    let _e259 = ms;\n"
++    "    let _e260 = ab_dst;\n"
++    "    let _e261 = cd_dst;\n"
++    "    let _e262 = ms_dst;\n"
++    "    let _e264 = flags_1;\n"
++    "    return CombStageResult(_e257, _e258, _e259, vec3<u32>(_e260, _e261, _e262), _e264);\n"
++    "}\n"
++    "\n"
++    "fn comb_store(result_2: CombStageResult, is_alpha_4: bool) {\n"
++    "    var result_3: CombStageResult;\n"
++    "    var is_alpha_5: bool;\n"
++    "    var ab_dst_1: u32;\n"
++    "    var cd_dst_1: u32;\n"
++    "    var ms_dst_1: u32;\n"
++    "\n"
++    "    result_3 = result_2;\n"
++    "    is_alpha_5 = is_alpha_4;\n"
++    "    let _e77 = result_3;\n"
++    "    ab_dst_1 = _e77.dst.x;\n"
++    "    let _e81 = result_3;\n"
++    "    cd_dst_1 = _e81.dst.y;\n"
++    "    let _e85 = result_3;\n"
++    "    ms_dst_1 = _e85.dst.z;\n"
++    "    let _e89 = is_alpha_5;\n"
++    "    if _e89 {\n"
++    "        {\n"
++    "            let _e90 = ab_dst_1;\n"
++    "            if (_e90 != 0u) {\n"
++    "                let _e93 = ab_dst_1;\n"
++    "                let _e96 = result_3;\n"
++    "                src_r[_e93].w = _e96.ab.x;\n"
++    "            }\n"
++    "            let _e99 = cd_dst_1;\n"
++    "            if (_e99 != 0u) {\n"
++    "                let _e102 = cd_dst_1;\n"
++    "                let _e105 = result_3;\n"
++    "                src_r[_e102].w = _e105.cd.x;\n"
++    "            }\n"
++    "            let _e108 = ms_dst_1;\n"
++    "            if (_e108 != 0u) {\n"
++    "                let _e111 = ms_dst_1;\n"
++    "                let _e114 = result_3;\n"
++    "                src_r[_e111].w = _e114.ms.x;\n"
++    "                return;\n"
++    "            } else {\n"
++    "                return;\n"
++    "            }\n"
++    "        }\n"
++    "    } else {\n"
++    "        {\n"
++    "            let _e117 = ab_dst_1;\n"
++    "            if (_e117 != 0u) {\n"
++    "                {\n"
++    "                    let _e120 = ab_dst_1;\n"
++    "                    let _e122 = src_r[_e120];\n"
++    "                    let _e124 = result_3;\n"
++    "                    src_r[_e120].x = _e124.ab.x;\n"
++    "                    src_r[_e120].y = _e124.ab.y;\n"
++    "                    src_r[_e120].z = _e124.ab.z;\n"
++    "                    let _e132 = result_3;\n"
++    "                    if ((_e132.flags & 128u) != 0u) {\n"
++    "                        let _e138 = ab_dst_1;\n"
++    "                        let _e141 = result_3;\n"
++    "                        src_r[_e138].w = _e141.ab.z;\n"
++    "                    }\n"
++    "                }\n"
++    "            }\n"
++    "            let _e144 = cd_dst_1;\n"
++    "            if (_e144 != 0u) {\n"
++    "                {\n"
++    "                    let _e147 = cd_dst_1;\n"
++    "                    let _e149 = src_r[_e147];\n"
++    "                    let _e151 = result_3;\n"
++    "                    src_r[_e147].x = _e151.cd.x;\n"
++    "                    src_r[_e147].y = _e151.cd.y;\n"
++    "                    src_r[_e147].z = _e151.cd.z;\n"
++    "                    let _e159 = result_3;\n"
++    "                    if ((_e159.flags & 64u) != 0u) {\n"
++    "                        let _e165 = cd_dst_1;\n"
++    "                        let _e168 = result_3;\n"
++    "                        src_r[_e165].w = _e168.cd.z;\n"
++    "                    }\n"
++    "                }\n"
++    "            }\n"
++    "            let _e171 = ms_dst_1;\n"
++    "            if (_e171 != 0u) {\n"
++    "                let _e174 = ms_dst_1;\n"
++    "                let _e176 = src_r[_e174];\n"
++    "                let _e178 = result_3;\n"
++    "                src_r[_e174].x = _e178.ms.x;\n"
++    "                src_r[_e174].y = _e178.ms.y;\n"
++    "                src_r[_e174].z = _e178.ms.z;\n"
++    "                return;\n"
++    "            } else {\n"
++    "                return;\n"
++    "            }\n"
++    "        }\n"
++    "    }\n"
++    "}\n"
++    "\n"
++    "fn comb_eval(t0_: vec4<f32>, v0_: vec4<f32>, v1_: vec4<f32>, tn: array<vec4<f32>, 3>) -> vec4<f32> {\n"
++    "    var t0_1: vec4<f32>;\n"
++    "    var v0_1: vec4<f32>;\n"
++    "    var v1_1: vec4<f32>;\n"
++    "    var tn_1: array<vec4<f32>, 3>;\n"
++    "    var control: u32;\n"
++    "    var stage_prog: u32;\n"
++    "    var final0_: u32;\n"
++    "    var final1_: u32;\n"
++    "    var stages: i32;\n"
++    "    var i: i32 = 0i;\n"
++    "    var s_16: i32 = 1i;\n"
++    "    var local_20: f32;\n"
++    "    var s_17: i32 = 0i;\n"
++    "    var local_21: i32;\n"
++    "    var c0_: i32;\n"
++    "    var local_22: i32;\n"
++    "    var c1_: i32;\n"
++    "    var rgb: CombStageResult;\n"
++    "    var alpha: CombStageResult;\n"
++    "    var result_4: vec4<f32>;\n"
++    "    var fl: u32;\n"
++    "    var E: vec3<f32>;\n"
++    "    var F: vec3<f32>;\n"
++    "    var local_23: vec3<f32>;\n"
++    "    var v1c: vec3<f32>;\n"
++    "    var local_24: vec3<f32>;\n"
++    "    var r0c: vec3<f32>;\n"
++    "    var sum: vec3<f32>;\n"
++    "    var A_1: vec3<f32>;\n"
++    "    var B_1: vec3<f32>;\n"
++    "    var C_1: vec3<f32>;\n"
++    "    var D_1: vec3<f32>;\n"
++    "    var G: vec3<f32>;\n"
++    "\n"
++    "    t0_1 = t0_;\n"
++    "    v0_1 = v0_;\n"
++    "    v1_1 = v1_;\n"
++    "    tn_1 = tn;\n"
++    "    let _e81 = sh;\n"
++    "    control = _e81.prog.x;\n"
++    "    let _e85 = sh;\n"
++    "    stage_prog = _e85.prog.y;\n"
++    "    let _e89 = sh;\n"
++    "    final0_ = _e89.prog.z;\n"
++    "    let _e93 = sh;\n"
++    "    final1_ = _e93.prog.w;\n"
++    "    let _e97 = control;\n"
++    "    stages = min(i32((_e97 & 255u)), 8i);\n"
++    "    loop {\n"
++    "        let _e106 = i;\n"
++    "        if !((_e106 < 16i)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        let _e113 = i;\n"
++    "        src_r[_e113] = vec4(0f);\n"
++    "        continuing {\n"
++    "            let _e110 = i;\n"
++    "            i = (_e110 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e119 = v0_1;\n"
++    "    src_r[4i] = _e119;\n"
++    "    let _e122 = v1_1;\n"
++    "    src_r[5i] = _e122;\n"
++    "    let _e125 = sh;\n"
++    "    let _e131 = sh;\n"
++    "    let _e140 = sh;\n"
++    "    src_r[3i] = (vec4<f32>(f32((_e125.fog.x & 255u)), f32(((_e131.fog.x >> 8u) & 255u)), f32(((_e140.fog.x >> 16u) & 255u)), 0f) / vec4(255f));\n"
++    "    let _e157 = v_fog;\n"
++    "    src_r[3i].w = clamp(_e157, 0f, 1f);\n"
++    "    let _e163 = t0_1;\n"
++    "    src_r[8i] = _e163;\n"
++    "    loop {\n"
++    "        let _e166 = s_16;\n"
++    "        if !((_e166 < 4i)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        let _e173 = stage_prog;\n"
++    "        let _e174 = s_16;\n"
++    "        if (((_e173 >> u32((_e174 * 5i))) & 31u) != 0u) {\n"
++    "            let _e184 = s_16;\n"
++    "            let _e187 = s_16;\n"
++    "            let _e191 = tn_1[(_e187 - 1i)];\n"
++    "            src_r[(8i + _e184)] = _e191;\n"
++    "        }\n"
++    "        continuing {\n"
++    "            let _e170 = s_16;\n"
++    "            s_16 = (_e170 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e195 = stage_prog;\n"
++    "    if ((_e195 & 31u) != 0u) {\n"
++    "        let _e200 = t0_1;\n"
++    "        local_20 = _e200.w;\n"
++    "    } else {\n"
++    "        local_20 = 1f;\n"
++    "    }\n"
++    "    let _e204 = local_20;\n"
++    "    src_r[12i].w = _e204;\n"
++    "    loop {\n"
++    "        let _e207 = s_17;\n"
++    "        let _e208 = stages;\n"
++    "        if !((_e207 < _e208)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        {\n"
++    "            let _e214 = control;\n"
++    "            if ((_e214 & 4096u) != 0u) {\n"
++    "                let _e219 = s_17;\n"
++    "                local_21 = _e219;\n"
++    "            } else {\n"
++    "                local_21 = 0i;\n"
++    "            }\n"
++    "            let _e222 = local_21;\n"
++    "            c0_ = _e222;\n"
++    "            let _e224 = control;\n"
++    "            if ((_e224 & 65536u) != 0u) {\n"
++    "                let _e229 = s_17;\n"
++    "                local_22 = _e229;\n"
++    "            } else {\n"
++    "                local_22 = 0i;\n"
++    "            }\n"
++    "            let _e232 = local_22;\n"
++    "            c1_ = _e232;\n"
++    "            let _e236 = sh;\n"
++    "            let _e238 = c0_;\n"
++    "            let _e239 = value8_(_e236.factor0_, _e238);\n"
++    "            let _e240 = unpack_argb(_e239);\n"
++    "            src_r[1i] = _e240;\n"
++    "            let _e243 = sh;\n"
++    "            let _e245 = c1_;\n"
++    "            let _e246 = value8_(_e243.factor1_, _e245);\n"
++    "            let _e247 = unpack_argb(_e246);\n"
++    "            src_r[2i] = _e247;\n"
++    "            let _e248 = sh;\n"
++    "            let _e250 = s_17;\n"
++    "            let _e251 = value8_(_e248.color_icw, _e250);\n"
++    "            let _e252 = sh;\n"
++    "            let _e254 = s_17;\n"
++    "            let _e255 = value8_(_e252.color_ocw, _e254);\n"
++    "            let _e257 = comb_stage(_e251, _e255, false);\n"
++    "            rgb = _e257;\n"
++    "            let _e259 = sh;\n"
++    "            let _e261 = s_17;\n"
++    "            let _e262 = value8_(_e259.alpha_icw, _e261);\n"
++    "            let _e263 = sh;\n"
++    "            let _e265 = s_17;\n"
++    "            let _e266 = value8_(_e263.alpha_ocw, _e265);\n"
++    "            let _e268 = comb_stage(_e262, _e266, true);\n"
++    "            alpha = _e268;\n"
++    "            let _e270 = rgb;\n"
++    "            comb_store(_e270, false);\n"
++    "            let _e272 = alpha;\n"
++    "            comb_store(_e272, true);\n"
++    "        }\n"
++    "        continuing {\n"
++    "            let _e211 = s_17;\n"
++    "            s_17 = (_e211 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e275 = final0_;\n"
++    "    let _e278 = final1_;\n"
++    "    if ((_e275 != 0u) || (_e278 != 0u)) {\n"
++    "        {\n"
++    "            let _e282 = final1_;\n"
++    "            fl = (_e282 & 255u);\n"
++    "            let _e288 = sh;\n"
++    "            let _e291 = unpack_argb(_e288.misc.x);\n"
++    "            src_r[1i] = _e291;\n"
++    "            let _e294 = sh;\n"
++    "            let _e297 = unpack_argb(_e294.misc.y);\n"
++    "            src_r[2i] = _e297;\n"
++    "            let _e298 = final1_;\n"
++    "            let _e305 = comb_input(((_e298 >> 24u) & 255u), false);\n"
++    "            E = _e305;\n"
++    "            let _e307 = final1_;\n"
++    "            let _e314 = comb_input(((_e307 >> 16u) & 255u), false);\n"
++    "            F = _e314;\n"
++    "            let _e316 = fl;\n"
++    "            if ((_e316 & 64u) != 0u) {\n"
++    "                let _e324 = src_r[5];\n"
++    "                local_23 = (vec3(1f) - _e324.xyz);\n"
++    "            } else {\n"
++    "                let _e330 = src_r[5];\n"
++    "                local_23 = _e330.xyz;\n"
++    "            }\n"
++    "            let _e333 = local_23;\n"
++    "            v1c = _e333;\n"
++    "            let _e335 = fl;\n"
++    "            if ((_e335 & 32u) != 0u) {\n"
++    "                let _e343 = src_r[12];\n"
++    "                local_24 = (vec3(1f) - _e343.xyz);\n"
++    "            } else {\n"
++    "                let _e349 = src_r[12];\n"
++    "                local_24 = _e349.xyz;\n"
++    "            }\n"
++    "            let _e352 = local_24;\n"
++    "            r0c = _e352;\n"
++    "            let _e354 = v1c;\n"
++    "            let _e355 = r0c;\n"
++    "            sum = (_e354 + _e355);\n"
++    "            let _e358 = fl;\n"
++    "            if ((_e358 & 128u) != 0u) {\n"
++    "                let _e363 = sum;\n"
++    "                sum = clamp(_e363, vec3(0f), vec3(1f));\n"
++    "            }\n"
++    "            let _e371 = sum;\n"
++    "            src_r[14i] = vec4<f32>(_e371.x, _e371.y, _e371.z, 0f);\n"
++    "            let _e379 = E;\n"
++    "            let _e380 = F;\n"
++    "            let _e381 = (_e379 * _e380);\n"
++    "            src_r[15i] = vec4<f32>(_e381.x, _e381.y, _e381.z, 0f);\n"
++    "            let _e387 = final0_;\n"
++    "            let _e394 = comb_input(((_e387 >> 24u) & 255u), false);\n"
++    "            A_1 = _e394;\n"
++    "            let _e396 = final0_;\n"
++    "            let _e403 = comb_input(((_e396 >> 16u) & 255u), false);\n"
++    "            B_1 = _e403;\n"
++    "            let _e405 = final0_;\n"
++    "            let _e412 = comb_input(((_e405 >> 8u) & 255u), false);\n"
++    "            C_1 = _e412;\n"
++    "            let _e414 = final0_;\n"
++    "            let _e418 = comb_input((_e414 & 255u), false);\n"
++    "            D_1 = _e418;\n"
++    "            let _e420 = final1_;\n"
++    "            let _e427 = comb_input(((_e420 >> 8u) & 255u), true);\n"
++    "            G = _e427;\n"
++    "            let _e429 = D_1;\n"
++    "            let _e430 = C_1;\n"
++    "            let _e432 = A_1;\n"
++    "            let _e437 = B_1;\n"
++    "            let _e438 = A_1;\n"
++    "            let _e440 = ((_e429 + (_e430 * (vec3(1f) - _e432))) + (_e437 * _e438));\n"
++    "            let _e441 = G;\n"
++    "            result_4 = vec4<f32>(_e440.x, _e440.y, _e440.z, _e441.x);\n"
++    "        }\n"
++    "    } else {\n"
++    "        {\n"
++    "            let _e449 = src_r[12];\n"
++    "            result_4 = _e449;\n"
++    "        }\n"
++    "    }\n"
++    "    let _e450 = result_4;\n"
++    "    return clamp(_e450, vec4(0f), vec4(1f));\n"
++    "}\n"
++    "\n"
++    "fn to8_(c_7: vec4<f32>) -> vec4<u32> {\n"
++    "    var c_8: vec4<f32>;\n"
++    "\n"
++    "    c_8 = c_7;\n"
++    "    let _e75 = c_8;\n"
++    "    return vec4<u32>(((clamp(_e75, vec4(0f), vec4(1f)) * 255f) + vec4(0.5f)));\n"
++    "}\n"
++    "\n"
++    "fn alpha_pass(a_1: u32) -> bool {\n"
++    "    var a_2: u32;\n"
++    "    var r_1: u32;\n"
++    "\n"
++    "    a_2 = a_1;\n"
++    "    let _e75 = sh;\n"
++    "    r_1 = _e75.alpha.z;\n"
++    "    let _e79 = sh;\n"
++    "    if (_e79.alpha.y == 512u) {\n"
++    "        return false;\n"
++    "    }\n"
++    "    let _e85 = sh;\n"
++    "    if (_e85.alpha.y == 513u) {\n"
++    "        let _e90 = a_2;\n"
++    "        let _e91 = r_1;\n"
++    "        return (_e90 < _e91);\n"
++    "    }\n"
++    "    let _e93 = sh;\n"
++    "    if (_e93.alpha.y == 514u) {\n"
++    "        let _e98 = a_2;\n"
++    "        let _e99 = r_1;\n"
++    "        return (_e98 == _e99);\n"
++    "    }\n"
++    "    let _e101 = sh;\n"
++    "    if (_e101.alpha.y == 515u) {\n"
++    "        let _e106 = a_2;\n"
++    "        let _e107 = r_1;\n"
++    "        return (_e106 <= _e107);\n"
++    "    }\n"
++    "    let _e109 = sh;\n"
++    "    if (_e109.alpha.y == 516u) {\n"
++    "        let _e114 = a_2;\n"
++    "        let _e115 = r_1;\n"
++    "        return (_e114 > _e115);\n"
++    "    }\n"
++    "    let _e117 = sh;\n"
++    "    if (_e117.alpha.y == 517u) {\n"
++    "        let _e122 = a_2;\n"
++    "        let _e123 = r_1;\n"
++    "        return (_e122 != _e123);\n"
++    "    }\n"
++    "    let _e125 = sh;\n"
++    "    if (_e125.alpha.y == 518u) {\n"
++    "        let _e130 = a_2;\n"
++    "        let _e131 = r_1;\n"
++    "        return (_e130 >= _e131);\n"
++    "    }\n"
++    "    return true;\n"
++    "}\n"
++    "\n"
++    "fn line_endpoint_value(i_1: i32) -> vec4<f32> {\n"
++    "    var i_2: i32;\n"
++    "\n"
++    "    i_2 = i_1;\n"
++    "    let _e90 = i_2;\n"
++    "    if (_e90 == 0i) {\n"
++    "        let _e93 = v_line_0_1;\n"
++    "        return _e93;\n"
++    "    }\n"
++    "    let _e94 = i_2;\n"
++    "    if (_e94 == 1i) {\n"
++    "        let _e97 = v_line_1_1;\n"
++    "        return _e97;\n"
++    "    }\n"
++    "    let _e98 = i_2;\n"
++    "    if (_e98 == 2i) {\n"
++    "        let _e101 = v_line_2_1;\n"
++    "        return _e101;\n"
++    "    }\n"
++    "    let _e102 = i_2;\n"
++    "    if (_e102 == 3i) {\n"
++    "        let _e105 = v_line_3_1;\n"
++    "        return _e105;\n"
++    "    }\n"
++    "    let _e106 = i_2;\n"
++    "    if (_e106 == 4i) {\n"
++    "        let _e109 = v_line_4_1;\n"
++    "        return _e109;\n"
++    "    }\n"
++    "    let _e110 = i_2;\n"
++    "    if (_e110 == 5i) {\n"
++    "        let _e113 = v_line_5_1;\n"
++    "        return _e113;\n"
++    "    }\n"
++    "    let _e114 = i_2;\n"
++    "    if (_e114 == 6i) {\n"
++    "        let _e117 = v_line_6_1;\n"
++    "        return _e117;\n"
++    "    }\n"
++    "    let _e118 = i_2;\n"
++    "    if (_e118 == 7i) {\n"
++    "        let _e121 = v_line_fog_1;\n"
++    "        return vec4<f32>(_e121.x, 0f, 0f, 0f);\n"
++    "    }\n"
++    "    let _e130 = i_2;\n"
++    "    if (_e130 == 8i) {\n"
++    "        let _e133 = v_line_7_1;\n"
++    "        return _e133;\n"
++    "    }\n"
++    "    let _e134 = i_2;\n"
++    "    if (_e134 == 9i) {\n"
++    "        let _e137 = v_line_8_1;\n"
++    "        return _e137;\n"
++    "    }\n"
++    "    let _e138 = i_2;\n"
++    "    if (_e138 == 10i) {\n"
++    "        let _e141 = v_line_9_1;\n"
++    "        return _e141;\n"
++    "    }\n"
++    "    let _e142 = i_2;\n"
++    "    if (_e142 == 11i) {\n"
++    "        let _e145 = v_line_10_1;\n"
++    "        return _e145;\n"
++    "    }\n"
++    "    let _e146 = i_2;\n"
++    "    if (_e146 == 12i) {\n"
++    "        let _e149 = v_line_11_1;\n"
++    "        return _e149;\n"
++    "    }\n"
++    "    let _e150 = i_2;\n"
++    "    if (_e150 == 13i) {\n"
++    "        let _e153 = v_line_12_1;\n"
++    "        return _e153;\n"
++    "    }\n"
++    "    let _e154 = i_2;\n"
++    "    if (_e154 == 14i) {\n"
++    "        let _e157 = v_line_13_1;\n"
++    "        return _e157;\n"
++    "    }\n"
++    "    let _e158 = i_2;\n"
++    "    if (_e158 == 15i) {\n"
++    "        let _e161 = v_line_fog_1;\n"
++    "        return vec4<f32>(_e161.y, 0f, 0f, 0f);\n"
++    "    }\n"
++    "    return vec4(0f);\n"
++    "}\n"
++    "\n"
++    "fn main_1() {\n"
++    "    var delta_1: vec2<f32>;\n"
++    "    var point: vec2<f32>;\n"
++    "    var squared: f32;\n"
++    "    var line_t: f32;\n"
++    "    var extent: f32;\n"
++    "    var cross: f32;\n"
++    "    var bound: f32;\n"
++    "    var local_25: f32;\n"
++    "    var major: f32;\n"
++    "    var line_inside: bool;\n"
++    "    var weights: vec2<f32>;\n"
++    "    var zmax: f32;\n"
++    "    var w_buffer: bool;\n"
++    "    var fragment_z: f32;\n"
++    "    var fragment_inv_w: f32;\n"
++    "    var slope_z: f32;\n"
++    "    var slope_inv_w: f32;\n"
++    "    var sampled0_: bool;\n"
++    "    var st: i32 = 0i;\n"
++    "    var kill_fragment: bool = false;\n"
++    "    var st_1: i32 = 0i;\n"
++    "    var m_2: u32;\n"
++    "    var compare: u32;\n"
++    "    var k: i32;\n"
++    "    var value_2: f32;\n"
++    "    var t0_2: vec4<f32>;\n"
++    "    var c8_: vec4<u32>;\n"
++    "    var tn_2: array<vec4<f32>, 3>;\n"
++    "    var local_26: f32;\n"
++    "    var zd: f32;\n"
++    "    var local_27: f32;\n"
++    "    var slope: f32;\n"
++    "    var cmin: f32;\n"
++    "    var cmax: f32;\n"
++    "\n"
++    "    let _e89 = line_endpoint_value(8i);\n"
++    "    let _e92 = line_endpoint_value(0i);\n"
++    "    delta_1 = (_e89.xy - _e92.xy);\n"
++    "    let _e97 = gl_FragCoord_1;\n"
++    "    let _e100 = line_endpoint_value(0i);\n"
++    "    point = (_e97.xy - _e100.xy);\n"
++    "    let _e104 = delta_1;\n"
++    "    if (_e104.x == 0f) {\n"
++    "        let _e109 = point;\n"
++    "        point.x = (_e109.x - 0.001953125f);\n"
++    "    }\n"
++    "    let _e115 = delta_1;\n"
++    "    if (_e115.y == 0f) {\n"
++    "        let _e120 = point;\n"
++    "        point.y = (_e120.y - 0.001953125f);\n"
++    "    }\n"
++    "    let _e126 = delta_1;\n"
++    "    let _e127 = delta_1;\n"
++    "    squared = dot(_e126, _e127);\n"
++    "    let _e130 = point;\n"
++    "    let _e131 = delta_1;\n"
++    "    let _e133 = squared;\n"
++    "    line_t = (dot(_e130, _e131) / _e133);\n"
++    "    let _e136 = delta_1;\n"
++    "    let _e139 = delta_1;\n"
++    "    let _e144 = delta_1;\n"
++    "    let _e147 = delta_1;\n"
++    "    extent = (max(abs(_e136.x), abs(_e139.y)) + (0.5f * min(abs(_e144.x), abs(_e147.y))));\n"
++    "    let _e154 = delta_1;\n"
++    "    let _e156 = point;\n"
++    "    let _e159 = delta_1;\n"
++    "    let _e161 = point;\n"
++    "    cross = ((_e154.x * _e156.y) - (_e159.y * _e161.x));\n"
++    "    let _e166 = sh;\n"
++    "    let _e169 = extent;\n"
++    "    bound = ((_e166.line_params.y * _e169) * 0.5f);\n"
++    "    let _e174 = delta_1;\n"
++    "    let _e177 = delta_1;\n"
++    "    if (abs(_e174.x) >= abs(_e177.y)) {\n"
++    "        let _e181 = delta_1;\n"
++    "        local_25 = _e181.x;\n"
++    "    } else {\n"
++    "        let _e183 = delta_1;\n"
++    "        local_25 = _e183.y;\n"
++    "    }\n"
++    "    let _e186 = local_25;\n"
++    "    major = _e186;\n"
++    "    let _e188 = squared;\n"
++    "    let _e191 = sh;\n"
++    "    let _e197 = line_t;\n"
++    "    let _e201 = line_t;\n"
++    "    let _e205 = cross;\n"
++    "    let _e207 = bound;\n"
++    "    let _e209 = cross;\n"
++    "    let _e211 = bound;\n"
++    "    let _e213 = cross;\n"
++    "    let _e214 = major;\n"
++    "    line_inside = (((((_e188 > 0f) && (_e191.line_params.y > 0f)) && (_e197 > 0f)) && (_e201 < 1f)) && ((abs(_e205) < _e207) || ((abs(_e209) == _e211) && ((_e213 * _e214) < 0f))));\n"
++    "    let _e223 = line_t;\n"
++    "    let _e225 = line_t;\n"
++    "    let _e228 = line_endpoint_value(0i);\n"
++    "    let _e231 = line_endpoint_value(8i);\n"
++    "    weights = (vec2<f32>((1f - _e223), _e225) / vec2<f32>(_e228.w, _e231.w));\n"
++    "    let _e236 = weights;\n"
++    "    let _e238 = weights;\n"
++    "    line_inv_w = (_e236.x + _e238.y);\n"
++    "    let _e241 = weights;\n"
++    "    let _e242 = line_inv_w;\n"
++    "    weights = (_e241 / vec2(_e242));\n"
++    "    let _e246 = line_endpoint_value(1i);\n"
++    "    let _e247 = weights;\n"
++    "    let _e251 = line_endpoint_value(9i);\n"
++    "    let _e252 = weights;\n"
++    "    v_col = ((_e246 * _e247.x) + (_e251 * _e252.y));\n"
++    "    let _e257 = line_endpoint_value(2i);\n"
++    "    let _e258 = weights;\n"
++    "    let _e262 = line_endpoint_value(10i);\n"
++    "    let _e263 = weights;\n"
++    "    v_spec = ((_e257 * _e258.x) + (_e262 * _e263.y));\n"
++    "    let _e268 = line_endpoint_value(3i);\n"
++    "    let _e269 = weights;\n"
++    "    let _e273 = line_endpoint_value(11i);\n"
++    "    let _e274 = weights;\n"
++    "    v_t0_ = ((_e268 * _e269.x) + (_e273 * _e274.y));\n"
++    "    let _e279 = line_endpoint_value(4i);\n"
++    "    let _e280 = weights;\n"
++    "    let _e284 = line_endpoint_value(12i);\n"
++    "    let _e285 = weights;\n"
++    "    v_t1_ = ((_e279 * _e280.x) + (_e284 * _e285.y));\n"
++    "    let _e290 = line_endpoint_value(5i);\n"
++    "    let _e291 = weights;\n"
++    "    let _e295 = line_endpoint_value(13i);\n"
++    "    let _e296 = weights;\n"
++    "    v_t2_ = ((_e290 * _e291.x) + (_e295 * _e296.y));\n"
++    "    let _e301 = line_endpoint_value(6i);\n"
++    "    let _e302 = weights;\n"
++    "    let _e306 = line_endpoint_value(14i);\n"
++    "    let _e307 = weights;\n"
++    "    v_t3_ = ((_e301 * _e302.x) + (_e306 * _e307.y));\n"
++    "    let _e312 = line_endpoint_value(7i);\n"
++    "    let _e314 = weights;\n"
++    "    let _e318 = line_endpoint_value(15i);\n"
++    "    let _e320 = weights;\n"
++    "    v_fog = ((_e312.x * _e314.x) + (_e318.x * _e320.y));\n"
++    "    let _e325 = line_inv_w;\n"
++    "    v_w = (1f / _e325);\n"
++    "    let _e328 = line_endpoint_value(0i);\n"
++    "    let _e331 = line_endpoint_value(8i);\n"
++    "    let _e333 = line_t;\n"
++    "    let _e335 = sh;\n"
++    "    line_z = (mix(_e328.z, _e331.z, _e333) * _e335.line_params.x);\n"
++    "    let _e339 = sh;\n"
++    "    zmax = bitcast<f32>(_e339.depth.y);\n"
++    "    let _e344 = sh;\n"
++    "    w_buffer = ((_e344.depth.x & 1u) != 0u);\n"
++    "    let _e352 = line_z;\n"
++    "    fragment_z = _e352;\n"
++    "    let _e354 = line_inv_w;\n"
++    "    fragment_inv_w = _e354;\n"
++    "    let _e356 = fragment_z;\n"
++    "    let _e357 = dpdx(_e356);\n"
++    "    let _e359 = fragment_z;\n"
++    "    let _e360 = dpdy(_e359);\n"
++    "    let _e363 = zmax;\n"
++    "    slope_z = (max(abs(_e357), abs(_e360)) * _e363);\n"
++    "    let _e366 = fragment_inv_w;\n"
++    "    let _e367 = dpdx(_e366);\n"
++    "    let _e369 = fragment_inv_w;\n"
++    "    let _e370 = dpdy(_e369);\n"
++    "    slope_inv_w = max(abs(_e367), abs(_e370));\n"
++    "    let _e374 = sh;\n"
++    "    sampled0_ = ((_e374.misc.z & 1u) != 0u);\n"
++    "    let _e384 = v_t0_;\n"
++    "    stage_coord[0i] = _e384;\n"
++    "    let _e387 = v_t1_;\n"
++    "    stage_coord[1i] = _e387;\n"
++    "    let _e390 = v_t2_;\n"
++    "    stage_coord[2i] = _e390;\n"
++    "    let _e393 = v_t3_;\n"
++    "    stage_coord[3i] = _e393;\n"
++    "    loop {\n"
++    "        let _e396 = st;\n"
++    "        if !((_e396 < 4i)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        {\n"
++    "            let _e403 = st;\n"
++    "            stage_dot[_e403] = 0f;\n"
++    "            let _e406 = st;\n"
++    "            stage_value[_e406] = vec4<f32>(0f, 0f, 0f, 1f);\n"
++    "        }\n"
++    "        continuing {\n"
++    "            let _e400 = st;\n"
++    "            st = (_e400 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    loop {\n"
++    "        let _e417 = st_1;\n"
++    "        if !((_e417 < 4i)) {\n"
++    "            break;\n"
++    "        }\n"
++    "        {\n"
++    "            let _e424 = st_1;\n"
++    "            let _e426 = st_1;\n"
++    "            let _e427 = st_1;\n"
++    "            let _e429 = stage_coord[_e427];\n"
++    "            let _e430 = st_1;\n"
++    "            let _e433 = sh.mode[_e430];\n"
++    "            let _e434 = sh;\n"
++    "            let _e438 = st_1;\n"
++    "            let _e444 = stage_sample(_e426, _e429, _e433, ((_e434.misc.z & (1u << u32(_e438))) != 0u));\n"
++    "            stage_value[_e424] = _e444;\n"
++    "            let _e445 = st_1;\n"
++    "            let _e448 = sh.mode[_e445];\n"
++    "            m_2 = _e448;\n"
++    "            let _e450 = m_2;\n"
++    "            if (_e450 == 5u) {\n"
++    "                {\n"
++    "                    let _e453 = sh;\n"
++    "                    let _e457 = st_1;\n"
++    "                    compare = ((_e453.alpha.w >> u32((4i * _e457))) & 15u);\n"
++    "                    k = 0i;\n"
++    "                    loop {\n"
++    "                        let _e466 = k;\n"
++    "                        if !((_e466 < 4i)) {\n"
++    "                            break;\n"
++    "                        }\n"
++    "                        {\n"
++    "                            let _e473 = k;\n"
++    "                            let _e474 = st_1;\n"
++    "                            let _e477 = stage_coord[_e474][_e473];\n"
++    "                            value_2 = _e477;\n"
++    "                            let _e479 = compare;\n"
++    "                            let _e481 = k;\n"
++    "                            let _e487 = value_2;\n"
++    "                            let _e491 = compare;\n"
++    "                            let _e493 = k;\n"
++    "                            let _e499 = value_2;\n"
++    "                            if ((((_e479 & (1u << u32(_e481))) != 0u) && (_e487 >= 0f)) || (((_e491 & (1u << u32(_e493))) == 0u) && (_e499 < 0f))) {\n"
++    "                                kill_fragment = true;\n"
++    "                            }\n"
++    "                        }\n"
++    "                        continuing {\n"
++    "                            let _e470 = k;\n"
++    "                            k = (_e470 + 1i);\n"
++    "                        }\n"
++    "                    }\n"
++    "                }\n"
++    "            }\n"
++    "            let _e505 = sh;\n"
++    "            let _e509 = st_1;\n"
++    "            let _e515 = sh;\n"
++    "            let _e520 = st_1;\n"
++    "            let _e528 = m_2;\n"
++    "            let _e532 = m_2;\n"
++    "            let _e536 = m_2;\n"
++    "            let _e540 = m_2;\n"
++    "            let _e544 = st_1;\n"
++    "            let _e546 = stage_value[_e544];\n"
++    "            if ((((((((_e505.misc.z & (1u << u32(_e509))) != 0u) && ((_e515.misc.w & (1u << u32((16i + _e520)))) != 0u)) && (_e528 != 0u)) && (_e532 != 4u)) && (_e536 != 5u)) && (_e540 != 17u)) && (_e546.w == 0f)) {\n"
++    "                kill_fragment = true;\n"
++    "            }\n"
++    "        }\n"
++    "        continuing {\n"
++    "            let _e421 = st_1;\n"
++    "            st_1 = (_e421 + 1i);\n"
++    "        }\n"
++    "    }\n"
++    "    let _e552 = line_inside;\n"
++    "    if !(_e552) {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e554 = kill_fragment;\n"
++    "    if _e554 {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e557 = stage_value[0];\n"
++    "    t0_2 = _e557;\n"
++    "    let _e560 = sh;\n"
++    "    if (_e560.prog.x != 0u) {\n"
++    "        {\n"
++    "            let _e570 = stage_value[1];\n"
++    "            tn_2[0i] = _e570;\n"
++    "            let _e575 = stage_value[2];\n"
++    "            tn_2[1i] = _e575;\n"
++    "            let _e580 = stage_value[3];\n"
++    "            tn_2[2i] = _e580;\n"
++    "            let _e581 = t0_2;\n"
++    "            let _e582 = v_col;\n"
++    "            let _e583 = v_spec;\n"
++    "            let _e584 = tn_2;\n"
++    "            let _e585 = comb_eval(_e581, _e582, _e583, _e584);\n"
++    "            let _e586 = to8_(_e585);\n"
++    "            c8_ = _e586;\n"
++    "        }\n"
++    "    } else {\n"
++    "        let _e587 = sampled0_;\n"
++    "        if _e587 {\n"
++    "            {\n"
++    "                let _e588 = t0_2;\n"
++    "                let _e595 = v_col;\n"
++    "                let _e596 = to8_(_e595);\n"
++    "                c8_ = (((vec4<u32>(((_e588 * 255f) + vec4(0.5f))) * _e596) + vec4(127u)) / vec4(255u));\n"
++    "            }\n"
++    "        } else {\n"
++    "            {\n"
++    "                let _e604 = v_col;\n"
++    "                let _e605 = to8_(_e604);\n"
++    "                c8_ = _e605;\n"
++    "            }\n"
++    "        }\n"
++    "    }\n"
++    "    let _e606 = sh;\n"
++    "    let _e611 = c8_;\n"
++    "    let _e613 = alpha_pass(_e611.w);\n"
++    "    if ((_e606.alpha.x != 0u) && !(_e613)) {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e616 = c8_;\n"
++    "    out_color = (vec4<f32>(_e616) / vec4(255f));\n"
++    "    let _e621 = w_buffer;\n"
++    "    if _e621 {\n"
++    "        let _e622 = v_w;\n"
++    "        local_26 = _e622;\n"
++    "    } else {\n"
++    "        let _e623 = fragment_z;\n"
++    "        let _e624 = zmax;\n"
++    "        local_26 = (_e623 * _e624);\n"
++    "    }\n"
++    "    let _e627 = local_26;\n"
++    "    zd = _e627;\n"
++    "    let _e629 = sh;\n"
++    "    if (_e629.depth_offset.y != 0f) {\n"
++    "        {\n"
++    "            let _e634 = w_buffer;\n"
++    "            if _e634 {\n"
++    "                let _e635 = slope_inv_w;\n"
++    "                let _e636 = zd;\n"
++    "                let _e638 = zd;\n"
++    "                local_27 = ((_e635 * _e636) * _e638);\n"
++    "            } else {\n"
++    "                let _e640 = slope_z;\n"
++    "                local_27 = _e640;\n"
++    "            }\n"
++    "            let _e642 = local_27;\n"
++    "            slope = _e642;\n"
++    "            let _e644 = zd;\n"
++    "            let _e645 = sh;\n"
++    "            let _e648 = slope;\n"
++    "            zd = (_e644 + (_e645.depth_offset.y * _e648));\n"
++    "        }\n"
++    "    }\n"
++    "    let _e651 = zd;\n"
++    "    let _e652 = sh;\n"
++    "    zd = (_e651 + _e652.depth_offset.x);\n"
++    "    let _e656 = sh;\n"
++    "    cmin = bitcast<f32>(_e656.depth.z);\n"
++    "    let _e661 = sh;\n"
++    "    cmax = bitcast<f32>(_e661.depth.w);\n"
++    "    let _e666 = sh;\n"
++    "    let _e673 = zd;\n"
++    "    let _e674 = cmin;\n"
++    "    let _e676 = zd;\n"
++    "    let _e677 = cmax;\n"
++    "    if (((_e666.depth.x & 2u) != 0u) && ((_e673 < _e674) || (_e676 > _e677))) {\n"
++    "        discard;\n"
++    "    }\n"
++    "    let _e682 = zd;\n"
++    "    let _e683 = cmin;\n"
++    "    let _e684 = cmax;\n"
++    "    let _e686 = zmax;\n"
++    "    gl_FragDepth = clamp((clamp(_e682, _e683, _e684) / _e686), 0f, 1f);\n"
++    "    return;\n"
++    "}\n"
++    "\n"
++    "@fragment \n"
++    "fn main(@location(0) @interpolate(flat) v_line_0_: vec4<f32>, @location(1) @interpolate(flat) v_line_1_: vec4<f32>, @location(2) @interpolate(flat) v_line_2_: vec4<f32>, @location(3) @interpolate(flat) v_line_3_: vec4<f32>, @location(4) @interpolate(flat) v_line_4_: vec4<f32>, @location(5) @interpolate(flat) v_line_5_: vec4<f32>, @location(6) @interpolate(flat) v_line_6_: vec4<f32>, @location(7) @interpolate(flat) v_line_7_: vec4<f32>, @location(8) @interpolate(flat) v_line_8_: vec4<f32>, @location(9) @interpolate(flat) v_line_9_: vec4<f32>, @location(10) @interpolate(flat) v_line_10_: vec4<f32>, @location(11) @interpolate(flat) v_line_11_: vec4<f32>, @location(12) @interpolate(flat) v_line_12_: vec4<f32>, @location(13) @interpolate(flat) v_line_13_: vec4<f32>, @location(14) @interpolate(flat) v_line_fog: vec2<f32>, @builtin(position) gl_FragCoord: vec4<f32>) -> FragmentOutput {\n"
++    "    v_line_0_1 = v_line_0_;\n"
++    "    v_line_1_1 = v_line_1_;\n"
++    "    v_line_2_1 = v_line_2_;\n"
++    "    v_line_3_1 = v_line_3_;\n"
++    "    v_line_4_1 = v_line_4_;\n"
++    "    v_line_5_1 = v_line_5_;\n"
++    "    v_line_6_1 = v_line_6_;\n"
++    "    v_line_7_1 = v_line_7_;\n"
++    "    v_line_8_1 = v_line_8_;\n"
++    "    v_line_9_1 = v_line_9_;\n"
++    "    v_line_10_1 = v_line_10_;\n"
++    "    v_line_11_1 = v_line_11_;\n"
++    "    v_line_12_1 = v_line_12_;\n"
++    "    v_line_13_1 = v_line_13_;\n"
++    "    v_line_fog_1 = v_line_fog;\n"
++    "    gl_FragCoord_1 = gl_FragCoord;\n"
++    "    main_1();\n"
++    "    let _e168 = out_color;\n"
++    "    let _e170 = gl_FragDepth;\n"
++    "    return FragmentOutput(_e168, _e170);\n"
++    "}\n";
++
 +static const char k_sg_vp_prelude_wgsl[] =
 +    "// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the\n"
 +    "// two halves; the C translator inserts straight-line instructions between them.\n"
@@ -38232,6 +40508,251 @@ index 0000000..ad8c167
 +    "        else { ff = clamp(ff, -bitcast<f32>(0x7f7fffffu), bitcast<f32>(0x7f7fffffu)); }\n"
 +    "    }\n"
 +    "    return VpOutputs(position, d0, d1, O[9], O[10], O[11], O[12], ff, w);\n"
++    "}\n";
++
++static const char k_sg_linevp_prelude_wgsl[] =
++    "// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the\n"
++    "// two halves; the C translator inserts straight-line instructions between them.\n"
++    "struct VpUniforms {\n"
++    "    c: array<vec4f, 192>,\n"
++    "    info: vec4f,\n"
++    "    clipr: vec4f,\n"
++    "    fogp: vec4f,\n"
++    "    lightp: vec4f,\n"
++    "    line: vec4f,\n"
++    "}\n"
++    "@group(1) @binding(0) var<uniform> vc: VpUniforms;\n"
++    "struct VpInputs {\n"
++    "    @location(0) v0: vec4f, @location(1) v1: vec4f,\n"
++    "    @location(2) v2: vec4f, @location(3) v3: vec4f,\n"
++    "    @location(4) v4: vec4f, @location(5) v5: vec4f,\n"
++    "    @location(6) v6: vec4f, @location(7) v7: vec4f,\n"
++    "    @location(8) v8: vec4f, @location(9) v9: vec4f,\n"
++    "    @location(10) v10: vec4f, @location(11) v11: vec4f,\n"
++    "    @location(12) v12: vec4f, @location(13) v13: vec4f,\n"
++    "    @location(14) v14: vec4f, @location(15) v15: vec4f,\n"
++    "}\n"
++    "struct VpOutputs {\n"
++    "    @builtin(position) position: vec4f,\n"
++    "    @location(0) color: vec4f, @location(1) specular: vec4f,\n"
++    "    @location(2) t0: vec4f, @location(3) t1: vec4f,\n"
++    "    @location(4) t2: vec4f, @location(5) t3: vec4f,\n"
++    "    @location(6) fog: f32, @location(7) w: f32,\n"
++    "}\n"
++    "fn vnan(x: f32) -> bool { return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u; }\n"
++    "fn vinf(x: f32) -> bool { return (bitcast<u32>(x) & 0x7fffffffu) == 0x7f800000u; }\n"
++    "// WGSL rejects NaN/Inf in constant expressions. A function parameter keeps\n"
++    "// the bitcast a runtime expression, as required for NV2A exceptional math.\n"
++    "fn vexception(bits: u32) -> f32 { return bitcast<f32>(bits); }\n"
++    "// Preserve signed zeros and NaN signs through driver optimizations.\n"
++    "fn vneg(x: vec4f) -> vec4f { return bitcast<vec4f>(bitcast<vec4u>(x) ^ vec4u(0x80000000u)); }\n"
++    "fn vcompare_key(x: f32) -> u32 {\n"
++    "    var bits = bitcast<u32>(x);\n"
++    "    if ((bits & 0x7fffffffu) > 0x7f800000u) { bits = (bits & 0x80000000u) | 0x7fc00000u; }\n"
++    "    return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);\n"
++    "}\n"
++    "fn vlt(a: vec4f, b: vec4f) -> vec4<bool> {\n"
++    "    return vec4<bool>(vcompare_key(a.x)<vcompare_key(b.x), vcompare_key(a.y)<vcompare_key(b.y),\n"
++    "                      vcompare_key(a.z)<vcompare_key(b.z), vcompare_key(a.w)<vcompare_key(b.w));\n"
++    "}\n"
++    "fn vge(a: vec4f, b: vec4f) -> vec4<bool> {\n"
++    "    return vec4<bool>(vcompare_key(a.x)>=vcompare_key(b.x), vcompare_key(a.y)>=vcompare_key(b.y),\n"
++    "                      vcompare_key(a.z)>=vcompare_key(b.z), vcompare_key(a.w)>=vcompare_key(b.w));\n"
++    "}\n"
++    "fn vmul1(a: f32, b: f32) -> f32 {\n"
++    "    // NV2A MUL/MAD return positive zero for any product with a zero operand,\n"
++    "    // including infinity and NaN. Handle this before propagating NaNs.\n"
++    "    if (a == 0.0 || b == 0.0) { return 0.0; }\n"
++    "    if (vnan(a) || vnan(b)) { return vexception(0x7fc00000u); }\n"
++    "    return a * b;\n"
++    "}\n"
++    "fn vmul(a: vec4f, b: vec4f) -> vec4f {\n"
++    "    return vec4f(vmul1(a.x,b.x), vmul1(a.y,b.y), vmul1(a.z,b.z), vmul1(a.w,b.w));\n"
++    "}\n"
++    "fn vdot3(a: vec4f, b: vec4f) -> f32 {\n"
++    "    let p = vmul(a,b); return (p.x + p.y) + p.z;\n"
++    "}\n"
++    "fn vdot4(a: vec4f, b: vec4f) -> f32 {\n"
++    "    let p = vmul(a,b); return ((p.x + p.y) + p.z) + p.w;\n"
++    "}\n"
++    "fn vrcp(x: f32) -> f32 {\n"
++    "    if (x == 1.0) { return 1.0; }\n"
++    "    let sign = bitcast<u32>(x) & 0x80000000u;\n"
++    "    if (x == 0.0) { return vexception(0x7f800000u | sign); }\n"
++    "    if (vinf(x)) { return vexception(sign); }\n"
++    "    if (vnan(x)) { return vexception(0x7fc00000u); }\n"
++    "    return 1.0 / x;\n"
++    "}\n"
++    "fn vrcc(x: f32) -> f32 {\n"
++    "    if (vnan(x)) { return vexception(0x7fc00000u); }\n"
++    "    return vclampw(vrcp(x));\n"
++    "}\n"
++    "fn vrsq(x: f32) -> f32 {\n"
++    "    let a = abs(x);\n"
++    "    if (a == 1.0) { return 1.0; }\n"
++    "    if (a == 0.0) { return vexception(0x7f800000u); }\n"
++    "    if (vinf(a)) { return 0.0; }\n"
++    "    if (vnan(a)) { return vexception(0x7fc00000u); }\n"
++    "    return inverseSqrt(a);\n"
++    "}\n"
++    "fn vexp(x: f32) -> vec4f { let f = floor(x); return vec4f(exp2(f), x - f, exp2(x), 1.0); }\n"
++    "fn vlog(x: f32) -> vec4f {\n"
++    "    let a = abs(x);\n"
++    "    if (a == 0.0) { return vec4f(vexception(0xff800000u), 1.0, vexception(0xff800000u), 1.0); }\n"
++    "    let e = floor(log2(a));\n"
++    "    return vec4f(e, a / exp2(e), log2(a), 1.0);\n"
++    "}\n"
++    "fn vlit(s: vec4f) -> vec4f {\n"
++    "    let sx = select(s.x, 0.0, s.x < 0.0);\n"
++    "    let sy = select(s.y, 0.0, s.y < 0.0);\n"
++    "    let sw = clamp(s.w, -127.99609375, 127.99609375);\n"
++    "    var z = 0.0;\n"
++    "    if (sx > 0.0) {\n"
++    "        // log2(0) is not portable WGSL arithmetic. Preserve NV2A's zero-base\n"
++    "        // outcomes explicitly, including negative and zero exponents.\n"
++    "        if (sy == 0.0) {\n"
++    "            if (sw < 0.0) { z = vexception(0x7f800000u); }\n"
++    "            else if (sw == 0.0) { z = 1.0; }\n"
++    "            else if (vnan(sw)) { z = vexception(0x7fc00000u); }\n"
++    "        } else { z = exp2(vmul1(sw, log2(sy))); }\n"
++    "    }\n"
++    "    return vec4f(1.0, sx, z, 1.0);\n"
++    "}\n"
++    "fn vclampw(w: f32) -> f32 {\n"
++    "    if ((bitcast<u32>(w) & 0x80000000u) == 0u) {\n"
++    "        return clamp(w, bitcast<f32>(0x1f800000u), bitcast<f32>(0x5f800000u));\n"
++    "    }\n"
++    "    return clamp(w, bitcast<f32>(0xdf800000u), bitcast<f32>(0x9f800000u));\n"
++    "}\n"
++    "fn line_transform(vin: VpInputs) -> VpOutputs {\n"
++    "    let v = array<vec4f, 16>(vin.v0, vin.v1, vin.v2, vin.v3, vin.v4, vin.v5, vin.v6, vin.v7,\n"
++    "                           vin.v8, vin.v9, vin.v10, vin.v11, vin.v12, vin.v13, vin.v14, vin.v15);\n"
++    "    var R: array<vec4f, 13>;\n"
++    "    var O: array<vec4f, 16>;\n"
++    "    var a0 = 0;\n"
++    "    for (var k = 0u; k < 16u; k++) { O[k] = vec4f(0.0, 0.0, 0.0, 1.0); }\n";
++
++static const char k_sg_linevp_epilogue_wgsl[] =
++    "    let p = O[0];\n"
++    "    // NV2A raster setup keeps four fractional bits, truncating toward zero.\n"
++    "    // Snap the original screen output before reconstructing clip coordinates.\n"
++    "    let xy = trunc(p.xy * 16.0) / 16.0;\n"
++    "    let w = vclampw(p.w);\n"
++    "    var position = vec4f(xy, p.z, w);\n"
++    "    if (vnan(p.w)) { position.w = p.w; }\n"
++    "    var d0 = O[3]; var d1 = O[4];\n"
++    "    for (var k = 0u; k < 4u; k++) {\n"
++    "        if (vnan(d0[k])) { d0[k] = 1.0; }\n"
++    "        if (vnan(d1[k])) { d1[k] = 1.0; }\n"
++    "    }\n"
++    "    d0 = clamp(d0, vec4f(0.0), vec4f(1.0));\n"
++    "    d1 = clamp(d1, vec4f(0.0), vec4f(1.0));\n"
++    "    if (vc.lightp.x == 0.0) { d1 = vec4f(0.0, 0.0, 0.0, 1.0); }\n"
++    "    if (vc.lightp.y == 0.0) { d1.w = 1.0; }\n"
++    "    let fd = O[5].x; var ff = 1.0; var exceptional = 0.0;\n"
++    "    let fm = bitcast<u32>(vc.fogp.y);\n"
++    "    if (vc.fogp.x != 0.0) {\n"
++    "        if (fm == 0x2601u || fm == 0x804u) { ff = vc.fogp.z + fd * vc.fogp.w - 1.0; }\n"
++    "        else if (fm == 0x800u || fm == 0x802u) { ff = vc.fogp.z + exp2(fd * vc.fogp.w * 16.0) - 1.5; }\n"
++    "        else if (fm == 0x801u || fm == 0x803u) { ff = vc.fogp.z + exp2(-fd * fd * vc.fogp.w * vc.fogp.w * 32.0) - 1.5; }\n"
++    "        if (fm == 0x2601u || fm == 0x804u || fm == 0x800u) { exceptional = 1.0; }\n"
++    "        if (fm == 0x804u || fm == 0x802u || fm == 0x803u) { ff = abs(ff); }\n"
++    "        if (vinf(fd) || vnan(ff)) { ff = exceptional; }\n"
++    "        else { ff = clamp(ff, -bitcast<f32>(0x7f7fffffu), bitcast<f32>(0x7f7fffffu)); }\n"
++    "    }\n"
++    "    return VpOutputs(position, d0, d1, O[9], O[10], O[11], O[12], ff, w);\n"
++    "}\n";
++
++static const char k_sg_linevp_support_wgsl[] =
++    "// Original projected endpoint values are flat varyings, never interpolated\n"
++    "// across conservative candidate triangles. Fourteen vec4 + one vec2 = 58\n"
++    "// components, within both the 60-component and 16-variable baseline limits.\n"
++    "struct LineOutputs {\n"
++    "    @builtin(position) position: vec4f,\n"
++    "    @location(0) @interpolate(flat) ap: vec4f,\n"
++    "    @location(1) @interpolate(flat) ac: vec4f,\n"
++    "    @location(2) @interpolate(flat) aspec: vec4f,\n"
++    "    @location(3) @interpolate(flat) at0: vec4f,\n"
++    "    @location(4) @interpolate(flat) at1: vec4f,\n"
++    "    @location(5) @interpolate(flat) at2: vec4f,\n"
++    "    @location(6) @interpolate(flat) at3: vec4f,\n"
++    "    @location(7) @interpolate(flat) bp: vec4f,\n"
++    "    @location(8) @interpolate(flat) bc: vec4f,\n"
++    "    @location(9) @interpolate(flat) bspec: vec4f,\n"
++    "    @location(10) @interpolate(flat) bt0: vec4f,\n"
++    "    @location(11) @interpolate(flat) bt1: vec4f,\n"
++    "    @location(12) @interpolate(flat) bt2: vec4f,\n"
++    "    @location(13) @interpolate(flat) bt3: vec4f,\n"
++    "    @location(14) @interpolate(flat) fog: vec2f,\n"
++    "}\n"
++    "fn line_lerp(a: VpOutputs,b: VpOutputs,t:f32)->VpOutputs {\n"
++    "    return VpOutputs(a.position+(b.position-a.position)*t,\n"
++    "        a.color+(b.color-a.color)*t,a.specular+(b.specular-a.specular)*t,\n"
++    "        a.t0+(b.t0-a.t0)*t,a.t1+(b.t1-a.t1)*t,a.t2+(b.t2-a.t2)*t,a.t3+(b.t3-a.t3)*t,\n"
++    "        a.fog+(b.fog-a.fog)*t,a.w+(b.w-a.w)*t);\n"
++    "}\n"
++    "fn line_finite(p:vec4f)->bool {\n"
++    "    return all((bitcast<vec4u>(p)&vec4u(0x7fffffffu))<vec4u(0x7f800000u));\n"
++    "}\n"
++    "fn line_emit(original_a:VpOutputs,original_b:VpOutputs,vertex:u32)->LineOutputs {\n"
++    "    var a=original_a;var b=original_b;\n"
++    "    let eps=0.001;let clip_depth=vc.lightp.z==0.0;\n"
++    "    var valid=line_finite(a.position)&&line_finite(b.position);\n"
++    "    if(vc.line.z!=0.0) {\n"
++    "        if(vc.line.w!=0.0){b.color=a.color;b.specular=a.specular;}\n"
++    "        else {a.color=b.color;a.specular=b.specular;}\n"
++    "    }\n"
++    "    if(a.position.w < -1.0 && b.position.w < -1.0){valid=false;}\n"
++    "    let direct=(a.position.w>eps && b.position.w>eps &&\n"
++    "        (!clip_depth || (a.position.z>=0.0 && b.position.z>=0.0))) ||\n"
++    "        (vc.line.y==0.0 && a.position.w<=eps && b.position.w<=eps);\n"
++    "    if(direct && (any(abs(a.position.xy)>=vec2f(1000000.0)) || any(abs(b.position.xy)>=vec2f(1000000.0)))){valid=false;}\n"
++    "    if(valid && !direct) {\n"
++    "        a.position=vec4f(a.position.xyz*a.position.w,a.position.w);\n"
++    "        b.position=vec4f(b.position.xyz*b.position.w,b.position.w);\n"
++    "        for(var plane=0u;plane<2u;plane++) {\n"
++    "            if(plane==1u && !clip_depth){break;}\n"
++    "            let da=select(a.position.w-eps,a.position.z,plane==1u);\n"
++    "            let db=select(b.position.w-eps,b.position.z,plane==1u);\n"
++    "            if(da<0.0 && db<0.0){valid=false;break;}\n"
++    "            if((da<0.0)!=(db<0.0)) {\n"
++    "                var c=line_lerp(a,b,da/(da-db));\n"
++    "                if(plane==0u){c.position.w=eps;}else {c.position.z=0.0;}\n"
++    "                if(da<0.0){a=c;}else {b=c;}\n"
++    "            }\n"
++    "        }\n"
++    "        a.position=vec4f(a.position.xyz/a.position.w,a.position.w);\n"
++    "        b.position=vec4f(b.position.xyz/b.position.w,b.position.w);\n"
++    "    }\n"
++    "    if(vc.line.y==0.0 && a.position.w>=-1.0 && a.position.w<=eps && b.position.w>=-1.0 && b.position.w<=eps) {\n"
++    "        a.position.w=1.0;b.position.w=1.0;\n"
++    "    }\n"
++    "    a.position.x+=vc.info.w;b.position.x+=vc.info.w;\n"
++    "    let delta=b.position.xy-a.position.xy;\n"
++    "    let squared=dot(delta,delta);\n"
++    "    valid=valid && line_finite(a.position) && line_finite(b.position) &&\n"
++    "        vc.line.x>0.0 && squared>0.0 && !vinf(squared) &&\n"
++    "        all(abs(a.position.xy)<=vec2f(1000000.0)) && all(abs(b.position.xy)<=vec2f(1000000.0));\n"
++    "    var position=vec4f(2.0,2.0,0.5,1.0);\n"
++    "    if(valid) {\n"
++    "        let axis=select(0u,1u,abs(delta.x)>=abs(delta.y));\n"
++    "        let extent=max(abs(delta.x),abs(delta.y))+0.5*min(abs(delta.x),abs(delta.y));\n"
++    "        var strip=vec2f(-delta.y,delta.x)*(extent/squared);\n"
++    "        if(strip[axis]<0.0){strip=-strip;}\n"
++    "        let corner=array<u32,6>(0u,1u,2u,0u,2u,3u)[vertex%6u];\n"
++    "        let end=corner==1u || corner==2u;\n"
++    "        let side=select(-1.0,1.0,corner>=2u);\n"
++    "        let base=select(a.position.xy,b.position.xy,end);\n"
++    "        var pixel=base+strip*(side*0.5*vc.line.x);\n"
++    "        if(delta.x==0.0 || delta.y==0.0){pixel[axis]+=1.0/512.0;}\n"
++    "        let tangent=delta/sqrt(squared);var normal=vec2f(-tangent.y,tangent.x);\n"
++    "        if(normal[axis]<0.0){normal=-normal;}\n"
++    "        pixel+=select(-1.0,1.0,end)*tangent+side*normal;\n"
++    "        let ndc=pixel/vc.info.xy*2.0-1.0;\n"
++    "        position=vec4f(ndc.x,-ndc.y,0.5,1.0);\n"
++    "    }\n"
++    "    return LineOutputs(position,a.position,a.color,a.specular,a.t0,a.t1,a.t2,a.t3,\n"
++    "        b.position,b.color,b.specular,b.t0,b.t1,b.t2,b.t3,vec2f(a.fog,b.fog));\n"
 +    "}\n";
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 --- a/src/kernel/xbox_memory_layout.c
@@ -42157,10 +44678,10 @@ index 0000000..f0e4b59
 +}
 diff --git a/tools/gen-wgsl.py b/tools/gen-wgsl.py
 new file mode 100644
-index 0000000..0ed2f76
+index 0000000..15c61a1
 --- /dev/null
 +++ b/tools/gen-wgsl.py
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,144 @@
 +#!/usr/bin/env python3
 +"""GLSL renderer shaders -> WGSL for the WebGPU build of the SDL GPU renderer.
 +
@@ -42194,7 +44715,7 @@ index 0000000..0ed2f76
 +import tempfile
 +
 +SAMPLER_OFFSET = 8
-+SHADERS = ['flat2d.vert', 'flat2d.frag', 'xf.vert', 'xf.frag', 'flat2d_line.frag', 'xf_line.frag', 'lines.vert', 'flat2d_lines.frag', 'xf_lines.frag']
++SHADERS = ['flat2d.vert', 'flat2d.frag', 'xf.vert', 'xf.frag', 'flat2d_line.frag', 'xf_line.frag', 'lines.vert', 'flat2d_lines.frag', 'xf_lines.frag', 'xf_linevp.frag']
 +
 +
 +def split_samplers(src):
@@ -42243,24 +44764,26 @@ index 0000000..0ed2f76
 +
 +def translate(path):
 +    stage = 'vert' if path.endswith('.vert') else 'frag'
-+    actual = path.replace('_lines.', '.').replace('_line.', '.')
-+    with open(actual) as f:
++    actual = path.replace('_linevp.', '.').replace('_lines.', '.').replace('_line.', '.')
++    with open(actual, encoding='utf-8') as f:
 +        src = f.read()
 +    if actual != path:
 +        src = src.replace('#version 450', '#version 450\n#define NV2A_LINE 1', 1)
++    if '_linevp.' in path:
++        src = src.replace('#version 450', '#version 450\n#define NV2A_LINE_VP 1', 1)
 +    if '_lines.' in path:
 +        src = src.replace('#version 450', '#version 450\n#define NV2A_LINE_BATCH 1', 1)
 +    src = returning_switches(split_samplers(src))
 +    with tempfile.TemporaryDirectory() as tmp:
 +        gl = os.path.join(tmp, 'in.' + stage)
 +        out = os.path.join(tmp, 'out.wgsl')
-+        with open(gl, 'w') as f:
++        with open(gl, 'w', encoding='utf-8', newline='\n') as f:
 +            f.write(src)
 +        r = subprocess.run(['naga', '--shader-stage', stage, '--input-kind', 'glsl', gl, out],
 +                           capture_output=True, text=True)
 +        if r.returncode != 0:
 +            sys.exit(f'naga failed on {path}:\n{r.stdout}{r.stderr}')
-+        with open(out) as f:
++        with open(out, encoding='utf-8') as f:
 +            wgsl = f.read()
 +    if stage == 'frag':
 +        wgsl = 'diagnostic(off, derivative_uniformity);\n\n' + wgsl
@@ -42288,7 +44811,15 @@ index 0000000..0ed2f76
 +        prelude, epilogue = f.read().split('// INSERT_PROGRAM\n')
 +    for half, src in [('prelude', prelude), ('epilogue', epilogue)]:
 +        parts.append(f'static const char k_sg_vp_{half}_wgsl[] =\n{c_string(src)};\n')
-+    with open(out, 'w') as f:
++    line_pre = prelude.replace('lightp: vec4f,', 'lightp: vec4f,\n    line: vec4f,').replace('@vertex fn main(', 'fn line_transform(')
++    begin = epilogue.index('    let nx =')
++    end = epilogue.index('    var d0 =', begin)
++    line_post = epilogue[:begin] + '    var position = vec4f(xy, p.z, w);\n    if (vnan(p.w)) { position.w = p.w; }\n' + epilogue[end:]
++    with open(os.path.join(shaders, 'vp_line.wgsl'), encoding='utf-8') as f:
++        support = f.read()
++    for half, src in [('prelude', line_pre), ('epilogue', line_post), ('support', support)]:
++        parts.append(f'static const char k_sg_linevp_{half}_wgsl[] =\n{c_string(src)};\n')
++    with open(out, 'w', encoding='utf-8', newline='\n') as f:
 +        f.write('\n'.join(parts))
 +    print('wrote', out)
 +

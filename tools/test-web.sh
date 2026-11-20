@@ -78,6 +78,8 @@ cmake --build "$OUT/sdlgpu_web" -j "${JOBS:-$(nproc)}"
 if [ "$HAVE_PW" = 1 ]; then
   python3 -I "$ROOT/tests/web/test_vp_wgsl.py" --build-dir "$OUT/vp-wgsl"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_vp_wgsl.js" "$OUT/vp-wgsl"
+  python3 -I "$ROOT/tests/web/test_gpu_lines.py" --build-dir "$OUT/gpu-lines"
+  node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_gpu_lines.cjs" "$OUT/gpu-lines"
   node "$ROOT/tests/web/test_audit_browser.cjs"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/external/xboxrecomp/tests/sdlgpu_web/test_page.js" "$OUT/sdlgpu_web"
   node --require "$ROOT/tests/web/browser-ci.cjs" "$ROOT/tests/web/test_web_av.js" "$OUT/smoke"
