@@ -3336,3 +3336,35 @@ console/audio samples and summary are retained there. The owned browser and
 HTTP server were closed. The new Build and Pages workflows were still running
 when the capture completed. Continuous audio, a sustained 30 FPS floor and
 all-mode/stadium/staff reference fidelity remain unfinished.
+
+### Explicit Release Web link optimization
+
+The local game cache still contained `CMAKE_EXE_LINKER_FLAGS=-O1
+--emit-symbol-map`. That option followed the Release `-O3` compiler flags in
+the actual link command, downgrading final Wasm optimization and DSP LTO.
+Pages uses a fresh Release configuration without that local override.
+The preceding SDL retail capture therefore describes its saved local `-O1`
+artifact, not a byte-identical Pages build. The local SDK is 6.0.10, while
+CI uses 7.0.0; matching optimization policy does not erase that difference.
+
+The Web game target now explicitly selects final `-O3` linking for Release.
+The generated command shows this target option after the stale global `-O1`,
+so the intended optimization wins. A complete build succeeds. Its Wasm is
+50,679,467 bytes versus the preserved 53,887,423-byte local baseline, a 5.95%
+reduction. This is a code-size result, not an established FPS gain. Baseline
+public files, symbols and hashes remain in `build-web-tests/link-o1-baseline`.
+The new artifact and its exact symbol map are frozen for a fresh worker
+profile. The preceding `64597b5` Build/Pages and `82bf536` Build all passed.
+
+Additional disposable browser wait probes did not justify a runtime wait
+replacement. Creating a timer helper from the blocked Wasm worker did not
+complete its handshake before the probe deadline; creating it on the browser
+main thread did. One-shot 1/2 ms timers had medians of 1.095/2.245 ms in one
+run, but 10 ms chunking with deadline checks still yielded roughly 16 ms short
+waits and a 47.945 ms median for a 33 ms request. Refresh notifications gave
+33.33 ms median completed intervals in the synthetic pacer test, with
+under-budget 95th percentiles of 34.290-45.630 ms and a 49.215 ms maximum.
+These host-specific observations do not establish sufficiently reliable
+precision or a 30 FPS floor; production wait policy is unchanged. Probe
+artifacts remain in `build-web-tests/browser-timer-probe` and
+`build-web-tests/raf-pacer-probe`.

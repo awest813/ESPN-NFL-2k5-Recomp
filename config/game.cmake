@@ -157,6 +157,9 @@ else()
     set(NFL2K5_WEB_INITIAL_MEMORY "1073741824" CACHE STRING "Web: initial wasm memory in bytes")
     set(NFL2K5_WEB_PTHREAD_POOL "16" CACHE STRING "Web: workers created before main() (guest + runtime threads)")
     target_link_options(NFL2K5 PRIVATE
+      # Select the final Wasm/LTO optimization explicitly. An old global
+      # linker override must not silently downgrade a Release game to -O1.
+      $<$<CONFIG:Release>:-O3>
       -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=${NFL2K5_WEB_PTHREAD_POOL}
       -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=${NFL2K5_WEB_INITIAL_MEMORY} -sMAXIMUM_MEMORY=4GB
       -sSTACK_SIZE=16MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB
