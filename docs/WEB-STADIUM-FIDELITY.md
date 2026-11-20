@@ -3633,3 +3633,75 @@ affected audio blocks totaling 11,008 missing frames (229.3 ms at 48 kHz).
 The complete run remains partial. Both owned browser and server were closed.
 This verifies integrated stability of the faster DSP handler; it does not
 establish continuous audio, a 30 FPS floor or full reference fidelity.
+
+### Bulk validated vertex streams (2026-11-20)
+
+Dense GPU vertex packing now resolves constant attributes and float component
+counts once per stream. Vec1/2/3 copies preserve the title's zero/one defaults;
+vec4 copies all 16 bytes directly. The fast path uses the complete ranges
+already validated by `vertex_inputs_prepare`. Other formats and unmapped
+ranges retain the individual fetch path. Sparse remapping continues to use
+the same individual fetches. Indexed address arithmetic forms pointers only
+for the vertices being copied, including the last source/destination element.
+
+Several direct SIMD conversion candidates were rejected before integration:
+they matched the reference but regressed control cases or the decoder call
+path. Bulk packing instead removes repeated range/type/default decisions from
+the inner loop. A public benchmark compares the unchanged per-vertex loop
+with the actual bulk packer at the Web runtime's compile optimization level,
+O2 with Wasm SIMD enabled. Seven warmed paired rounds alternate order and
+verify complete packed streams before timing, plus matching timed checksums.
+Each round packs 20,000 ranges of 64 vertices (1,280,000 vertices):
+
+| Synthetic stream | Per-vertex median | Bulk median | Prior/current |
+| --- | ---: | ---: | ---: |
+| Float vec1 | 5.6216 ms | 0.7866 ms | 7.15x |
+| Float vec2 | 5.4784 ms | 0.7861 ms | 6.97x |
+| Float vec3 | 5.7173 ms | 0.8140 ms | 7.02x |
+| Float vec4 | 5.5276 ms | 0.7276 ms | 7.60x |
+| Position/normal/weights/bone-index/UV mix | 24.1789 ms | 13.4193 ms | 1.80x |
+
+The mixed trace has float vec3 position, packed normal, four normalized-byte
+weights, one raw-short bone index and float vec2 UV. It takes about 44.5% less
+packing time in this benchmark. These are synthetic packing gains; their
+whole-game effect depends on the actual stream mix, dense-range use and other
+frame costs. Reproduce with `python -I tests/web/test_vertex_fetch.py
+--benchmark`. Candidate/benchmark evidence is under
+`build-web-tests/vertex-stream-candidate`.
+
+The independent CPU/GPU reference checks pass 640,000 cases covering sparse
+masks, generation wrap, all formats, constants, inline arrays and invalid
+ranges. Additional guarded cases cover 0–64 vertices, final-element ranges,
+float component counts 0–6, four alignments, exact source-memory endpoints,
+NaN payloads, negative zero and untouched destination padding. Wasm and native
+AddressSanitizer checks pass; native CI includes the fixture. Fresh/reverse
+application checks reproduce the 97-file runtime patch at its unchanged pin.
+
+The final Release O3 game build and Vulkan renderer fixture pass. Vulkan
+pixel checks include vertex-program rendering, clipping, blending, depth,
+texture rewrites and queue-failure recovery, with address/undefined-behavior
+instrumentation enabled. A second isolated final-source benchmark confirms
+the float packing gains and gives 24.7585 to 13.8397 ms for the mixed stream
+(about 44.1% lower). Exact summaries and final build/test logs use the
+`vertex-stream-candidate` directory.
+
+The final unprofiled retail run verifies Arizona away at New Orleans home
+and D. Green/J. Haslett coaches before starting. Checked frames show readable
+Darrin Smith intro text, staff/crowds, player models, kickoff and later plays.
+No browser/GPU failure is reported. Exact served artifact/patch/symbol hashes,
+screenshots and logs are retained in `build-web-tests/vertex-stream-retail`.
+Three approximately 60-second windows subtract audio counters at their own
+boundaries:
+
+| Window | Five-second FPS averages | Affected blocks | Missing audio |
+| --- | --- | ---: | ---: |
+| Intro into opening play | 29.7–30.0 (12 windows) | 5 | 640 frames / 13.3 ms |
+| First active-play segment | 28.7–30.1 (12 windows) | 33 | 4,224 frames / 88.0 ms |
+| Following play segment | 21.7–30.1 (12 windows) | 27 | 3,456 frames / 72.0 ms |
+
+Different play sequences prevent attributing FPS/audio differences against
+earlier captures to this change. The synthetic packing gain and integrated
+rendering stability are verified; a whole-game gain, sustained 30 FPS floor,
+continuous audio and complete reference fidelity remain unproven. The run is
+classified partial, and both owned browser and server were closed. The
+preceding `2e6fc85` Build and Pages workflows passed.

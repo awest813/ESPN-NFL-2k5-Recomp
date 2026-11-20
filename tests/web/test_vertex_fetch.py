@@ -1,11 +1,19 @@
 """Compare prepared CPU/GPU input streams with the original checked fetch path."""
 from pathlib import Path
+import argparse
 import shutil
 import subprocess
 
 
 def main():
     root = Path(__file__).resolve().parents[2]
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--native',action='store_true')
+    parser.add_argument('--asan',action='store_true')
+    parser.add_argument('--benchmark',action='store_true',help='Compare bulk streams with the original per-vertex loop at Web runtime O2')
+    parser.add_argument('--build-dir',type=Path,default=root/'build-web-tests/vertex-fetch')
+    args=parser.parse_args()
+    if args.benchmark and (args.asan or args.native):parser.error('Benchmark requires unsanitized Wasm')
     kernel = root / "external/xboxrecomp/src/kernel"
     core = (kernel / "nv2a_pb_exec.c").read_text(encoding="utf-8")
     live = core[core.index("static size_t vertex_attr_bytes("):core.index("static uint32_t surface_bpp(")]
@@ -22,6 +30,9 @@ def main():
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
 #define NV_VERTEX_ATTRS 16
 typedef struct { uint32_t offset, type, size, stride; } VertexAttr;
 static struct { VertexAttr attr[16]; int inline_active; unsigned inline_count; void *inline_buf; uint16_t idx[64]; uint32_t idx_count; } s_gpu;
@@ -50,7 +61,48 @@ static uint32_t vp_input_mask(uint32_t start) { return test_input_mask; }
 /* CPU_FETCH */
 static uint32_t seed = 0x73519fab;
 static uint32_t rng(void) { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return seed; }
-int main(void) {
+#ifdef __EMSCRIPTEN__
+/* Prior per-vertex packing loop, using the unchanged individual fetch path. */
+static void per_vertex_pack_range(uint32_t first,uint32_t count) {
+    uint32_t stride=s_sgvp.input_stride/sizeof(float);
+    if(!s_sgvp.inputs.active_count)memset(s_sgvp.in,0,(size_t)count*16);
+    for(unsigned a=0;a<s_sgvp.inputs.active_count;a++) {
+        float *out=s_sgvp.in+a*4u;
+        for(uint32_t i=0;i<count;i++,out+=stride)sg_vp_fetch_input(s_sgvp.inputs.active[a],first+i,out);
+    }
+    s_sgvp.linear_first=first;s_sgvp.linear=1;s_sgvp.nv=count;
+}
+typedef void (*Pack)(uint32_t,uint32_t);
+static Pack volatile packers[]={per_vertex_pack_range,sg_vp_pack_range};
+static void benchmark_streams(void) {
+    const unsigned types[]={0,1,2,4,5,6};s_gpu.inline_active=0;
+    for(unsigned t=0;t<=6;t++)for(unsigned components=1;components<=(t==6?1u:4u);components++) {
+        unsigned type=t<6?types[t]:99;
+        if(t<6) {
+            s_gpu.attr[3]=(VertexAttr){64,type,components,16};
+            s_sgvp.inmask=1u<<3;s_sgvp.input_stride=16;
+        } else {
+            const unsigned formats[]={2,6,4,5,2},sizes[]={3,3,4,1,2};
+            for(unsigned a=0;a<5;a++)s_gpu.attr[a]=(VertexAttr){64+a*2048,formats[a],sizes[a],16};
+            s_sgvp.inmask=31;s_sgvp.input_stride=80;
+        }
+        s_sgvp.in=packed_input;sg_vp_prepare_inputs(63);
+        float expected[64*16*4];size_t bytes=64*s_sgvp.input_stride;
+        per_vertex_pack_range(0,64);memcpy(expected,packed_input,bytes);
+        sg_vp_pack_range(0,64);assert(!memcmp(expected,packed_input,bytes));
+        for(unsigned mode=0;mode<2;mode++)for(unsigned i=0;i<5000;i++)packers[mode](0,64);
+        for(unsigned round=0;round<7;round++)for(unsigned k=0;k<2;k++) {
+            unsigned mode=k^(round&1),sum=0;double began=emscripten_get_now();
+            for(unsigned i=0;i<20000;i++) {
+                packers[mode](0,64);uint32_t bits;memcpy(&bits,packed_input+(i&63)*(s_sgvp.input_stride/4),4);sum+=bits;
+            }
+            printf("BENCH type=%u components=%u round=%u mode=%u ms=%.4f checksum=%u\n",type,components,round,mode,emscripten_get_now()-began,sum);
+        }
+    }
+}
+#endif
+int main(int argc,char **argv) {
+    (void)argc;(void)argv;
     for (unsigned i = 0; i < sizeof memory; i++) memory[i] = rng();
     for (unsigned i = 0; i < sizeof inline_memory; i++) inline_memory[i] = rng();
     for (unsigned i = 0; i < 16; i++) for (unsigned k = 0; k < 4; k++) s_attr_inline[i][k] = (float)(i + k);
@@ -141,7 +193,32 @@ int main(void) {
             }
         }
     }
-    puts("PASS 640000 CPU/GPU vertex fetches, sparse masks, generation wrap, all formats, constants, inline arrays and invalid ranges");
+    /* Stream endpoints, partial float defaults, NaN payloads, misalignment,
+     * constants and unsupported-format fallbacks must preserve every byte. */
+    for(unsigned components=0;components<=6;components++)for(unsigned alignment=0;alignment<4;alignment++) {
+        s_gpu.inline_active=0;
+        unsigned width=(components<4?components:4)*4;
+        unsigned offset=sizeof memory-63*17-width-alignment;
+        s_gpu.attr[3]=(VertexAttr){offset,2,components,17};
+        const uint32_t payloads[]={0x7fc12345u,0xff812345u,0x80000000u,0x3f800000u};
+        for(unsigned c=0;c<width/4;c++)memcpy(memory+offset+63*17+c*4,payloads+c,4);
+        VertexInputs streams;vertex_inputs_prepare(&streams,1u<<3,63);
+        for(unsigned tail=0;tail<2;tail++)for(unsigned count=0;count<=64-(tail?63u:0u);count++) {
+            unsigned first=tail?63u:0u;
+            float guarded[2+64*9];memset(guarded,0x5a,sizeof guarded);
+            vertex_inputs_pack_range(&streams,3,first,count,guarded+1,9);
+            for(unsigned i=0;i<sizeof guarded/sizeof *guarded;i++) {
+                if(i>=1 && (i-1)/9<count && (i-1)%9<4) {
+                    float expected[4];reference_fetch_attr(&s_gpu.attr[3],first+(i-1)/9,expected);
+                    assert(!memcmp(guarded+i,expected+(i-1)%9,4));
+                } else for(unsigned b=0;b<4;b++)assert(((uint8_t*)(guarded+i))[b]==0x5a);
+            }
+        }
+    }
+    puts("PASS 640000 CPU/GPU vertex fetches, sparse masks, generation wrap, all formats, constants, inline arrays, invalid ranges and guarded stream endpoints");
+#ifdef __EMSCRIPTEN__
+    if(argc>1 && !strcmp(argv[1],"--benchmark"))benchmark_streams();
+#endif
     return 0;
 }
 '''
@@ -152,15 +229,23 @@ int main(void) {
     harness = harness.replace("/* VERTEX_INPUTS_TYPE */",inputs_type)
     text = harness.replace("/* LIVE_FETCH */", live).replace("/* REFERENCE_FETCH */", reference.replace("fetch_attr(", "reference_fetch_attr("))
     text = text.replace("/* PREPARED_FETCH */", prepared).replace("/* CPU_FETCH */",cpu)
-    build = root / "build-web-tests/vertex-fetch"
+    build = args.build_dir.resolve()
     build.mkdir(parents=True, exist_ok=True)
     source, output = build / "test.c", build / "test.js"
     source.write_text(text, encoding="utf-8")
+    if args.native:
+        cc=shutil.which('cc') or shutil.which('clang')
+        if not cc:parser.error('Native C compiler required')
+        output=build/'test'
+        subprocess.run([cc,str(source),'-O2','-fsanitize=address','-fno-omit-frame-pointer','-o',str(output)],check=True)
+        subprocess.run([str(output)],check=True)
+        return
     emcc, node = shutil.which("emcc"), shutil.which("node")
     if not emcc or not node:
         raise SystemExit("Emscripten emcc and Node must be on PATH")
-    subprocess.run([emcc, str(source), "-O3", "-msimd128", "-sENVIRONMENT=node", "-o", str(output)], check=True)
-    subprocess.run([node, str(output)], check=True)
+    subprocess.run([emcc, str(source), "-O2" if args.benchmark else "-O3", "-msimd128", "-sENVIRONMENT=node",
+                    *(['-fsanitize=address','-sINITIAL_MEMORY=67108864'] if args.asan else []), "-o", str(output)], check=True)
+    subprocess.run([node, str(output),*(['--benchmark'] if args.benchmark else [])], check=True)
 
 
 if __name__ == "__main__":
