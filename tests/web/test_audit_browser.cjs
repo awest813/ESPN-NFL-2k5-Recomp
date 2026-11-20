@@ -13,7 +13,8 @@ const fixture=`<!doctype html><link rel="icon" href="/favicon.ico"><body data-re
 const state={running:false}; const nfl2k5Log=[]; function log(line){nfl2k5Log.push(line);}
 let playCount=0;
 document.getElementById('play').onclick=()=>{
-  if(new URLSearchParams(location.search).get('retry')==='1'){
+  const retry=new URLSearchParams(location.search).get('retry');
+  if(retry==='1'||retry==='delayed'){
     void (async()=>{
       const root=await navigator.storage.getDirectory();let presses=0,checking=false;
       const timer=setInterval(async()=>{
@@ -21,7 +22,10 @@ document.getElementById('play').onclick=()=>{
         try{
           const file=await root.getFileHandle('mode-audit-press.txt');
           const text=await (await file.getFile()).text();await root.removeEntry('mode-audit-press.txt');
-          if(text==='start'&&++presses===3){clearInterval(timer);log('[MODE] retry-ready presses=3','stderr');}
+          if(text==='start'&&++presses===3){
+            clearInterval(timer);
+            setTimeout(()=>log('[MODE] retry-ready presses=3','stderr'),retry==='delayed'?1200:0);
+          }
         }catch{}finally{checking=false;}
       },50);
     })();return;
@@ -115,14 +119,19 @@ const server=http.createServer((req,res)=>{
       {action:'end',result:'pass'}, {action:'close'},
     ],true);
     assert.equal(closed.code,0,closed.output);assert.ok(closed.report.ended);
-    const retry=await runWaitAudit('retry-transition',[
-      {action:'begin',id:'retry'}, {action:'play'},
-      {action:'wait-log',pattern:'retry-ready',button:'start',everyMs:800,ms:10000},
-      {action:'end',result:'pass'}, {action:'close'},
-    ],false,'retry=1');
-    assert.equal(retry.code,0,retry.output);assert.equal(retry.report.cases[0].result,'pass');
-    const row=retry.output.split(/\r?\n/).filter(l=>l.startsWith('RESULT ')).map(l=>JSON.parse(l.slice(7))).find(x=>x?.matched);
-    assert.equal(row.matched,'[MODE] retry-ready presses=3');assert.equal(row.presses,3);
+    for(const delay of [false,true]){
+      const retry=await runWaitAudit('retry-transition'+(delay?'-delayed':''),[
+        {action:'begin',id:'retry'}, {action:'play'},
+        {action:'wait-log',pattern:'retry-ready',button:'start',everyMs:800,ms:10000},
+        {action:'end',result:'pass'}, {action:'close'},
+      ],false,'retry='+(delay?'delayed':'1'));
+      assert.equal(retry.code,0,retry.output);assert.equal(retry.report.cases[0].result,'pass');
+      const row=retry.output.split(/\r?\n/).filter(l=>l.startsWith('RESULT ')).map(l=>JSON.parse(l.slice(7))).find(x=>x?.matched);
+      assert.equal(row.matched,'[MODE] retry-ready presses=3');
+      // The result counts writes; the marker counts consumed inputs. OPFS,
+      // browser scheduling and log delivery can leave another write in flight.
+      assert.ok(Number.isInteger(row.presses)&&row.presses>=3&&row.presses<=Math.ceil(10000/800),retry.output);
+    }
     console.log('PASS fresh transition waits, stale-marker timeout, bounded button retries, and interactive close with open stdin');
   }finally{await new Promise(resolve=>server.close(resolve));}
 })().catch(error=>{console.error(error);process.exitCode=1;});

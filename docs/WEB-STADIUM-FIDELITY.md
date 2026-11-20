@@ -3784,3 +3784,13 @@ Both owned browser and server were closed. The preceding `7872a2d` Build and
 Pages workflows passed. This run remains partial: the 30 FPS floor,
 continuous audio, all stadium/staff assets and full reference fidelity are
 still unproven. Local builds use SDK 6.0.10; CI uses SDK 7.0.0.
+
+The first `d457224` CI run passes Linux, Windows and the new Web uniform
+checks, then exposes an existing audit-browser assertion that equated sent
+retries with consumed presses. The fixture consumes three Start presses but
+asynchronous OPFS/log delivery can allow another write before observation.
+The regression now checks the exact transition and the timeout-derived upper
+bound on writes, with both immediate and delayed transition delivery. The
+real browser suite passes locally, including stale-marker rejection, timeout
+failure, injected GPU/page errors and interactive close. This changes test
+expectations only; runtime retry and game input behavior are unchanged.
