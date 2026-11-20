@@ -1,0 +1,2 @@
+# Keep unified diff syntax intact on Windows checkouts.
+/config/xboxrecomp-web.patch text eol=lf
