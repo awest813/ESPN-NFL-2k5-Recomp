@@ -5419,7 +5419,7 @@ diff --git a/src/apu/apu_shim.h b/src/apu/apu_shim.h
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
-@@ -34,6 +34,16 @@
+@@ -34,6 +34,31 @@
  uint8_t *g_apu_ram_ptr = NULL;
 
  MCPXAPUState *g_state = NULL;
@@ -5429,14 +5429,29 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +typedef struct {
 +    int64_t last_frame_us,max_gap_us,max_late_us,resync_us,wake_late_us;
 +    int64_t mmio_wait_us,mmio_max_us;
++    int64_t gap_start_us,gap_end_us,late_at_us,resync_at_us;
++    int64_t wake_start_us,wake_end_us,mmio_start_us,mmio_end_us;
 +    unsigned resyncs;
 +} ApuScheduleProfile;
 +static ApuScheduleProfile s_apu_schedule;
 +
++/* Called only by the profiled frame thread, with its existing clock sample. */
++static void mcpx_apu_profile_frame_gap(int64_t now)
++{
++    int64_t gap=s_apu_schedule.last_frame_us?now-s_apu_schedule.last_frame_us:0;
++    if(gap>s_apu_schedule.max_gap_us) {
++        s_apu_schedule.max_gap_us=gap;
++        s_apu_schedule.gap_start_us=s_apu_schedule.last_frame_us;
++        s_apu_schedule.gap_end_us=now;
++    }
++    s_apu_schedule.last_frame_us=now;
++}
++
++
 
  /* Forward declarations for software mixer */
  static void mixer_init(void);
-@@ -105,7 +115,9 @@
+@@ -105,7 +130,9 @@
 
      switch (addr) {
      case NV_PAPU_XGSCNT:
@@ -5447,7 +5462,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          break;
      default:
          if (addr < 0x20000) {
-@@ -134,6 +146,10 @@
+@@ -134,6 +161,10 @@
      (void)size;
 
      switch (addr) {
@@ -5458,18 +5473,21 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      case NV_PAPU_ISTS:
          qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
          update_irq(d);
-@@ -433,12 +449,21 @@
+@@ -433,12 +464,24 @@
 
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 
 +    if (s_apu_lock_profile && d->next_frame_time_us) {
 +        int64_t late=now_us-d->next_frame_time_us;
-+        if(late>s_apu_schedule.max_late_us)s_apu_schedule.max_late_us=late;
++        if(late>s_apu_schedule.max_late_us) {
++            s_apu_schedule.max_late_us=late;s_apu_schedule.late_at_us=now_us;
++        }
 +    }
      if (d->next_frame_time_us == 0 ||
          now_us - d->next_frame_time_us > 64000) {
 +        if(s_apu_lock_profile && d->next_frame_time_us) {
 +            s_apu_schedule.resyncs++;
++            s_apu_schedule.resync_at_us=now_us;
 +            s_apu_schedule.resync_us+=now_us-d->next_frame_time_us;
 +        }
          /* Up to 64 ms behind (a front-end trap, a scheduling hiccup) is
@@ -5480,7 +5498,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      }
 
      while (!d->pause_requested) {
-@@ -446,13 +471,26 @@
+@@ -446,13 +489,29 @@
          int64_t remaining_ms = (d->next_frame_time_us - now_us) / 1000;
          if (remaining_ms > 0) {
              qemu_cond_timedwait(&d->cond, &d->lock, (int)remaining_ms);
@@ -5490,7 +5508,10 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +            d->sleep_acc_us += (int)(woke-now_us);
 +            if(s_apu_lock_profile) {
 +                int64_t late=woke-now_us-remaining_ms*1000;
-+                if(late>s_apu_schedule.wake_late_us)s_apu_schedule.wake_late_us=late;
++                if(late>s_apu_schedule.wake_late_us) {
++                    s_apu_schedule.wake_late_us=late;
++                    s_apu_schedule.wake_start_us=now_us;s_apu_schedule.wake_end_us=woke;
++                }
 +            }
          } else {
              break;
@@ -5510,7 +5531,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -481,11 +519,29 @@
+@@ -481,11 +540,29 @@
      float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
      memset(mixbins, 0, sizeof(mixbins));
 
@@ -5540,7 +5561,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      mcpx_debug_end_frame();
  }
-@@ -494,17 +550,44 @@
+@@ -494,17 +571,48 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -5556,9 +5577,13 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +        int64_t started=s_apu_lock_profile?qemu_clock_get_us(QEMU_CLOCK_REALTIME):0;
 +        qemu_cond_wait(&d->cond, &d->lock);
 +        if(s_apu_lock_profile) {
-+            int64_t elapsed=qemu_clock_get_us(QEMU_CLOCK_REALTIME)-started;
++            int64_t ended=qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++            int64_t elapsed=ended-started;
 +            s_apu_schedule.mmio_wait_us+=elapsed;
-+            if(elapsed>s_apu_schedule.mmio_max_us)s_apu_schedule.mmio_max_us=elapsed;
++            if(elapsed>s_apu_schedule.mmio_max_us) {
++                s_apu_schedule.mmio_max_us=elapsed;
++                s_apu_schedule.mmio_start_us=started;s_apu_schedule.mmio_end_us=ended;
++            }
 +        }
 +    }
 +}
@@ -5585,7 +5610,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              continue;
          }
 
-@@ -553,6 +636,15 @@
+@@ -553,6 +661,24 @@
                      if (on && (st_n || st_timeouts))
                          fprintf(stderr, "[APU] ISR stalls: %u in 5 s, total %.1f ms, max %.1f ms, >40 ms %u\n",
                                  st_n, st_total / 1000.0, st_max / 1000.0, st_timeouts);
@@ -5595,26 +5620,33 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +                            s_apu_schedule.wake_late_us/1000.0,s_apu_schedule.mmio_wait_us/1000.0,
 +                            s_apu_schedule.mmio_max_us/1000.0,s_apu_schedule.resyncs,s_apu_schedule.resync_us/1000.0,
 +                            st_n,st_total/1000.0,st_max/1000.0,st_timeouts);
++                        /* These timestamps use the same monotonic QPC domain as
++                         * the durations. A window maximum alone cannot identify
++                         * which wait overlapped a consumer underrun. No new clock
++                         * reads or per-event logging are added to the hot path. */
++                        fprintf(stderr,"[APU-SCHEDULE-TIMES] gap=[%.3f,%.3f]ms wake=[%.3f,%.3f]ms mmio=[%.3f,%.3f]ms late-at=%.3fms last-resync-at=%.3fms\n",
++                            s_apu_schedule.gap_start_us/1000.0,s_apu_schedule.gap_end_us/1000.0,
++                            s_apu_schedule.wake_start_us/1000.0,s_apu_schedule.wake_end_us/1000.0,
++                            s_apu_schedule.mmio_start_us/1000.0,s_apu_schedule.mmio_end_us/1000.0,
++                            s_apu_schedule.late_at_us/1000.0,s_apu_schedule.resync_at_us/1000.0);
 +                        int64_t last=s_apu_schedule.last_frame_us;
 +                        memset(&s_apu_schedule,0,sizeof s_apu_schedule);s_apu_schedule.last_frame_us=last;
 +                    }
                      st_n = st_timeouts = 0;
                      st_total = st_max = 0;
                      st_last_log = now_ms;
-@@ -561,6 +653,12 @@
+@@ -561,6 +687,10 @@
          }
 
          throttle(d);
 +        if(s_apu_lock_profile) {
 +            int64_t now=qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-+            int64_t gap=s_apu_schedule.last_frame_us?now-s_apu_schedule.last_frame_us:0;
-+            if(gap>s_apu_schedule.max_gap_us)s_apu_schedule.max_gap_us=gap;
-+            s_apu_schedule.last_frame_us=now;
++            mcpx_apu_profile_frame_gap(now);
 +        }
 
          int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
-@@ -571,7 +669,40 @@
+@@ -571,7 +701,40 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -5655,7 +5687,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,7 +752,9 @@
+@@ -621,7 +784,9 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
@@ -5665,7 +5697,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      if (d->gp.dsp) {
          memset((void *)d->gp.dsp->core.pram_opcache, 0,
-@@ -648,6 +781,9 @@
+@@ -648,6 +813,9 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
@@ -5675,7 +5707,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -665,6 +801,19 @@
+@@ -665,6 +833,19 @@
 
      /* Init DSP (GP/EP - stubbed) */
      mcpx_apu_dsp_init(d);
@@ -5695,7 +5727,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      /* Init software mixer for DirectSound bridge */
      mixer_init();
-@@ -705,6 +854,8 @@
+@@ -705,6 +886,8 @@
      qemu_thread_join(&d->apu_thread);
      mcpx_apu_vp_finalize(d);
      mcpx_apu_monitor_finalize(d);
@@ -5704,7 +5736,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      free(d);
      g_state = NULL;
-@@ -737,8 +888,12 @@
+@@ -737,8 +920,12 @@
          if (is_write) {
              mcpx_apu_write(d, addr, val, size);
          }
@@ -5719,7 +5751,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -746,9 +901,31 @@
+@@ -746,9 +933,31 @@
   * addr is offset from APU base (0xFE800000)
   * ============================================================ */
 
@@ -5751,7 +5783,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      if (addr >= 0x20000 && addr < 0x30000) {
          return mcpx_apu_vp_read(d, addr - 0x20000, size);
      } else if (addr < 0x20000) {
-@@ -766,9 +943,32 @@
+@@ -766,9 +975,32 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */

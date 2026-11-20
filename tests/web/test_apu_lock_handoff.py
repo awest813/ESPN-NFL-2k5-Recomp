@@ -148,6 +148,8 @@ int main(void) {
         assert(!pthread_join(mix,NULL));
         assert(writes==(phase==2?5000:phase?0:10000) && reads==(phase==2?5000:phase?10000:0));
         assert(d.mmio_completed==10000 && !d.mmio_waiters && waits>2 && !in_frame);
+        assert(s_apu_schedule.mmio_end_us-s_apu_schedule.mmio_start_us==s_apu_schedule.mmio_max_us);
+        if(s_apu_schedule.mmio_max_us)assert(s_apu_schedule.mmio_start_us>0);
     }
     /* Shutdown does not park behind a pending writer. */
     int previous=waits;d.mmio_waiters=1;

@@ -14,6 +14,7 @@ harness = r'''
 #include <stdbool.h>
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 #include "apu_regs.h"
 #define QEMU_CLOCK_REALTIME 0
 typedef struct {
@@ -23,10 +24,10 @@ typedef struct {
     unsigned next_frame_remainder;
 } MCPXAPUState;
 static int64_t now_us;
-static unsigned waits;
+static unsigned waits, clocks;
 static bool early_wake;
 static int64_t oversleep_us;
-static int64_t qemu_clock_get_us(int clock) { (void)clock; return now_us; }
+static int64_t qemu_clock_get_us(int clock) { (void)clock; clocks++;return now_us; }
 static void qemu_cond_timedwait(int *cond,int *lock,int ms) {
     (void)cond;(void)lock;assert(ms>0);
     now_us+=(early_wake ? 500 : (int64_t)ms*1000)+oversleep_us;waits++;
@@ -54,6 +55,7 @@ int main(int argc,char **argv) {
     now_us=d.next_frame_time_us+64001;before=now_us;
     throttle(&d);assert(d.next_frame_time_us==before+5333); /* Rebase phase too. */
     if(s_apu_lock_profile)assert(s_apu_schedule.resyncs==1 && s_apu_schedule.resync_us==64001 && s_apu_schedule.max_late_us==64001);
+    if(s_apu_lock_profile)assert(s_apu_schedule.resync_at_us==before && s_apu_schedule.late_at_us==before);
     int64_t wait_start=now_us;
     throttle(&d);assert(waits && now_us<d.next_frame_time_us); /* Actually waits. */
     assert(d.sleep_acc_us==now_us-wait_start && d.sleep_acc_us==5000);
@@ -70,11 +72,34 @@ int main(int argc,char **argv) {
     assert(d.sleep_acc_us==old_sleep);
     early_wake=false;oversleep_us=10000;d.next_frame_time_us=now_us+5000;
     before=d.next_frame_time_us;old_sleep=d.sleep_acc_us;
-    throttle(&d);
+    unsigned clocks_before=clocks;throttle(&d);
     assert(d.sleep_acc_us==old_sleep+15000);
-    if(s_apu_lock_profile)assert(s_apu_schedule.wake_late_us==10000);
+    if(s_apu_lock_profile) {
+        assert(s_apu_schedule.wake_late_us==10000);
+        assert(s_apu_schedule.wake_start_us==before-5000 && s_apu_schedule.wake_end_us==before+10000);
+    } else {
+        assert(!s_apu_schedule.resync_at_us && !s_apu_schedule.late_at_us &&
+            !s_apu_schedule.wake_start_us && !s_apu_schedule.wake_end_us);
+    }
+    /* Timing samples are existing throttle reads; optional span recording
+     * must not query the clock again. One start, two loop checks and one wake. */
+    assert(clocks-clocks_before==4);
     assert(d.next_frame_time_us==before+5333 || d.next_frame_time_us==before+5334);
-    puts("PASS APU throttle: exact one-hour pacing, catch-up, rebase, actual sleep, early wakes and profiled oversleep");
+    /* The production frame-gap recorder retains the exact worst interval,
+     * including an interval straddling the five-second report reset. */
+    memset(&s_apu_schedule,0,sizeof s_apu_schedule);clocks_before=clocks;
+    mcpx_apu_profile_frame_gap(epoch);assert(!s_apu_schedule.max_gap_us);
+    mcpx_apu_profile_frame_gap(epoch+5333);
+    mcpx_apu_profile_frame_gap(epoch+25333);
+    mcpx_apu_profile_frame_gap(epoch+26000);
+    assert(s_apu_schedule.max_gap_us==20000 && s_apu_schedule.gap_start_us==epoch+5333 &&
+        s_apu_schedule.gap_end_us==epoch+25333);
+    int64_t last=s_apu_schedule.last_frame_us;
+    memset(&s_apu_schedule,0,sizeof s_apu_schedule);s_apu_schedule.last_frame_us=last;
+    mcpx_apu_profile_frame_gap(epoch+60000);
+    assert(s_apu_schedule.max_gap_us==34000 && s_apu_schedule.gap_start_us==last &&
+        s_apu_schedule.gap_end_us==epoch+60000 && clocks==clocks_before);
+    puts("PASS APU throttle: exact one-hour pacing, catch-up, rebase, actual sleep, early wakes, profiled oversleep and exact worst-gap spans");
 }
 '''.replace('/* PROFILE */', 'static bool s_apu_lock_profile;\n'+profile).replace('/* THROTTLE */', function)
 out = root / 'build-web-tests/apu-pacing'

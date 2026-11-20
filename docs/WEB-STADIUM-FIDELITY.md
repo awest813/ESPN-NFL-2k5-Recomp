@@ -4579,3 +4579,59 @@ renderer behavior or test expectations. All 78 line cases then pass locally,
 including 34 pinned Xbox width cases, CPU clipping differentials and ordered
 instanced blending. D16's 600 line / 92 triangle / 65,536 encoding checks had
 already passed in that failed CI job; Windows and Linux builds also passed.
+
+
+### Exact APU scheduling intervals (2026-11-20)
+
+The existing opt-in `RECOMP_APU_LOCK_PROFILE` now retains monotonic QPC start
+and end timestamps for the worst frame gap, timed wait and MMIO handoff in
+each reporting window, plus the worst lateness time and last rebase time.
+`[APU-SCHEDULE-TIMES]` prints these beside the existing five-second duration
+summary. It uses the already sampled clocks; normal scheduling policy, the
+64 ms catch-up cap, queue capacity and optional audio-clock wake setting are
+unchanged. Zero timestamp pairs mean no positive interval was recorded. These
+are window maxima, not a complete event trace, and timed waits include mutex
+reacquisition and host descheduling rather than exclusive CPU execution.
+
+The deterministic production-throttle test passes exact one-hour pacing,
+64 ms catch-up/rebase boundaries, early wake accounting, exact rebase and
+oversleep timestamps, and four clock reads for the exercised timed-wait path
+with profiling enabled or disabled. The production gap recorder retains the
+correct worst interval across a reporting reset without reading the clock.
+Contended MMIO tests pass with matching duration/start/end records for 10,000
+writes, 10,000 protected DSP reads and 10,000 mixed accesses, both in Wasm and
+with native address/undefined-behavior sanitizers. The optimized game build,
+launcher/static-host checks and fresh 101-file pinned-patch reproduction pass.
+
+The frozen `apu-span-retail` capture selects Bengals at 49ers, inspects the
+menu/coach/intro/coin-toss presentation, kicks to first-and-ten at CIN 40,
+and returns through pause and the VIP warning to the neutral main menu.
+Thirteen screenshots, eight snapshots and twenty-seven unchanged artifact
+hashes are retained privately. The early screenshot named `after-kickoff`
+still shows the kickoff setup; `kickoff-result` verifies the actual transition.
+Short scripted A presses do not activate the meter in this run; 300 ms keyboard
+A presses do. Their timing and input paths differ, so this is not yet a
+controller defect diagnosis. The owned browser and server are closed.
+
+The case fails audio. The final explicit snapshot at AudioContext second
+380.64 reports three affected blocks / 256 missing frames (longest 128).
+A later automatic record before close reaches eleven affected blocks / 1,280
+missing frames, with a longest gap of 512 frames (10.67 ms at 48 kHz). Four
+automatic underrun records are retained; the first missing output is at
+second 97.53866666666667 and the last is at 403.0799791666667. The written
+case detail describes the explicit snapshot; the later automatic record is
+the authoritative higher count. Completed schedule windows report no rebases;
+the final partial window is not reported before browser close.
+
+The completed window immediately after the first automatic underrun reports
+an exact worst frame interval [1795210568494.449, 1795210568513.400] ms in the
+QPC domain. Its worst timed wait is [1795210568494.664, 1795210568513.394] ms:
+the two end within 0.006 ms, while the maximum MMIO handoff occurs elsewhere
+in that window. This identifies a frame-delivery gap dominated by the timed
+wait/reacquisition interval. It does not establish exact alignment to the
+consumer's missing samples, distinguish host scheduling from mutex contention,
+or establish that every gap has this cause. The next investigation needs a
+shared consumer/producer clock anchor and wait/reacquisition separation.
+Frame windows also fall below 30 FPS. This profiled, differently timed matchup
+is not an A/B improvement claim; audio continuity, full Xbox fidelity and a
+sustained 30 FPS floor remain open.
