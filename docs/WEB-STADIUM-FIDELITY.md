@@ -4321,3 +4321,29 @@ images and fourteen build/source hashes are preserved privately. The owned
 browser and server are closed. This paused, bounded regression does not
 establish full-match completion, exact Xbox scene/depth identity, specific
 field depth-mode usage or a sustained 30 FPS floor.
+
+### Oblique lines and eye-plane crossings (2026-11-20)
+
+The shared D24 line matrix now has fifteen cases. The seven additions cover
+both diagonal directions, reversed varying-depth endpoints, maximum W on a
+diagonal, eye-plane crossings in both endpoint orders, a fully rejected
+negative-W segment and a near-Z crossing. Probe pixels follow each line's
+actual Y coordinate. The eye-plane cases deliberately place visible pixels
+outside the original projected endpoint interval.
+
+Expected coverage uses a double-precision homogeneous segment parameter;
+expected depth uses independent affine Z or harmonic W interpolation. The
+manual single/indexed shader fixtures receive endpoints from a separate
+double-precision interval clipper. Native software/GPU paths and the generated
+instanced vertex program receive the original guest endpoints and exercise
+their production clipping. Fully rejected manual geometry performs only the
+attachment clear, allowing the fixture to verify the absence of fragments.
+
+All 180 native GPU probes, 180 software probes, 360 single/indexed WebGPU
+pixels and 180 instanced WebGPU pixels pass. The complete native and browser
+renderer suites pass, as do the existing 85 generated line modules, 2,752 VP
+executions, 864 position checks and 20,480 edge pixels. No production renderer
+change was needed for these additions. No new retail capture or performance
+measurement is claimed for this test-only extension. Vertical lines, arbitrary
+eye-plane boundary precision, polygon offsets, other depth formats and exact
+matched Xbox scene pixels remain outside this coverage.

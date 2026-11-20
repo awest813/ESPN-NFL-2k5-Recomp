@@ -7478,20 +7478,20 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        s_vp.clip_min=c->minimum;s_vp.clip_max=c->maximum;
 +        for(unsigned k=0;k<2;k++) {
 +            float *v=(float *)(g_ram+0x600000)+k*16;memset(v,0,64);
-+            v[0]=c->x[k];v[1]=20.5f;v[2]=w_buffer?0.5f:c->depth[k];v[3]=w_buffer?c->depth[k]:1;
++            v[0]=c->x[k];v[1]=c->y[k];v[2]=w_buffer?0.5f:c->depth[k];v[3]=w_buffer?c->depth[k]:1;
 +            v[5]=v[7]=1;
 +        }
 +        for(unsigned p=0;p<3;p++) {
-+            unsigned x=probes[p];int visible;unsigned integer=depth_line_reference(c,x,w_buffer,clip,&visible);
++            unsigned x=probes[p],y=depth_line_probe_y(c,x);int visible;unsigned integer=depth_line_reference(c,x,w_buffer,clip,&visible);
 +            uint32_t expected=visible?0xFF00FF00u:0xFF000000u;
 +            s_gpu.clear_color=0xFF000000u;s_vp.zclear=integer<<8;
 +            CHECK(sg_clear(0xF3) && sg_draw_batch(0),"integer D24 line GPU draw rejected");download_frame();
-+            uint32_t pixel;memcpy(&pixel,g_ram+0x400000+20*256+x*4,4);
++            uint32_t pixel;memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
 +            CHECK(pixel==expected,"D24 GPU line case %u W=%u clip=%u x=%u: %08X expected %08X",n,w_buffer,clip,x,pixel,expected);
-+            memcpy(g_ram+0x400000+20*256+x*4,&s_gpu.clear_color,4);s_zbuf[20*ZB_W+x]=(float)integer;
++            memcpy(g_ram+0x400000+y*256+x*4,&s_gpu.clear_color,4);s_zbuf[y*ZB_W+x]=(float)integer;
 +            surface_stage_reset();batch_lines_xf(raster_line_xf_cb,NULL);
 +            CHECK(surface_stage_flush(g_ram),"D24 software line flush");surface_stage_reset();
-+            memcpy(&pixel,g_ram+0x400000+20*256+x*4,4);
++            memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
 +            CHECK(pixel==expected,"D24 software line case %u W=%u clip=%u x=%u: %08X expected %08X",n,w_buffer,clip,x,pixel,expected);
 +            sg_surface_current()->owner=SG_OWNER_GUEST;
 +        }
@@ -29407,10 +29407,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.vert b/src/kernel/sdlgpu/shaders/xf.ve
 +}
 diff --git a/tests/sdlgpu_web/depth_quantization_reference.h b/tests/sdlgpu_web/depth_quantization_reference.h
 new file mode 100644
-index 0000000..1c7b1f4
+index 0000000..3001b20
 --- /dev/null
 +++ b/tests/sdlgpu_web/depth_quantization_reference.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,90 @@
 +/* Integer D24 depth truncates in native Xbox units before comparison.
 + * Expected integers are explicit, rather than calculated by the shader's
 + * conversion. Clear values use independent double-precision division and
@@ -29436,27 +29436,69 @@ index 0000000..1c7b1f4
 +        case 6:return value>=stored;default:return 1;
 +    }
 +}
-+typedef struct {float x[2],depth[2],minimum,maximum;} DepthLineCase;
++typedef struct {float x[2],y[2],depth[2],minimum,maximum;} DepthLineCase;
 +static const DepthLineCase depth_line_cases[]={
-+    {{8.5f,56.5f},{1.75f,1.75f},0,16777215},
-+    {{8.5f,56.5f},{16777214,16777214},0,16777215},
-+    {{8.5f,56.5f},{16777215,16777215},0,16777215},
-+    {{8.5f,56.5f},{2.25f,8.75f},0,16777215},
-+    {{56.5f,8.5f},{8.75f,2.25f},0,16777215},
-+    {{-16.5f,80.5f},{2.25f,8.75f},0,16777215},
-+    {{8.5f,56.5f},{16777216,16777216},0,16777215},
-+    {{8.5f,56.5f},{2.25f,2.25f},3,7},
++    {{8.5f,56.5f},{20.5f,20.5f},{1.75f,1.75f},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{16777214,16777214},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{16777215,16777215},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{2.25f,8.75f},0,16777215},
++    {{56.5f,8.5f},{20.5f,20.5f},{8.75f,2.25f},0,16777215},
++    {{-16.5f,80.5f},{20.5f,20.5f},{2.25f,8.75f},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{16777216,16777216},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{2.25f,2.25f},3,7},
++    {{8.5f,56.5f},{8.5f,56.5f},{16777215,16777215},0,16777215},
++    {{8.5f,56.5f},{56.5f,8.5f},{2.25f,8.75f},0,16777215},
++    {{56.5f,8.5f},{8.5f,56.5f},{8.75f,2.25f},0,16777215},
++    {{-56.5f,8.5f},{20.5f,20.5f},{-2,2},0,16777215},
++    {{8.5f,-56.5f},{20.5f,20.5f},{2,-2},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{-2,-2},0,16777215},
++    {{8.5f,56.5f},{20.5f,20.5f},{-1.5f,2.25f},0,16777215},
 +};
++static unsigned depth_line_probe_y(const DepthLineCase *c,unsigned x) {
++    double t=((double)x+0.5-c->x[0])/(c->x[1]-c->x[0]);
++    return (unsigned)floor(c->y[0]+t*(c->y[1]-c->y[0]));
++}
 +/* Separate double affine/harmonic oracle, including pre-conversion clipping. */
 +static unsigned depth_line_reference(const DepthLineCase *c,unsigned x,unsigned w_buffer,unsigned clip,int *visible) {
 +    double t=((double)x+0.5-c->x[0])/(c->x[1]-c->x[0]);
-+    double depth=w_buffer?1.0/((1.0-t)/c->depth[0]+t/c->depth[1]):(1.0-t)*c->depth[0]+t*c->depth[1];
-+    *visible=!clip || (depth>=c->minimum && depth<=c->maximum);
++    double wa=w_buffer?c->depth[0]:1,wb=w_buffer?c->depth[1]:1;
++    double inverse=(1.0-t)/wa+t/wb;
++    if(inverse==0 || !isfinite(inverse)){*visible=0;return 0;}
++    double w=1.0/inverse,u=(t/wb)/inverse;
++    double depth=w_buffer?w:(1.0-t)*c->depth[0]+t*c->depth[1];
++    *visible=w>0.001 && u>0 && u<1 && (!clip || (depth>=c->minimum && depth<=c->maximum));
 +    if(depth<c->minimum)depth=c->minimum;
 +    if(depth>c->maximum)depth=c->maximum;
 +    if(depth<0)depth=0;
 +    if(depth>16777215)depth=16777215;
 +    return (unsigned)depth;
++}
++/* Independent interval clipping in homogeneous coordinates. Native paths
++ * receive original endpoints; manual shader fixtures receive these doubles
++ * rounded to float after clipping, without calling the production clipper. */
++static int depth_line_clipped_positions(const DepthLineCase *c,unsigned w_buffer,unsigned clip,float out[2][4]) {
++    double p[2][4];
++    for(unsigned k=0;k<2;k++) {
++        double w=w_buffer?c->depth[k]:1,z=w_buffer?0.5:c->depth[k];
++        p[k][0]=c->x[k]*w;p[k][1]=c->y[k]*w;p[k][2]=z*w;p[k][3]=w;
++    }
++    double lower=0,upper=1;
++    for(unsigned plane=0;plane<(clip?2u:1u);plane++) {
++        unsigned component=plane?2:3;double limit=plane?0:0.001;
++        double first=p[0][component]-limit,delta=p[1][component]-p[0][component];
++        if(delta==0){if(first<0)return 0;continue;}
++        double boundary=-first/delta;
++        if(delta>0){if(boundary>lower)lower=boundary;}
++        else if(boundary<upper)upper=boundary;
++    }
++    if(lower>=upper)return 0;
++    for(unsigned k=0;k<2;k++) {
++        double t=k?upper:lower,w=p[0][3]+t*(p[1][3]-p[0][3]);
++        if(w<0.001)w=0.001;
++        for(unsigned v=0;v<3;v++)out[k][v]=(float)((p[0][v]+t*(p[1][v]-p[0][v]))/w);
++        out[k][3]=(float)w;
++    }
++    return 1;
 +}
 +#endif
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -44042,10 +44084,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..a382381
+index 0000000..94b7c84
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2382 @@
+@@ -0,0 +1,2385 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -45255,21 +45297,24 @@ index 0000000..a382381
 +                        memcpy(&shade.depth[2],&c->minimum,4);memcpy(&shade.depth[3],&c->maximum,4);
 +                        memcpy(uniform.base,&shade,sizeof shade);uniform.params[0]=1.0f/16777216.0f;uniform.params[1]=1;
 +                        memset(uniform.endpoint,0,sizeof uniform.endpoint);
++                        float positions[2][4]={{0}};
++                        int geometry=depth_line_clipped_positions(c,w_buffer,clip,positions);
 +                        for(unsigned k=0;k<2;k++) {
-+                            float *pos=uniform.endpoint[k].value[0];pos[0]=c->x[k];pos[1]=20.5f;
-+                            pos[2]=w_buffer?0.5f:c->depth[k];pos[3]=w_buffer?c->depth[k]:1;
++                            memcpy(uniform.endpoint[k].value[0],positions[k],sizeof positions[k]);
 +                            uniform.endpoint[k].value[1][1]=uniform.endpoint[k].value[1][3]=1;
 +                        }
-+                        CHECK(line_cover_quad(uniform.endpoint[0].value[0],uniform.endpoint[1].value[0],xy),"D24 conservative line geometry");
++                        memset(xy,0,sizeof xy);
++                        if(geometry)CHECK(line_cover_quad(uniform.endpoint[0].value[0],uniform.endpoint[1].value[0],xy),"D24 conservative line geometry");
 +                        for(unsigned k=0;k<6;k++){vertices[k][0]=xy[corners[k]][0];vertices[k][1]=xy[corners[k]][1];}
 +                        for(unsigned p=0;p<3;p++) {
-+                            unsigned x=probes[p];int visible;unsigned integer=depth_line_reference(c,x,w_buffer,clip,&visible);
++                            unsigned x=probes[p],y=depth_line_probe_y(c,x);int visible;unsigned integer=depth_line_reference(c,x,w_buffer,clip,&visible);
 +                            Draw probe=d;probe.pipe=single;probe.clear_argb=0xFF000000u;probe.depth_value=depth_clear_reference(integer);
-+                            probe.scissor=(SDL_Rect){(int)x-1,18,3,6};
++                            probe.scissor=(SDL_Rect){(int)x-1,(int)y-2,3,6};
++                            if(!geometry){probe.n=0;probe.reuse_vertices=1;}
 +                            if(family)draw_batched_line_probe_pipeline(&probe,1,0,1,uniform.base,uniform.endpoint,uniform.params,batch);
 +                            else draw(&probe);
 +                            download(color,0,W,H,img);uint32_t expected=visible?0xFF00FF00u:0xFF000000u;
-+                            CHECK(px(img,x,20)==expected,"WebGPU D24 line family=%u case=%u W=%u clip=%u x=%u: %08X expected %08X",family,n,w_buffer,clip,x,px(img,x,20),expected);
++                            CHECK(px(img,x,y)==expected,"WebGPU D24 line family=%u case=%u W=%u clip=%u x=%u y=%u: %08X expected %08X",family,n,w_buffer,clip,x,y,px(img,x,y),expected);
 +                        }
 +                    }
 +                    SDL_ReleaseGPUGraphicsPipeline(dev,single);SDL_ReleaseGPUGraphicsPipeline(dev,batch);

@@ -44,7 +44,7 @@ module.exports=async function checkLineDepth(page,dir) {
         const vertices=new Float32Array(stride/4);
         for(let side=0;side<2;side++)for(let i=0;i<inputs.length;i++) {
           const at=(side*inputs.length+i)*4;
-          if(inputs[i]===0)vertices.set([c.x[side],20.5,c.w?0.5:c.depth[side],c.w?c.depth[side]:1],at);
+          if(inputs[i]===0)vertices.set([c.x[side],c.y[side],c.w?0.5:c.depth[side],c.w?c.depth[side]:1],at);
           else if(inputs[i]===3)vertices.set([0,1,0,1],at);
         }
         const uniforms=new Float32Array(data.vertexUniformBytes/4),info=data.infoOffset/4;
@@ -66,8 +66,8 @@ module.exports=async function checkLineDepth(page,dir) {
           depthStencilAttachment:{view:depth.createView(),depthClearValue:normalized[0],depthLoadOp:'clear',depthStoreOp:'store',
             stencilClearValue:0,stencilLoadOp:'clear',stencilStoreOp:'store'}});
         pass.setPipeline(pipeline);for(let i=0;i<groups.length;i++)pass.setBindGroup(i,groups[i]);
-        pass.setVertexBuffer(0,vb);pass.setScissorRect(c.probe-1,18,3,6);pass.draw(6,1);pass.end();
-        enc.copyTextureToBuffer({texture:color,origin:[c.probe,20]}, {buffer:read,bytesPerRow:256},[1,1]);
+        pass.setVertexBuffer(0,vb);pass.setScissorRect(c.probe-1,c.probeY-2,3,6);pass.draw(6,1);pass.end();
+        enc.copyTextureToBuffer({texture:color,origin:[c.probe,c.probeY]}, {buffer:read,bytesPerRow:256},[1,1]);
         device.queue.submit([enc.finish()]);await read.mapAsync(GPUMapMode.READ);
         const pixel=Array.from(new Uint8Array(read.getMappedRange(),0,4));read.unmap();
         const expected=c.visible?[0,255,0,255]:[0,0,0,255];

@@ -103,3 +103,8 @@ extends pixel coverage to single, indexed and instanced vertex-program line
 paths, including maximum W, reversed and viewport-clipped segments, and
 custom clip bounds. Software rejects clipped fragments before depth/stencil
 updates and applies the selected bounds when clamping.
+
+The [oblique/eye-plane extension](WEB-STADIUM-FIDELITY.md#oblique-lines-and-eye-plane-crossings-2026-11-20)
+adds diagonal and near/eye-plane crossing cases, including visible geometry
+outside the original projected endpoint interval. Independent double-precision
+references pass across software, native GPU and all three browser line paths.
