@@ -20,6 +20,7 @@ harness = r'''
 #include <stdlib.h>
 #include <assert.h>
 #include "apu_regs.h"
+#include "apu_schedule_trace.h"
 typedef int32_t LONG;
 typedef uint64_t hwaddr;
 struct DSP { struct { uint8_t pram_opcache[8]; } core; };
