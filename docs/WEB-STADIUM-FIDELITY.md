@@ -2579,3 +2579,63 @@ through rain. Different teams/scenes and instrumentation prevent a controlled
 performance comparison with earlier captures. The 30 FPS floor, uninterrupted
 audio, full game-mode coverage and original-Xbox stadium/staff fidelity remain
 unfinished.
+
+
+### Same-frame texture rewrites
+
+The direct-guest texture hash memo previously reused a content hash until the
+next flip. Changing a texture after its first draw in the same frame could
+therefore sample the old image. The new regression reproduces that failure
+against the preceding published runtime. A hash is now reused only after a
+full-byte equality check against a frame-local copy; changed images receive
+new hashes and GPU uploads immediately. The copy arena is capped at 16 MiB.
+Allocation failure or arena exhaustion retains accurate per-bind hashing;
+frame transitions reclaim the copy space and counter wrap invalidates old
+memo entries. Owned snapshots and palettes retain their existing checks.
+
+WebAssembly uses bounded unaligned SIMD loads for equality, checking 64 bytes
+per iteration and handling short tails separately. Native builds use libc
+`memcmp`. This avoids the installed SDK's four-byte comparison loop without
+sampling or skipping any texture bytes. Renderer profiling now reports
+nominal verification spans in MiB/frame alongside hashed bytes; early mismatch
+returns can read fewer bytes than the reported comparison span.
+
+The production-code fixture passes with SIMD Wasm, scalar Wasm and native
+ASAN/UBSAN. It checks every byte of a 4 KiB same-frame rewrite, stage aliases,
+copy allocation failure/exhaustion, frame wrap, palette/mip changes and
+unaligned ranges of every length from zero through 131, including exact
+allocation ends and bytes outside the requested span. The real native Vulkan
+renderer retains two draws in its queue across a CPU texture rewrite: the
+first produces red pixels and the second blue pixels without a flip. The
+full sanitized renderer, Linux kernel/video and browser game builds pass.
+These regressions now run in Web CI and native sanitizer CI.
+
+A local Wasm/Node microbenchmark compares 1,000 equal 1 MiB spans in three
+passes: the installed SDK comparison takes 81.98–86.79 ms and the SIMD equality
+helper 30.84–31.99 ms. This measures the helper on warm equal buffers, not game
+FPS or a whole-frame improvement. The preceding `d4b4831` Build and Pages
+workflows both passed.
+
+
+An intermediate browser build using libc equality completed a roughly
+246-second Miami/Detroit dry retail run without browser/GPU failures. Its
+five-second averages after 150 seconds range from 16.1 to 30.0 FPS.
+It records 18,048 missing output frames (376 ms at 48 kHz), with a longest
+gap of 4,224 frames (88 ms). This motivated the SIMD equality helper; the
+intermediate measurement is retained as evidence, not a controlled comparison
+with a different matchup or scene.
+
+
+The final SIMD build completes a separate roughly 246-second Miami/Chicago
+dry retail run without browser/GPU failures. Player-card text and portraits,
+field markings, shadows, scoreboard and lineup overlays render in the checked
+views. Its 19 five-second averages after 150 seconds range from 21.8 to
+30.0 FPS. Audio records 556 affected blocks and 71,168 missing output frames
+(1,482.7 ms at 48 kHz), with a longest continuous gap of 2,816 frames (58.7 ms).
+The game reaches first-and-ten at 2:07 in the first quarter. These different
+matchups/scenes cannot establish a whole-game performance improvement; full
+content verification adds memory traffic, and the observed FPS/audio gaps
+remain unresolved. Local evidence and Wasm/JS/patch hashes are saved under
+`build-web-tests/texture-coherence-simd-retail`. The 30 FPS floor,
+uninterrupted/reference-matched audio, complete stadium/staff and game-mode
+fidelity remain unfinished.

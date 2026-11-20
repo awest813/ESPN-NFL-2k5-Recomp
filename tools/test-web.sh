@@ -31,6 +31,8 @@ python3 -I "$ROOT/tests/web/test_vp_interpreter.py" --scalar --build-dir "$OUT/v
 python3 -I "$ROOT/tests/web/test_draw_merge.py"
 python3 -I "$ROOT/tests/web/test_draw_uniforms.py"
 python3 -I "$ROOT/tests/web/test_clip_plane_state.py"
+python3 -I "$ROOT/tests/web/test_texture_hash.py" --build-dir "$OUT/texture-hash"
+python3 -I "$ROOT/tests/web/test_texture_hash.py" --scalar --build-dir "$OUT/texture-hash-scalar"
 python3 -I "$ROOT/tests/web/test_texture_decode.py"
 python3 -I "$ROOT/tests/web/test_texture_samplers.py"
 python3 -I "$ROOT/tests/web/test_widescreen.py"

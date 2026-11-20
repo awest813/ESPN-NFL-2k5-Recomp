@@ -1,35 +1,74 @@
 """Exercise the live texture hash memo with aligned Xbox-style allocations."""
 from pathlib import Path
+import argparse
 import shutil
 import subprocess
 
 
 def main():
     root = Path(__file__).resolve().parents[2]
-    src = (root / "external/xboxrecomp/src/kernel/sdlgpu/sdlgpu_texture.inc.c").read_text(encoding="utf-8")
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--runtime',type=Path,default=root/'external/xboxrecomp')
+    parser.add_argument('--build-dir',type=Path,default=root/'build-web-tests/texture-hash')
+    parser.add_argument('--native',action='store_true')
+    parser.add_argument('--scalar',action='store_true')
+    args=parser.parse_args()
+    src = (args.runtime / "src/kernel/sdlgpu/sdlgpu_texture.inc.c").read_text(encoding="utf-8")
     memo = src[src.index("#define SG_HASH_MEMO"):src.index("/* One decode buffer")]
-    hashing = src[src.index("static uint64_t sg_hash("):src.index("/* Decode each DXT block")]
+    start=src.find("static int sg_texture_bytes_equal(")
+    hashing=src[start if start>=0 else src.index("static uint64_t sg_hash("):src.index("/* Decode each DXT block")]
+    if start<0:hashing='static int sg_texture_bytes_equal(const uint8_t*a,const uint8_t*b,size_t n){return memcmp(a,b,n)==0;}\n'+hashing
     harness = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
 typedef struct { unsigned width, height, color, pitch; } Texture;
 typedef struct { uint8_t *pixels; size_t bytes; int owned; uint32_t palette[256]; } TextureSnapshot;
 static Texture tx[4];
 static TextureSnapshot s_texture_snapshot[4];
-static struct { uint64_t texture_hash_bytes; } s_sg_stats;
+static struct { uint64_t texture_hash_bytes,texture_compare_bytes; } s_sg_stats;
 static const Texture *sg_stage_texture(int st) { return &tx[st]; }
 static uint32_t levels[4] = {1,1,1,1};
 static uint32_t texture_mip_levels(int st, const Texture *texture) { (void)texture; return levels[st]; }
+static int fail_hash_allocation;
+static void *hash_test_allocate(size_t bytes) {return fail_hash_allocation?NULL:malloc(bytes);}
+#define malloc hash_test_allocate
 /* LIVE_HASH */
+#undef malloc
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 int main(void) {
+    /* Misalignment, vector boundaries, tails and exact allocation ends. */
+    for(unsigned length=0;length<=131;length++)for(unsigned offset=0;offset<16;offset++) {
+        uint8_t *a=malloc(length+offset+1),*b=malloc(length+offset+1);
+        CHECK(a && b);memset(a,0x5A,length+offset+1);memset(b,0x5A,length+offset+1);
+        CHECK(sg_texture_bytes_equal(a+offset,b+offset,length));
+        for(unsigned k=0;k<length;k++) {
+            b[offset+k]^=1;CHECK(!sg_texture_bytes_equal(a+offset,b+offset,length));b[offset+k]^=1;
+        }
+        b[offset+length]^=1;CHECK(sg_texture_bytes_equal(a+offset,b+offset,length));
+        free(a);free(b);
+        size_t exact=length+offset;if(!exact)exact=1;
+        a=malloc(exact);b=malloc(exact);CHECK(a && b);
+        memset(a,0x5A,exact);memset(b,0x5A,exact);
+        CHECK(sg_texture_bytes_equal(a+offset,b+offset,length));
+        if(length){b[offset+length-1]^=1;CHECK(!sg_texture_bytes_equal(a+offset,b+offset,length));}
+        free(a);free(b);
+    }
     uint8_t *data = aligned_alloc(65536, 64 * 65536);
     CHECK(data != NULL);
     uint64_t keys[64];
     tx[0] = (Texture){32, 32, 0x12, 128};
     TextureSnapshot *s = &s_texture_snapshot[0]; s->bytes = 4096;
+    /* Failure to allocate memo copies must retain coherent uncached hashes. */
+    s->pixels=data;memset(data,0,4096);fail_hash_allocation=1;
+    uint64_t uncached=sg_texture_key(0,0);data[2053]=1;
+    CHECK(sg_texture_key(0,0)!=uncached);
+    data[2053]=0;CHECK(sg_texture_key(0,0)==uncached);
+    fail_hash_allocation=0;s_sg_frame++;memset(&s_sg_stats,0,sizeof s_sg_stats);
     for (unsigned i = 0; i < 64; i++) {
         s->pixels = data + i * 65536;
         memset(s->pixels, i, 4096);
@@ -60,21 +99,55 @@ int main(void) {
     CHECK(sg_texture_key(0, 0) != before);
     before = sg_texture_key(0, 0); levels[0] = 2;
     CHECK(sg_texture_key(0, 0) != before); /* level count participates in memo shape */
+    /* Every byte, including interior/padding/mip data, must be observed within
+     * the same frame. Repeated unchanged binds must still reuse the hash. */
+    tx[0]=(Texture){32,32,0x12,128};levels[0]=1;s->pixels=data;s->bytes=4096;
+    before=sg_texture_key(0,0);
+    for(unsigned at=0;at<4096;at++) {
+        data[at]^=1u<<(at&7);
+        uint64_t changed=sg_texture_key(0,0);CHECK(changed!=before);
+        bytes=s_sg_stats.texture_hash_bytes;
+        CHECK(sg_texture_key(0,0)==changed && s_sg_stats.texture_hash_bytes==bytes);
+        data[at]^=1u<<(at&7);CHECK(sg_texture_key(0,0)==before);
+    }
+    /* Stage aliases must not hide each other's writes. */
+    tx[1]=tx[0];s_texture_snapshot[1]=*s;
+    CHECK(sg_texture_key(1,0)==before);data[2061]^=0x80;
+    uint64_t alias=sg_texture_key(1,0);CHECK(alias!=before && sg_texture_key(0,0)==alias);
+    /* A bounded copy pool may run out. Every uncached span must stay coherent,
+     * then frame advancement must safely reuse storage from the old frame. */
+    s_sg_frame++;tx[0]=(Texture){1024,512,0x12,4096};s->bytes=2*1024*1024;
+    for(unsigned i=0;i<17;i++) {
+        s->pixels=data+i*16;before=sg_texture_key(0,0);
+        s->pixels[s->bytes-1]^=1;CHECK(sg_texture_key(0,0)!=before);
+        s->pixels[s->bytes-1]^=1;CHECK(sg_texture_key(0,0)==before);
+    }
+    s_sg_frame++;s->pixels=data;before=sg_texture_key(0,0);
+    s->pixels[17]^=2;CHECK(sg_texture_key(0,0)!=before);
+    s_sg_frame=UINT32_MAX;before=sg_texture_key(0,0);s_sg_frame=0;
+    s->pixels[32]^=4;CHECK(sg_texture_key(0,0)!=before);
     free(data);
-    puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes");
+    puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes, every-byte same-frame rewrites, aliases, allocation failure, arena exhaustion and frame wrap");
     return 0;
 }
 '''
-    build = root / "build-web-tests/texture-hash"
+    build = args.build_dir.resolve()
     build.mkdir(parents=True, exist_ok=True)
     source = build / "test.c"
-    output = build / "test.js"
+    output = build / ("test" if args.native else "test.js")
     source.write_text(harness.replace("/* LIVE_HASH */", memo + hashing), encoding="utf-8")
-    emcc, node = shutil.which("emcc"), shutil.which("node")
-    if not emcc or not node:
-        raise SystemExit("Emscripten emcc and Node must be on PATH")
-    subprocess.run([emcc, str(source), "-O3", "-sENVIRONMENT=node", "-o", str(output)], check=True)
-    subprocess.run([node, str(output)], check=True)
+    if args.native:
+        compiler=shutil.which('clang') or shutil.which('cc')
+        if not compiler:parser.error('A native C compiler is required')
+        subprocess.run([compiler,str(source),'-O2','-g','-fsanitize=address,undefined',
+                        '-fno-omit-frame-pointer','-o',str(output)],check=True)
+        subprocess.run([str(output)],check=True)
+    else:
+        emcc,node=shutil.which('emcc'),shutil.which('node')
+        if not emcc or not node:parser.error('Emscripten emcc and Node must be on PATH')
+        subprocess.run([emcc,str(source),'-O3',*([] if args.scalar else ['-msimd128']),'-sALLOW_MEMORY_GROWTH=1','-sENVIRONMENT=node','-o',str(output)],check=True)
+        subprocess.run([node,str(output)],check=True)
+
 
 
 if __name__ == "__main__":
