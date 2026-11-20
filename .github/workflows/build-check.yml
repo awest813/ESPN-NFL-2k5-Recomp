@@ -86,6 +86,9 @@ jobs:
       - name: Check committed texture lookup and invalidation (sanitizers)
         run: python3 -I tests/web/test_texture_lookup.py --native --build-dir build-texture-lookup
 
+      - name: Check scripted controller pulse timing (sanitizers)
+        run: python3 -I tests/web/test_scripted_input.py --native --build-dir build-scripted-input
+
       - name: Check bounded APU register handoff under continuous arrivals (sanitizers)
         run: python3 -I tests/web/test_apu_lock_handoff.py --native --build-dir build-apu-handoff
 

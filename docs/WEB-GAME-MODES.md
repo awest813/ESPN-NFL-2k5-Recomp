@@ -67,10 +67,24 @@ node tools/audit-web-modes.cjs --url http://127.0.0.1:8081/ --profile build-web-
 
 Send newline-delimited JSON commands on stdin, or a JSON array via --script.
 Actions include play, begin (id/title), key (key/ms/gap), press (buttons), wait
-(ms), shot (tag), status, end (result/detail), reload and close. key uses real
+(ms), wait-log (pattern/ms), shot (tag), status, end (result/detail), reload and close. key uses real
 keyboard events; A/D assigns a team whereas arrow keys change menus/uniforms.
-press uses the game's opt-in file queue and holds each button for 200 ms; it
-can cross a dialog or repeat a selection. Verify screenshots after transitions.
+press uses the game's opt-in file queue: each word presses for 100 ms and
+releases for at least 250 ms. A polling stall expires the old press before
+returning another sample. Verify screenshots after transitions.
+wait-log accepts a regular expression and watches fresh events since the last
+play, input, begin or reload checkpoint. A timeout records an audit failure.
+For title startup, optional button/everyMs retries one button until the expected
+transition appears, bounded by ms (at most 60 seconds). For example:
+
+```json
+{"action":"wait-log","pattern":"descriptor=00515660","button":"start","everyMs":3000,"ms":60000}
+```
+
+This waits for the main menu; after Quick Game A, descriptor 0052728C identifies
+team selection and 00585474 identifies coach matchup. Select the controller
+side with A/D before changing its team with LT/RT. Initial away teams can vary
+between boots; verify both teams and coaches before recording gameplay.
 Allow title/VIP-load transitions to finish; idle title starts the attract demo.
 Optional --capture-memory enables read-only guest-memory peek for diagnosis.
 Reports include browser/adapter metadata and separate fatal failures from known

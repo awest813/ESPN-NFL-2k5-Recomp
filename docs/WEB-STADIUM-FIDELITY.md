@@ -3471,3 +3471,53 @@ Owned browser and HTTP server were closed. The `7722d12` Build and Pages jobs
 were still running when the capture completed. A sustained 30 FPS floor,
 continuous audio and all-mode/stadium/staff reference fidelity remain
 unfinished.
+
+### Scripted input and fixed-matchup capture (2026-11-20)
+
+Queued audit buttons now expire before returning an old pressed sample after
+a polling stall. Each word presses for 100 ms with a 250 ms release gap.
+The real production function passes Wasm undefined-behavior checks and native
+address/undefined-behavior checks: exact expiry, six polling cadences, repeated
+triggers, all mappings, physical-input preservation and queue bounds. The
+ordinary Web Python suite and Release O3 game build pass. These changes affect
+the opt-in script queue, not normal controller polling.
+
+The audit CLI can wait for fresh FSM transitions with bounded single-button
+retries. Timeout errors fail the report, stale markers cannot satisfy a new
+input checkpoint, and interactive close releases stdin. Real browser fixtures
+verify these behaviors and rejection of requested false passes. The mode
+audit guide documents the commands and team-selection controls.
+
+A retail capture now explicitly verifies Arizona away at New Orleans home
+and the D. Green/J. Haslett coaches before starting CPU gameplay. Left-stick
+keyboard A/D selects the controller side; the D-pad does not. Initial away
+teams vary between boots. Four queued RT presses advance Buffalo to Arizona
+after assigning the away side; 26 advance the initial home 49ers to Saints.
+Earlier exploratory filenames are not proof of the displayed matchup: use
+`verified-away-team.png` and `verified-coaches.png` for this run.
+
+Superdome intro and gameplay frames show the roof, stands, sideline workers,
+Arizona white jerseys/red pants, Saints black uniforms/gold helmets, and
+readable HUD/lineup text. This matches the reference matchup and broad uniform
+colors, not a synchronized reference frame or proof of complete fidelity.
+The saved capture reaches first-and-ten at 4:12 in the first quarter. It has
+no reported browser/GPU failures and remains classified partial.
+
+Two approximately 60-second windows subtract cumulative worklet counters at
+their own boundaries, excluding prior menu/startup gaps:
+
+| Window | Five-second FPS averages | Affected blocks | Missing audio |
+| --- | --- | ---: | ---: |
+| Intro into opening play | 29.6–30.1 (12 windows) | 8 | 1,024 frames / 21.3 ms |
+| Following gameplay segment | 18.6–29.8 (12 windows) | 977 | 125,056 frames / 2,605.3 ms |
+
+The second segment confirms substantial gameplay slowdown and audio gaps;
+the 30 FPS floor is not achieved. This run uses opt-in DSP and leaves the
+experimental audio-wake option disabled. It is not an on/off comparison and
+does not establish the slowdown's cause. Preserve this fixed-matchup path for
+profiling active gameplay rather than relying on varying attract matchups.
+Evidence, exact artifact/source hashes, telemetry and window summaries are
+under `build-web-tests/controlled-quickgame-setup`; test/build logs use the
+`scripted-input` prefix. Owned browser and server were closed. Prior `7722d12`
+Build/Pages and `a417140` Build workflows have passed. Broader fidelity,
+continuous audio, mode coverage and performance remain unfinished.

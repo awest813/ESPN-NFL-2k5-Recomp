@@ -116,6 +116,14 @@ static WORD file_press(BYTE analog[8])
     g_last_script_press = now;
     if (!step_start)
         step_start = now;
+    /* A queue word is one press, not a held menu-repeat request. Release
+     * before returning the expired sample, including after a polling stall. */
+    if (pressing && now - step_start >= 100) {
+        pressing = 0;
+        step_start = now;
+        head = (head + 1) % 64;
+        return 0;
+    }
     if (!pressing && now - step_start >= 250) {
         pressing = 1;
         step_start = now;
@@ -138,11 +146,6 @@ static WORD file_press(BYTE analog[8])
         else if (!strcmp(name, "rt")) analog[7] = 255;
         else if (!strcmp(name, "l3")) buttons |= 0x40;
         else if (!strcmp(name, "r3")) buttons |= 0x80;
-        if (now - step_start >= 200) {
-            pressing = 0;
-            step_start = now;
-            head = (head + 1) % 64;
-        }
     }
     return buttons;
 }

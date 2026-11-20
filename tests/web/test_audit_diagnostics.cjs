@@ -19,6 +19,7 @@ assert.equal(good.failures.length,0);
 assert.deepEqual(good.diagnostics,[benign[3]]);
 
 for(const failure of [
+  {line:'AUDIT wait-log timed out after 1000 ms: mode-ready',kind:'audit-error'},
   {line:'[WebGPU] device error 1: Attachment format does not match pipeline'},
   {line:'[WebGPU] device lost: Unknown'},
   {line:'[WebGPU] download: mapped range unavailable'},

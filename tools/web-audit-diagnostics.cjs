@@ -4,7 +4,7 @@
 // useful evidence, but are not rendering failures by themselves.
 function isAuditFailure(row) {
   const line = String(row.line || '');
-  return row.kind === 'browser-error' || row.kind === 'pageerror'
+  return row.kind === 'browser-error' || row.kind === 'pageerror' || row.kind === 'audit-error'
     || (!row.kind && /^\s*(?:PAGEERROR|BROWSER ERROR)\b/i.test(line))
     || /\[WebGPU\]\s+(?:device (?:error|lost)|no (?:device|adapter)|not available|cannot start|download\b|fence\b)/i.test(line)
     || /\[SDLGPU\].*queued draws dropped/i.test(line)

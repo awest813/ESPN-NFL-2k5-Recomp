@@ -2,6 +2,8 @@
 // Reuses a dedicated Playwright profile with an already imported user-owned disc.
 // node tools/audit-web-modes.cjs --profile build-web-render-lab --url http://127.0.0.1:8081/
 // {"action":"audio"} saves AudioContext timing and worklet counters in report.json.
+// wait-log watches fresh events after the last input; optional button/everyMs
+// retries one queued button until the expected transition appears.
 'use strict';
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
@@ -17,7 +19,7 @@ const captureMemory=args.includes('--capture-memory');
 fs.mkdirSync(out,{recursive:true});
 const report={started:new Date().toISOString(),url:origin,cases:[]};
 const events=[];
-let context,page,flushing=null,currentCase=null;
+let context,page,flushing=null,currentCase=null,commandEventStart=0;
 const reportPath=path.join(out,'report.json');
 const writeReport=()=>{
   report.failures=events.filter(isAuditFailure);
@@ -92,17 +94,43 @@ async function press(buttons){
 async function act(c){
   let result;
   switch(c.action){
-    case 'play':await page.click('#play');result='started';break;
-    case 'press':await press(c.buttons);result='sent';break;
+    case 'play':await flush();commandEventStart=events.length;await page.click('#play');result='started';break;
+    case 'press':await flush();commandEventStart=events.length;await press(c.buttons);result='sent';break;
     case 'key':
+      await flush();commandEventStart=events.length;
       await page.focus('#canvas');
       await page.keyboard.down(c.key);
       try{await page.waitForTimeout(Math.min(c.ms||200,5000));}
       finally{await page.keyboard.up(c.key);}
       await page.waitForTimeout(Math.min(c.gap ?? 700,5000));result='key sent';break;
     case 'wait':await page.waitForTimeout(Math.min(c.ms||1000,60000));result='waited';break;
+    case 'wait-log':{
+      if(typeof c.pattern!=='string'||!c.pattern)throw Error('wait-log requires a pattern');
+      const pattern=new RegExp(c.pattern),ms=Number(c.ms??30000);
+      if(!Number.isFinite(ms)||ms<=0||ms>60000)throw Error('wait-log timeout must be between 0 and 60000 ms');
+      if(c.button!==undefined&&(typeof c.button!=='string'||!c.button||/\s/.test(c.button)))throw Error('wait-log retries one button');
+      const everyMs=Number(c.everyMs??2000);
+      if(c.button&&(!Number.isFinite(everyMs)||everyMs<700))throw Error('wait-log retry interval must be at least 700 ms');
+      const deadline=performance.now()+ms;
+      let cursor=commandEventStart,nextPress=performance.now(),presses=0;
+      for(;;){
+        await flush();
+        if(performance.now()>=deadline){
+          const message=`AUDIT wait-log timed out after ${ms} ms: ${c.pattern}`;
+          browserEvent(message,'audit-error');writeReport();throw Error(message);
+        }
+        let index=-1;
+        for(;cursor<events.length;cursor++)if(pattern.test(String(events[cursor].line||''))){index=cursor;break;}
+        if(index>=0){result={matched:events[index].line,eventIndex:index,...(c.button?{presses}:{})};break;}
+        if(c.button&&performance.now()>=nextPress){
+          nextPress=performance.now()+everyMs;await press(c.button);presses++;continue;
+        }
+        await page.waitForTimeout(Math.min(100,Math.max(1,deadline-performance.now())));
+      }
+      break;
+    }
     case 'begin':
-      await flush();currentCase={id:c.id,title:c.title||c.id,started:new Date().toISOString(),eventStart:events.length,screenshots:[]};
+      await flush();commandEventStart=events.length;currentCase={id:c.id,title:c.title||c.id,started:new Date().toISOString(),eventStart:events.length,screenshots:[]};
       report.cases.push(currentCase);writeReport();result='case started';break;
     case 'shot':{
       const tag=String(c.tag||currentCase?.id||'screen').replace(/[^a-zA-Z0-9_.-]/g,'-');
@@ -115,7 +143,7 @@ async function act(c){
       await flush();Object.assign(currentCase,{requestedResult:c.result,detail:c.detail||'',ended:new Date().toISOString(),
         ...caseDiagnostics(c.result,events.slice(currentCase.eventStart))});
       writeReport();result=currentCase;currentCase=null;break;
-    case 'reload':result=await prepare(c.url||origin);break;
+    case 'reload':result=await prepare(c.url||origin);commandEventStart=events.length;break;
     case 'peek':
       await flush();
       if(report.guestMemoryOffset===undefined)throw Error('Guest memory offset has not been reported yet');
@@ -141,7 +169,9 @@ async function act(c){
     case 'close':{
       await flush();report.ended=new Date().toISOString();writeReport();
       if(report.failures.length||report.cases.some(c=>c.result==='fail'))process.exitCode=1;
-      const closing=context;context=null;await closing.close();return false;
+      const closing=context;context=null;await closing.close();
+      // An interactive terminal must not keep the finished audit process alive.
+      process.stdin.pause();process.stdin.unref?.();return false;
     }
     default:throw Error('Unknown action: '+c.action);
   }
