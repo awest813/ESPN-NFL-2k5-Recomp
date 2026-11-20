@@ -56,6 +56,10 @@ the DirectSound rewrite, the APU accessors, fixed-address mappings with the
 heap ceiling, and the real `xbox_MemoryLayoutInit` on a minimal XBE. CI runs
 it on every push.
 
+Release builds select `-O3` explicitly for final WebAssembly/LTO optimization.
+This target option follows global linker flags, so an old cached `-O1`
+override cannot silently downgrade the Release game.
+
 The generated code is about 220 MB of C. As on Linux, each of the largest
 files needs about 2 GB of RAM to compile, so set `JOBS=` to match your
 memory. CI compiles everything except the generated code on every push. The

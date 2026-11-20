@@ -3368,3 +3368,33 @@ These host-specific observations do not establish sufficiently reliable
 precision or a 30 FPS floor; production wait policy is unchanged. Probe
 artifacts remain in `build-web-tests/browser-timer-probe` and
 `build-web-tests/raf-pacer-probe`.
+
+The fresh optimized retail capture completes without browser or GPU failures.
+It saves 20 worker profiles plus the page profile, sampled at 4,000 microseconds
+from approximately 150 to 240 seconds. Two earlier short-lived workers have
+expired CDP sessions before sampling; their metadata records that condition.
+The copied symbol map and all served/build-input hashes still match the frozen
+artifact. Owned browser/server processes have been closed. Profiles, metadata,
+screenshots, telemetry and analysis are in `build-web-tests/current-workers-o3`.
+
+The analyzer excludes explicitly named futex/condition/mutex waits and idle
+stacks. Its remaining sample weights are not exclusive CPU time. In particular,
+a timer worker has 89.9 seconds attributed to a single `timer_thread` frame
+without separate wait frames; that observation cannot establish that it burns
+a core and is excluded from hotspot conclusions below.
+
+The acknowledgement polling worker still has about 89.8 seconds of identifiable
+active-stack weight; its clock calls dominate, split between tick-count reads
+and `Sleep(0)`/yield. It must continue observing unsignalled MMIO/guest-memory
+changes, so adding an arbitrary millisecond sleep remains unjustified. The GPU
+command worker has 38.1 seconds after named-wait filtering. `sg_texture_for_stage`
+accounts for 18.8 seconds of self-sample weight, while Morton per-texel sampling
+is no longer prominent. Other identified work includes draw batching, vertex
+attribute decoding, queue operations and uniform uploads. The WebGPU driver
+has 15.0 seconds after filtering, including 8.0 seconds in `writeBuffer`.
+The APU has 26.2 seconds after filtering, led by DSP dispatch and parallel moves.
+These locate the next rendering targets: binding/cache lookup and buffer upload
+overhead, while retaining every-byte texture coherence and immutable queued
+resources. Different matchups, compiler versions and profiling prevent treating
+these samples as a controlled FPS/audio improvement. Continuous audio, the
+30 FPS floor and complete reference fidelity remain unproven.
