@@ -24,6 +24,7 @@ mkdir -p "$OUT"
 
 python3 -I "$ROOT/tests/web/test_gen_web_devices.py"
 python3 -I "$ROOT/tests/web/test_frame_pacing.py"
+python3 -I "$ROOT/tests/web/test_texture_lookup.py" --build-dir "$OUT/texture-lookup"
 python3 -I "$ROOT/tests/web/test_vertex_fetch.py"
 python3 -I "$ROOT/tests/web/test_vp_cache.py"
 python3 -I "$ROOT/tests/web/test_vp_interpreter.py" --build-dir "$OUT/vp-interpreter"

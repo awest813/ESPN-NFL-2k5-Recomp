@@ -3234,7 +3234,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,29 +486,42 @@
+@@ -350,59 +486,70 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -3286,7 +3286,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          static int told;
          if (!told++)
              fprintf(stderr, "  [SDLGPU] queued draws dropped: %s\n", SDL_GetError());
-@@ -385,24 +534,24 @@
+-        for (i = 0; i < SG_MAX_TEXTURES; i++)
+-            if (s_sg_textures[i].epoch_used == q->epoch)
+-                s_sg_textures[i].key = 0;
++        sg_texture_invalidate_epoch(q->epoch);
+     }
+     q->count = q->vbytes = q->tbytes = q->upload_count = 0;
+     q->ibytes = q->ubytes = q->last_vs_size = 0;
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
@@ -3317,7 +3323,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          uint32_t cap = list->cap ? list->cap * 2 : 192;
          SgVertex *v = (SgVertex *) realloc(list->v, cap * sizeof *v);
          if (!v)
-@@ -410,18 +559,22 @@
+@@ -410,18 +557,22 @@
          list->v = v;
          list->cap = cap;
      }
@@ -3349,7 +3355,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
  }
 
  /* gpu_draw_batch(1). Returns 0 to leave the batch to the software path. */
-@@ -431,7 +584,7 @@
+@@ -431,7 +582,7 @@
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
 
@@ -3358,7 +3364,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          return 0; /* raster_batch keeps its counters */
      if (!sg_draw_init())
          return sg_fallback(SG_FB_SHADERS, 0);
-@@ -445,19 +598,27 @@
+@@ -445,19 +596,27 @@
          return sg_fallback(SG_FB_TEXTURE, 0); /* unreadable texture: software decides */
 
      list.count = 0;
@@ -3389,7 +3395,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          SgDraw d = {
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgVertex),
-@@ -466,7 +627,37 @@
+@@ -466,7 +625,37 @@
              .vs_uniform = surface_size, .vs_uniform_size = sizeof surface_size,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
@@ -3770,7 +3776,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      SDL_GPUTexture *tex;
      uint32_t        last_use;
      uint32_t        epoch_used; /* s_sg_queue.epoch when last used: in flight
-@@ -29,30 +29,86 @@
+@@ -29,30 +29,151 @@
      SgCachedTexture *pending;   /* cache slot to mark valid once the upload is issued */
      uint64_t         pending_key;
      SDL_GPUSampler *sampler;
@@ -3789,22 +3795,87 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 - * address). Limitation: a texture the title rewrites in place after using
 - * it in the same frame reaches the GPU one frame late. */
 -#define SG_HASH_MEMO 1024
-+/* A verified direct hint avoids scanning 512 entries on every texture bind.
-+ * Hints may outlive eviction: always compare the full key and dimensions. */
-+#define SG_TEXTURE_HINTS 2048u
-+static uint16_t s_sg_texture_hint[SG_TEXTURE_HINTS];
++/* Index committed textures by hash. Links belong to fixed cache slots, so
++ * eviction removes an entry without allocation, tombstones or a cache scan.
++ * Compare the full identity on lookup: buckets are not texture identities. */
++#define SG_TEXTURE_BUCKETS 2048u
++typedef struct { uint16_t bucket, previous, next; } SgTextureLink;
++static uint16_t s_sg_texture_buckets[SG_TEXTURE_BUCKETS];
++static uint16_t s_sg_texture_bucket_count[SG_TEXTURE_BUCKETS];
++static uint16_t s_sg_texture_hint[SG_TEXTURE_BUCKETS];
++static SgTextureLink s_sg_texture_links[SG_MAX_TEXTURES];
++
++static uint32_t sg_texture_bucket(uint64_t key)
++{
++    return (uint32_t)(key ^ (key >> 32)) & (SG_TEXTURE_BUCKETS - 1u);
++}
++
++static void sg_texture_invalidate(SgCachedTexture *c)
++{
++    uint32_t index = (uint32_t)(c - s_sg_textures);
++    SgTextureLink *link = &s_sg_texture_links[index];
++    if (link->bucket) {
++        uint32_t bucket = link->bucket - 1u;
++        s_sg_texture_bucket_count[bucket]--;
++        if (s_sg_texture_hint[bucket] == index + 1u) s_sg_texture_hint[bucket] = 0;
++        if (link->previous)
++            s_sg_texture_links[link->previous - 1u].next = link->next;
++        else
++            s_sg_texture_buckets[link->bucket - 1u] = link->next;
++        if (link->next)
++            s_sg_texture_links[link->next - 1u].previous = link->previous;
++        *link = (SgTextureLink){0};
++    }
++    c->key = 0;
++}
++
++static void sg_texture_publish(SgCachedTexture *c, uint64_t key)
++{
++    sg_texture_invalidate(c);
++    c->key = key;
++    if (!key) return;
++    uint32_t index = (uint32_t)(c - s_sg_textures), bucket = sg_texture_bucket(key);
++    uint16_t head = s_sg_texture_buckets[bucket];
++    s_sg_texture_links[index] = (SgTextureLink){(uint16_t)(bucket + 1u), 0, head};
++    if (head) s_sg_texture_links[head - 1u].previous = (uint16_t)(index + 1u);
++    s_sg_texture_buckets[bucket] = (uint16_t)(index + 1u);
++    s_sg_texture_bucket_count[bucket]++;
++    s_sg_texture_hint[bucket] = (uint16_t)(index + 1u);
++}
++
++static void sg_texture_invalidate_epoch(uint32_t epoch)
++{
++    for (uint32_t i = 0; i < SG_MAX_TEXTURES; i++)
++        if (s_sg_textures[i].epoch_used == epoch)
++            sg_texture_invalidate(&s_sg_textures[i]);
++}
++
 +static SgCachedTexture *sg_texture_find(uint64_t key, uint32_t w, uint32_t h, uint32_t layers)
 +{
-+    uint32_t bucket = (uint32_t)(key ^ (key >> 32)) & (SG_TEXTURE_HINTS - 1u);
-+    uint32_t hint = s_sg_texture_hint[bucket];
++    if (!key) return NULL;
++    uint32_t bucket = sg_texture_bucket(key);
++    uint16_t hint = s_sg_texture_hint[bucket];
 +    if (hint) {
 +        SgCachedTexture *c = &s_sg_textures[hint - 1u];
 +        if (c->key == key && c->w == w && c->h == h && c->layers == layers) return c;
 +    }
-+    for (uint32_t i = 0; i < SG_MAX_TEXTURES; i++) {
-+        SgCachedTexture *c = &s_sg_textures[i];
++    /* Dense pointer chains lose to the array's predictable memory access.
++     * Preserve the previous scan in this rare case, including its hot hint. */
++    if (s_sg_texture_bucket_count[bucket] > 4u) {
++        for (uint32_t i = 0; i < SG_MAX_TEXTURES; i++) {
++            SgCachedTexture *c = &s_sg_textures[i];
++            if (c->key == key && c->w == w && c->h == h && c->layers == layers) {
++                s_sg_texture_hint[bucket] = (uint16_t)(i + 1u);
++                return c;
++            }
++        }
++        return NULL;
++    }
++    for (uint16_t entry = s_sg_texture_buckets[bucket]; entry;
++         entry = s_sg_texture_links[entry - 1u].next) {
++        SgCachedTexture *c = &s_sg_textures[entry - 1u];
 +        if (c->key == key && c->w == w && c->h == h && c->layers == layers) {
-+            s_sg_texture_hint[bucket] = (uint16_t)(i + 1u);
++            s_sg_texture_hint[bucket] = entry;
 +            return c;
 +        }
 +    }
@@ -3868,7 +3939,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  /* One decode buffer per stage: one batch can upload several stages. */
  static uint32_t       *s_sg_decode[4];
-@@ -65,13 +121,19 @@
+@@ -65,13 +186,19 @@
  }
 
  /* ── Samplers, from the title's own per-stage settings (as the D3D11 path):
@@ -3894,7 +3965,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  static SDL_GPUSamplerAddressMode sg_address_mode(uint32_t m)
  {
-@@ -82,29 +144,88 @@
+@@ -82,29 +209,88 @@
      }
  }
 
@@ -3997,7 +4068,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +233,255 @@
+@@ -112,75 +298,255 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4306,7 +4377,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +489,14 @@
+@@ -188,11 +554,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4323,7 +4394,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +512,36 @@
+@@ -208,23 +577,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4369,7 +4440,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,18 +562,23 @@
+@@ -245,35 +627,42 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4403,7 +4474,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +588,8 @@
+         slot->tex = SDL_CreateGPUTexture(s_sg.dev, &info);
+-        slot->key = 0;
++        sg_texture_invalidate(slot);
+         if (!slot->tex)
              return 0;
          slot->w = w;
          slot->h = h;
@@ -4412,8 +4486,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +597,7 @@
-     slot->key = 0;
+      * a key pointing at a texture that never received its texels. */
+-    slot->key = 0;
++    sg_texture_invalidate(slot);
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
 -    *use = (SgTextureUse){ slot->tex, s_sg_decode[st], w, h, slot, key, sg_sampler_for_stage(st)
@@ -4421,9 +4496,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -291,4 +615,4 @@
+@@ -289,6 +678,6 @@
+ static void sg_texture_commit(SgTextureUse *use)
+ {
      if (use->pending)
-         use->pending->key = use->pending_key;
+-        use->pending->key = use->pending_key;
++        sg_texture_publish(use->pending, use->pending_key);
      use->pending = NULL;
 -}
 \ No newline at end of file
@@ -7352,7 +7430,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1606,32 @@
+@@ -322,6 +1606,40 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -7360,17 +7438,25 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +     * cannot publish uploads or overwrite a newer guest surface; failed
 +     * waits cannot copy unconfirmed readback bytes into guest RAM. */
 +    s_gpu.tex.valid = 1; s_gpu.blend = 0;
-+    for (int i = 0; i < 64; i++) tex[i] = 0xFF0000FFu;
++    for (int i = 0; i < 64; i++) tex[i] = 0xFF3579BDu;
 +    s_sg_frame++;
 +    g_ntris = 2; quad(0, 0, 0, 32, 32, 0, 0, 8, 8, 0xFFFFFFFFu, 1);
 +    uint32_t *first = (uint32_t *)(g_ram + s_gpu.color_offset);
 +    *first = 0xFF123456u;
 +    sg_surface_current()->owner = SG_OWNER_GUEST;
-+    upload_scene(); fail_next_submit = 1;
++    upload_scene();
++    uint64_t rejected_key=sg_texture_key(0,0);
++    CHECK(!sg_texture_find(rejected_key,8,8,1),"fault test must stage a new texture upload");
++    fail_next_submit = 1;
 +    CHECK(sg_draw_batch(1) == 1, "fault test batch did not queue");
 +    download_frame();
 +    CHECK(!fail_next_submit && *first == 0xFF123456u, "rejected queued submit overwrote newer guest pixels");
++    CHECK(!sg_texture_find(rejected_key,8,8,1),"rejected texture upload remained indexed");
 +    run_scene("texture upload retries after rejected submission", 0);
++    {
++        SgTextureUse recovered;
++        CHECK(sg_texture_stage0(&recovered) && !recovered.upload,"successful texture upload retry was not cached");
++    }
 +    uint32_t before = *first;
 +    s_gpu.clear_color = 0xFFFF0000u;
 +    fail_next_submit = 1;

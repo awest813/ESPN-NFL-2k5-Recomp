@@ -3398,3 +3398,58 @@ overhead, while retaining every-byte texture coherence and immutable queued
 resources. Different matchups, compiler versions and profiling prevent treating
 these samples as a controlled FPS/audio improvement. Continuous audio, the
 30 FPS floor and complete reference fidelity remain unproven.
+
+### Committed texture-cache index
+
+The texture cache now indexes committed slots by key bucket, with fixed-size
+links for constant-cost removal on eviction. Lookups still compare the full
+key, width, height and layer count. A verified hot hint remains available.
+Small collision buckets use their index; buckets larger than four entries use
+the previous contiguous-array scan, avoiding the measured cost of long pointer
+chains. The metadata adds 11 KiB of static storage and performs no allocation.
+
+A slot enters the index only when its upload is committed. Reservation,
+allocation failure and rejected queue epochs remove it again; empty/pending
+keys are invisible. Pixel hashing, every-byte source comparisons, private
+snapshot ownership, palette/mip keys, upload data and GPU resource lifetime
+rules are unchanged. This addresses binding lookup overhead without relaxing
+texture coherence.
+
+The new fixture runs 548,751 lookups against a linear oracle, covering all
+512 entries in one collision bucket, head/middle/tail removal, sparse/dense
+transitions, duplicate identities, equal keys with different dimensions and
+layers, pending commits, epoch invalidation/wrap and 200,000 mutation/query
+operations. It also checks index-link/count/hint consistency. Wasm undefined-
+behavior and native address/undefined-behavior runs pass. The ordinary Web
+Python suite and full Release Web game link pass, as does the native kernel.
+Fresh/reverse application reproduces the same 97-file runtime patch and
+preserves the pinned runtime commit.
+
+The real Vulkan renderer passes under sanitizers, including same-frame rewrites,
+private snapshots across eviction, authored mip chains and queue-failure
+recovery. Its rejected-submission test now forces a previously unseen texture:
+the failed upload must remain absent from the index, and the successful retry
+must become a cache hit. The browser WebGPU API fixture also passes with no
+validation errors. Native CI and the ordinary Web script include the new
+lookup fixture.
+
+Seven warmed paired rounds alternate the prior and current lookup order.
+Each timed trace performs 200,000 lookups; churn also includes publication.
+Identical returned-content checksums are verified outside the timing result.
+Median Wasm/Node times on this host are:
+
+| Synthetic trace | Prior hint/scan | Indexed | Ratio, prior/current |
+| --- | ---: | ---: | ---: |
+| Distributed hits | 3.452 ms | 0.898 ms | 3.85x |
+| Distributed hits with 5% misses | 4.523 ms | 1.152 ms | 3.93x |
+| All 512 keys in one bucket | 14.129 ms | 15.066 ms | 0.94x |
+| Replace a slot every 16 lookups | 3.465 ms | 1.070 ms | 3.24x |
+| One hot texture in the dense bucket | 0.604 ms | 0.607 ms | 1.00x |
+
+The dense collision stress case remains about 6.6% slower in this isolated
+lookup benchmark; the simple linked-list-only candidate had been substantially
+worse and was replaced before publication. These synthetic results do not
+establish a whole-game FPS gain. Run `python -I tests/web/test_texture_lookup.py
+--benchmark` to reproduce them. Logs and medians are retained in
+`build-web-tests/texture-lookup-bench*`. The preceding `20fb932` Build/Pages
+and `b0c1e44` Build workflows passed.

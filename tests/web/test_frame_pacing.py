@@ -6,7 +6,7 @@ import subprocess
 root = Path(__file__).resolve().parents[2]
 kernel = root / "external/xboxrecomp/src/kernel/sdlgpu"
 texture = (kernel / "sdlgpu_texture.inc.c").read_text(encoding="utf-8")
-lookup = texture[texture.index("#define SG_TEXTURE_HINTS"):texture.index("#define SG_HASH_MEMO")]
+lookup = texture[texture.index("#define SG_TEXTURE_BUCKETS"):texture.index("#define SG_HASH_MEMO")]
 present = (kernel / "sdlgpu_present.inc.c").read_text(encoding="utf-8")
 pacer = present[present.index("static void sg_frame_pace("):present.index("static struct {")]
 video = (kernel.parent / "nv2a_gpu_sdl3.inc.c").read_text(encoding="utf-8")
@@ -29,7 +29,7 @@ static void SDL_SetAtomicInt(SDL_AtomicInt *p,int v) {p->value=v;}
 static int SDL_CompareAndSwapAtomicInt(SDL_AtomicInt *p,int a,int b) {if(p->value!=a)return 0;p->value=b;return 1;}
 static struct {int fps_limit;} s_vs={60};
 #define SG_MAX_TEXTURES 512
-typedef struct { uint64_t key; uint32_t w,h,layers; } SgCachedTexture;
+typedef struct { uint64_t key; uint32_t w,h,layers,epoch_used; } SgCachedTexture;
 static SgCachedTexture s_sg_textures[SG_MAX_TEXTURES];
 static uint64_t clock_ns, waited;
 static int releases, reacquires;
@@ -56,14 +56,17 @@ int main(void) {
     assert(xbox_VideoFpsLimit()==30);
     assert(!xbox_WebSetFpsLimit(29) && xbox_VideoFpsLimit()==30);
     for (int i=0;i<512;i++) s_sg_textures[i]=(SgCachedTexture){1u+(uint64_t)i*2048u,64,64,1};
+    for (int i=0;i<512;i++) sg_texture_publish(&s_sg_textures[i],s_sg_textures[i].key);
     for (int pass=0;pass<4;pass++) for (int i=0;i<512;i++)
         assert(sg_texture_find(s_sg_textures[i].key,64,64,1)==&s_sg_textures[i]);
     assert(!sg_texture_find(s_sg_textures[511].key,64,64,6));
     uint64_t old=s_sg_textures[511].key;
-    s_sg_textures[511]=(SgCachedTexture){77777777,32,32,6};
+    sg_texture_invalidate(&s_sg_textures[511]);
+    s_sg_textures[511]=(SgCachedTexture){0,32,32,6};
+    sg_texture_publish(&s_sg_textures[511],77777777);
     assert(!sg_texture_find(old,64,64,1));
     assert(sg_texture_find(77777777,32,32,6)==&s_sg_textures[511]);
-    puts("ok: texture lookup handles collisions, stale eviction hints and cube dimensions");
+    puts("ok: texture lookup handles collisions, eviction and cube dimensions");
     clock_ns=1000000000ull; sg_frame_pace();
     for (int i=0;i<300;i++) {
         uint64_t previous=clock_ns;
