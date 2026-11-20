@@ -7,6 +7,8 @@ root = Path(__file__).resolve().parents[2]
 source = (root / 'external/xboxrecomp/src/apu/apu_core.c').read_text(encoding='utf-8')
 start = source.index('static void throttle(')
 function = source[start:source.index('\n}', start) + 2]
+profile_start=source.index('/* APU schedule profile:')
+profile=source[profile_start:source.index('/* Forward declarations',profile_start)]
 harness = r'''
 #include <stdint.h>
 #include <stdbool.h>
@@ -23,13 +25,16 @@ typedef struct {
 static int64_t now_us;
 static unsigned waits;
 static bool early_wake;
+static int64_t oversleep_us;
 static int64_t qemu_clock_get_us(int clock) { (void)clock; return now_us; }
 static void qemu_cond_timedwait(int *cond,int *lock,int ms) {
     (void)cond;(void)lock;assert(ms>0);
-    now_us+=early_wake ? 500 : (int64_t)ms*1000;waits++;
+    now_us+=(early_wake ? 500 : (int64_t)ms*1000)+oversleep_us;waits++;
 }
+/* PROFILE */
 /* THROTTLE */
-int main(void) {
+int main(int argc,char **argv) {
+    (void)argv;s_apu_lock_profile=argc<2;
     const int64_t epoch=1000000000000LL;
     MCPXAPUState d={0};now_us=epoch;
     for(unsigned i=0;i<675000;i++) {
@@ -48,6 +53,7 @@ int main(void) {
     throttle(&d);assert(d.next_frame_time_us==before+5333); /* Bounded catch-up. */
     now_us=d.next_frame_time_us+64001;before=now_us;
     throttle(&d);assert(d.next_frame_time_us==before+5333); /* Rebase phase too. */
+    if(s_apu_lock_profile)assert(s_apu_schedule.resyncs==1 && s_apu_schedule.resync_us==64001 && s_apu_schedule.max_late_us==64001);
     int64_t wait_start=now_us;
     throttle(&d);assert(waits && now_us<d.next_frame_time_us); /* Actually waits. */
     assert(d.sleep_acc_us==now_us-wait_start && d.sleep_acc_us==5000);
@@ -62,9 +68,15 @@ int main(void) {
     assert(d.sleep_acc_us==old_sleep);
     d.pause_requested=false;now_us=d.next_frame_time_us+1000;throttle(&d);
     assert(d.sleep_acc_us==old_sleep);
-    puts("PASS APU throttle: exact one-hour pacing, catch-up, rebase, actual sleep and early wakes");
+    early_wake=false;oversleep_us=10000;d.next_frame_time_us=now_us+5000;
+    before=d.next_frame_time_us;old_sleep=d.sleep_acc_us;
+    throttle(&d);
+    assert(d.sleep_acc_us==old_sleep+15000);
+    if(s_apu_lock_profile)assert(s_apu_schedule.wake_late_us==10000);
+    assert(d.next_frame_time_us==before+5333 || d.next_frame_time_us==before+5334);
+    puts("PASS APU throttle: exact one-hour pacing, catch-up, rebase, actual sleep, early wakes and profiled oversleep");
 }
-'''.replace('/* THROTTLE */', function)
+'''.replace('/* PROFILE */', 'static bool s_apu_lock_profile;\n'+profile).replace('/* THROTTLE */', function)
 out = root / 'build-web-tests/apu-pacing'
 out.mkdir(parents=True, exist_ok=True)
 (out / 'test.c').write_text(harness, encoding='utf-8')
@@ -72,4 +84,5 @@ subprocess.run([shutil.which('emcc') or 'emcc', str(out / 'test.c'), '-O2',
                 '-I', str(root / 'external/xboxrecomp/src/apu'),
                 '-fsanitize=undefined', '-fno-sanitize-recover=undefined',
                 '-sENVIRONMENT=node', '-o', str(out / 'test.js')], check=True)
-subprocess.run([shutil.which('node') or 'node', str(out / 'test.js')], check=True)
+for args in ([], ['--no-profile']):
+    subprocess.run([shutil.which('node') or 'node', str(out / 'test.js'), *args], check=True)

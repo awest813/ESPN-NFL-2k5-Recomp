@@ -11,7 +11,10 @@
 // linearly. Stats go back to the page about twice a second:
 // { played, underruns, queued, peak, frequency } -- the terminal monitor also
 // reports rendered output frames. Underruns counts render
-// blocks that ran dry after sound first started; frequency is estimated from
+// blocks that ran dry after sound first started; underrunFrames and
+// maxUnderrunFrames count missing output frames (total and longest continuous
+// gap, including gaps spanning render blocks). Startup priming is excluded.
+// Frequency is estimated from
 // zero crossings of the left channel (useful for tests and diagnostics).
 'use strict';
 
@@ -29,6 +32,9 @@ class NFL2K5Output extends AudioWorkletProcessor {
     this.stopped = false;
     this.played = 0;
     this.underruns = 0;
+    this.underrunFrames = 0;
+    this.maxUnderrunFrames = 0;
+    this.underrunRun = 0;
     this.peak = 0;
     this.crossings = 0;
     this.prev = 0;
@@ -57,8 +63,14 @@ class NFL2K5Output extends AudioWorkletProcessor {
       if (((w - r) >>> 0) < Math.max(2, advance)) {
         L[i] = R[i] = 0;
         dry = true;
+        if (this.started) {
+          this.underrunFrames++;
+          this.underrunRun++;
+          if (this.underrunRun > this.maxUnderrunFrames) this.maxUnderrunFrames = this.underrunRun;
+        }
         continue;
       }
+      this.underrunRun = 0;
       const a = (r & mask) * 2, b = ((r + 1) & mask) * 2, f = this.frac;
       const l = f ? data[a] + (data[b] - data[a]) * f : data[a];
       const rr = f ? data[a + 1] + (data[b + 1] - data[a + 1]) * f : data[a + 1];
@@ -80,6 +92,7 @@ class NFL2K5Output extends AudioWorkletProcessor {
     if (this.windowFrames >= sampleRate / 2) {
       this.port.postMessage({
         played: this.played, underruns: this.underruns,
+        underrunFrames: this.underrunFrames, maxUnderrunFrames: this.maxUnderrunFrames,
         queued: (Atomics.load(hdr, 0) - r) >>> 0,
         peak: this.peak,
         frequency: this.crossings / 2 / (this.windowFrames / sampleRate),

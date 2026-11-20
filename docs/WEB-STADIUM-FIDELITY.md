@@ -2074,3 +2074,100 @@ cause; front-end trap waits and scheduling still need separate correlation.
 Broader rendering/audio/gameplay accuracy, all stadium/staff variants and a
 sustained 30 FPS floor remain unfinished. The preceding `a87c62d` publication
 passed both Build and Pages workflows.
+
+
+### Event-driven IRQ waits and exact audio-gap accounting
+
+The POSIX/Wasm `WaitForMultipleObjectsEx` implementation polled all handles
+with `usleep(1000)`. The kernel's IRQ/vblank dispatcher uses that API for its
+APU interrupt event and next-vblank timer, so setting the interrupt event did
+not directly wake this wait. The dispatcher could remain asleep until the
+next host polling wake. APU traces exposed repeated roughly frame-sized
+front-end waits and discarded throttle phase despite much shorter individual
+audio-frame gaps.
+
+Multiple-object waits now block on an object-transition condition variable.
+State transitions publish notifications after releasing their object lock;
+waiters hold the notification gate across state checks and release it
+atomically when sleeping. Timer deadlines are included in the wait, and
+rearming a timer wakes a blocked wait to recompute its deadline. APC callbacks
+execute outside the gate, and cancellation cleanup releases the gate. The
+kernel's existing ISR priority, guest lock and APU throttle policy remain in
+place. In particular, startup buffering, sample rate and the 64 ms catch-up
+limit are unchanged.
+
+The old wait-all loop also consumed ready auto-reset events, semaphore counts
+and mutex acquisitions while other handles were not ready. The new scan locks
+the target states and consumes them only when the whole wait succeeds, as
+required by [Microsoft's wait semantics](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjectsex).
+Wait-any retains lowest-index selection; invalid arrays/counts/duplicates are
+rejected before consuming state. The published-baseline regression fails when
+an incomplete wait-all consumes its ready auto-reset event; the corrected
+implementation passes. This does not establish complete Win32 compatibility
+for unrelated primitives such as abandoned mutexes or periodic timers.
+
+The actual POSIX implementation passes native address/undefined sanitizer
+checks (leak detection disabled) and a threaded Wasm/Node build. Coverage
+includes 256 event signal/acknowledgment races, ordered wait-any, mixed
+wait-all acquisition, no partial consumption, invalid-input preservation,
+auto/manual timer latching, arming a timer after a wait begins, thread
+completion, an APC callback that signals an event, and cancellation followed
+by another successful multi-wait. The local native wake median/p95 were
+0.012/0.014 ms; Wasm/Node measured 0.008/0.015 ms. Those are synthetic event
+wake measurements, not retail ISR latency or a game-frame benchmark.
+
+Opt-in `RECOMP_APU_LOCK_PROFILE` now reports the maximum gap between audio
+frame starts, deadline lateness, timeout wake lateness, actual MMIO handoff
+wait duration, throttle rebase count/time, and front-end trap count/duration.
+Expected explicit idle time is excluded from the frame-gap measurement.
+These wall-clock measurements include host scheduling and lock reacquisition;
+they do not identify those costs separately. Pacing checks with profiling both
+enabled and disabled preserve the exact one-hour schedule, 64 ms catch-up
+boundary, long-stall rebase, early wakes and actual sleep accounting, including
+a synthetic 10 ms oversleep. The 10,000-write Wasm handoff test also passes
+with profiling enabled.
+
+The AudioWorklet now distinguishes affected render blocks from missing output
+frames. `underrunFrames` counts missing output frames; `maxUnderrunFrames` is
+the longest continuous missing run, including a run crossing render blocks.
+Both exclude startup priming and authored silence. Rates use the output
+AudioContext clock, so divide by its sample rate to get gap duration. Existing
+PCM interpolation and phase behavior are unchanged. Deterministic worklet
+checks cover partial/full blocks, cross-block runs, recovery, authored silence,
+posted statistics, rate conversion and counter wrapping. The audio bridge and
+retail diagnostic classification tests pass. The browser audit records these
+fields alongside the earlier block counter.
+
+Before the multi-wait fix, `apu-schedule-retail/report.json` recorded 630
+underrun blocks, 24 throttle rebases totaling 1,679.9 ms, 596 completed traps
+(up to 18.2 ms), and a maximum frame-start gap of 22.6 ms. A second baseline,
+`apu-gap-frames-retail/report.json`, includes the exact counters: 139 affected
+blocks represent 17,665 missing output frames (368.0 ms at 48 kHz), with a
+longest continuous gap of 2,560 frames (53.3 ms). Its completed profile
+intervals contain five rebases totaling 352.6 ms. These reports have no
+browser/GPU failure. The different scenes and aggregate five-second windows
+prevent treating those numbers as a controlled comparison or exact event-by-
+event attribution, but they motivated fixing the interrupt wait directly.
+
+The approximately 246-second `multiwait-irq-retail/report.json` run reaches
+San Diego at Atlanta live play in hardware Chrome 157.0.8103.79 / Intel
+gen-12hp, with DSP and renderer/APU profiling enabled. The 130-second capture
+shows the referee, player uniforms, stadium lighting/crowd and readable coin-
+toss text. No browser/GPU failure is reported. Five-second FPS averages after
+150 seconds range from 29.2 to 30.1. Output records 92 affected blocks but
+11,649 missing output frames (242.7 ms at 48 kHz), including 11,392 frames
+after 150 seconds; the longest continuous gap is 1,664 frames (34.7 ms).
+
+Completed profile intervals contain three rebases totaling 218.5 ms, a maximum
+frame-start gap of 27.2 ms, maximum timeout wake lateness of 19.3 ms and a
+maximum front-end trap of 26.9 ms. Several quieter intervals report
+sub-millisecond trap maxima, but long waits persist. Teams/scenes and host
+scheduling differ from the baselines; these are integration measurements,
+not a controlled numerical before/after result or proof that all audio gaps
+are interrupt-dispatch delays. The direct event-wake and atomic wait-all
+regressions prove the primitive fixes independently. Longer IRQ/guest-lock
+waits and deadline rebases still need correlation. The final browser game and
+Linux APU/kernel/video builds pass, and a fresh pinned runtime reproduces all
+93 patched files. The preceding `73c0bdc` Build and Pages workflows passed.
+Uninterrupted audio, original-Xbox scene/audio parity, all-mode accuracy and
+a sustained 30 FPS floor remain unfinished.

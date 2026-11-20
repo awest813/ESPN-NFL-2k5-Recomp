@@ -59,7 +59,7 @@ index 9a38a07..37e78bc 100644
 +}
 diff --git a/src/apu/apu_web_audio.c b/src/apu/apu_web_audio.c
 new file mode 100644
-index 0000000..707b539
+index 0000000..8652202
 --- /dev/null
 +++ b/src/apu/apu_web_audio.c
 @@ -0,0 +1,139 @@
@@ -112,7 +112,7 @@ index 0000000..707b539
 +        /* Parenthesised: a comma outside parentheses would split this
 +         * macro argument (braces do not protect it). */
 +        var stats = Module['nfl2k5Audio'] = ({ state: 'loading', contextRate: ctx.sampleRate,
-+                                                played: 0, rendered: 0, underruns: 0, peak: 0, frequency: 0 });
++                                                played: 0, rendered: 0, underruns: 0, underrunFrames: 0, maxUnderrunFrames: 0, peak: 0, frequency: 0 });
 +        var url = Module['nfl2k5AudioWorklet'] || 'audio-worklet.js';
 +        ctx.audioWorklet.addModule(url).then(function() {
 +            if (stats.state === 'closed' || Module['nfl2k5Audio'] !== stats) return;
@@ -4630,16 +4630,24 @@ diff --git a/src/apu/apu_shim.h b/src/apu/apu_shim.h
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
-@@ -34,6 +34,8 @@
+@@ -34,6 +34,16 @@
  uint8_t *g_apu_ram_ptr = NULL;
 
  MCPXAPUState *g_state = NULL;
 +/* Opt-in timing: keep extra clock reads off the normal audio/MMIO path. */
 +static bool s_apu_lock_profile;
++/* APU schedule profile: diagnostics only; all durations are wall-clock us. */
++typedef struct {
++    int64_t last_frame_us,max_gap_us,max_late_us,resync_us,wake_late_us;
++    int64_t mmio_wait_us,mmio_max_us;
++    unsigned resyncs;
++} ApuScheduleProfile;
++static ApuScheduleProfile s_apu_schedule;
++
 
  /* Forward declarations for software mixer */
  static void mixer_init(void);
-@@ -105,7 +107,9 @@
+@@ -105,7 +115,9 @@
 
      switch (addr) {
      case NV_PAPU_XGSCNT:
@@ -4650,7 +4658,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          break;
      default:
          if (addr < 0x20000) {
-@@ -134,6 +138,10 @@
+@@ -134,6 +146,10 @@
      (void)size;
 
      switch (addr) {
@@ -4661,7 +4669,21 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      case NV_PAPU_ISTS:
          qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
          update_irq(d);
-@@ -439,6 +447,7 @@
+@@ -433,12 +449,21 @@
+
+     int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
+
++    if (s_apu_lock_profile && d->next_frame_time_us) {
++        int64_t late=now_us-d->next_frame_time_us;
++        if(late>s_apu_schedule.max_late_us)s_apu_schedule.max_late_us=late;
++    }
+     if (d->next_frame_time_us == 0 ||
+         now_us - d->next_frame_time_us > 64000) {
++        if(s_apu_lock_profile && d->next_frame_time_us) {
++            s_apu_schedule.resyncs++;
++            s_apu_schedule.resync_us+=now_us-d->next_frame_time_us;
++        }
+         /* Up to 64 ms behind (a front-end trap, a scheduling hiccup) is
           * caught up by running frames back to back; the speaker queue has
           * the room. Further behind, resynchronise. */
          d->next_frame_time_us = now_us;
@@ -4669,13 +4691,18 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      }
 
      while (!d->pause_requested) {
-@@ -446,13 +455,21 @@
+@@ -446,13 +471,26 @@
          int64_t remaining_ms = (d->next_frame_time_us - now_us) / 1000;
          if (remaining_ms > 0) {
              qemu_cond_timedwait(&d->cond, &d->lock, (int)remaining_ms);
 +            /* Count the actual wait, including early wakes and lock reacquisition.
 +             * Measuring after this loop loses the wait when now_us is refreshed. */
-+            d->sleep_acc_us += (int)(qemu_clock_get_us(QEMU_CLOCK_REALTIME) - now_us);
++            int64_t woke=qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++            d->sleep_acc_us += (int)(woke-now_us);
++            if(s_apu_lock_profile) {
++                int64_t late=woke-now_us-remaining_ms*1000;
++                if(late>s_apu_schedule.wake_late_us)s_apu_schedule.wake_late_us=late;
++            }
          } else {
              break;
          }
@@ -4694,7 +4721,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -481,11 +498,29 @@
+@@ -481,11 +519,29 @@
      float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
      memset(mixbins, 0, sizeof(mixbins));
 
@@ -4724,7 +4751,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      mcpx_debug_end_frame();
  }
-@@ -494,12 +529,28 @@
+@@ -494,17 +550,41 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -4733,8 +4760,15 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 + * boundary; never let them modify voices partway through se_frame(). */
 +static void mcpx_apu_service_mmio_waiters(MCPXAPUState *d)
 +{
-+    while (qatomic_fetch_add(&d->mmio_waiters, 0) > 0 && !qatomic_read(&d->exiting))
++    while (qatomic_fetch_add(&d->mmio_waiters, 0) > 0 && !qatomic_read(&d->exiting)) {
++        int64_t started=s_apu_lock_profile?qemu_clock_get_us(QEMU_CLOCK_REALTIME):0;
 +        qemu_cond_wait(&d->cond, &d->lock);
++        if(s_apu_lock_profile) {
++            int64_t elapsed=qemu_clock_get_us(QEMU_CLOCK_REALTIME)-started;
++            s_apu_schedule.mmio_wait_us+=elapsed;
++            if(elapsed>s_apu_schedule.mmio_max_us)s_apu_schedule.mmio_max_us=elapsed;
++        }
++    }
 +}
 +
  static void *mcpx_apu_frame_thread(void *arg)
@@ -4753,7 +4787,42 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          if (d->pause_requested && !g_test_tone.active && !g_mixer_active_count) {
              d->is_idle = true;
              qemu_cond_signal(&d->idle_cond);
-@@ -571,7 +622,40 @@
+             qemu_cond_wait(&d->cond, &d->lock);
+             d->is_idle = false;
++            if(s_apu_lock_profile)s_apu_schedule.last_frame_us=0;
+             continue;
+         }
+
+@@ -553,6 +633,15 @@
+                     if (on && (st_n || st_timeouts))
+                         fprintf(stderr, "[APU] ISR stalls: %u in 5 s, total %.1f ms, max %.1f ms, >40 ms %u\n",
+                                 st_n, st_total / 1000.0, st_max / 1000.0, st_timeouts);
++                    if(s_apu_lock_profile) {
++                        fprintf(stderr,"[APU-SCHEDULE] gap=%.1fms late=%.1fms wake-late=%.1fms mmio=%.1fms mmio-max=%.1fms resyncs=%u resync-time=%.1fms traps=%u trap-total=%.1fms trap-max=%.1fms trap-timeouts=%u\n",
++                            s_apu_schedule.max_gap_us/1000.0,s_apu_schedule.max_late_us/1000.0,
++                            s_apu_schedule.wake_late_us/1000.0,s_apu_schedule.mmio_wait_us/1000.0,
++                            s_apu_schedule.mmio_max_us/1000.0,s_apu_schedule.resyncs,s_apu_schedule.resync_us/1000.0,
++                            st_n,st_total/1000.0,st_max/1000.0,st_timeouts);
++                        int64_t last=s_apu_schedule.last_frame_us;
++                        memset(&s_apu_schedule,0,sizeof s_apu_schedule);s_apu_schedule.last_frame_us=last;
++                    }
+                     st_n = st_timeouts = 0;
+                     st_total = st_max = 0;
+                     st_last_log = now_ms;
+@@ -561,6 +650,12 @@
+         }
+
+         throttle(d);
++        if(s_apu_lock_profile) {
++            int64_t now=qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++            int64_t gap=s_apu_schedule.last_frame_us?now-s_apu_schedule.last_frame_us:0;
++            if(gap>s_apu_schedule.max_gap_us)s_apu_schedule.max_gap_us=gap;
++            s_apu_schedule.last_frame_us=now;
++        }
+
+         int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
+                                 NV_PAPU_SECTL_XCNTMODE);
+@@ -571,7 +666,40 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -4794,7 +4863,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,7 +705,9 @@
+@@ -621,7 +749,9 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
@@ -4804,16 +4873,17 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      if (d->gp.dsp) {
          memset((void *)d->gp.dsp->core.pram_opcache, 0,
-@@ -648,6 +734,8 @@
+@@ -648,6 +778,9 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
 +    s_apu_lock_profile = getenv("RECOMP_APU_LOCK_PROFILE") != NULL;
++    memset(&s_apu_schedule,0,sizeof s_apu_schedule);
 +    d->profile.enabled = s_apu_lock_profile;
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -665,6 +753,19 @@
+@@ -665,6 +798,19 @@
 
      /* Init DSP (GP/EP - stubbed) */
      mcpx_apu_dsp_init(d);
@@ -4833,7 +4903,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      /* Init software mixer for DirectSound bridge */
      mixer_init();
-@@ -705,6 +806,8 @@
+@@ -705,6 +851,8 @@
      qemu_thread_join(&d->apu_thread);
      mcpx_apu_vp_finalize(d);
      mcpx_apu_monitor_finalize(d);
@@ -4842,7 +4912,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      free(d);
      g_state = NULL;
-@@ -737,8 +840,12 @@
+@@ -737,8 +885,12 @@
          if (is_write) {
              mcpx_apu_write(d, addr, val, size);
          }
@@ -4857,7 +4927,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -749,6 +856,20 @@
+@@ -749,6 +901,20 @@
  uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size)
  {
      if (!d) return 0;
@@ -4878,7 +4948,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      if (addr >= 0x20000 && addr < 0x30000) {
          return mcpx_apu_vp_read(d, addr - 0x20000, size);
      } else if (addr < 0x20000) {
-@@ -766,9 +887,33 @@
+@@ -766,9 +932,33 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -27514,6 +27584,111 @@ index 0000000..12b4029
 +    gl_Position=vec4(ndc.x,-ndc.y,0.5,1.0);
 +    v_line_index=in_index;
 +}
+diff --git a/tests/condition_srw_posix/test_main.c b/tests/condition_srw_posix/test_main.c
+--- a/tests/condition_srw_posix/test_main.c
++++ b/tests/condition_srw_posix/test_main.c
+@@ -41,8 +41,101 @@
+     return NULL;
+ }
+
++typedef struct {HANDLE event,ack;LONGLONG sent;double latency[256];} MultiWake;
++static DWORD multi_wake_worker(void *argument) {
++    MultiWake *m=argument;HANDLE never=CreateEventA(NULL,TRUE,FALSE,NULL);
++    HANDLE objects[2]={never,m->event};LARGE_INTEGER now,freq;QueryPerformanceFrequency(&freq);
++    for(unsigned i=0;i<256;i++) {
++        CHECK(WaitForMultipleObjects(2,objects,FALSE,2000)==WAIT_OBJECT_0+1);
++        QueryPerformanceCounter(&now);m->latency[i]=(now.QuadPart-m->sent)*1000.0/freq.QuadPart;
++        CHECK(SetEvent(m->ack));
++    }
++    CloseHandle(never);return 0;
++}
++static int compare_latency(const void *a,const void *b) {double x=*(const double *)a,y=*(const double *)b;return(x>y)-(x<y);}
++static HANDLE apc_entered,apc_event;
++static atomic_int apc_ran;
++static void multi_apc(ULONG_PTR value) {atomic_store(&apc_ran,(int)value);CHECK(SetEvent(apc_event));}
++static DWORD multi_apc_worker(void *argument) {
++    (void)argument;HANDLE never=CreateEventA(NULL,TRUE,FALSE,NULL);
++    HANDLE objects[2]={never,apc_event};CHECK(SetEvent(apc_entered));
++    CHECK(WaitForMultipleObjectsEx(2,objects,FALSE,2000,TRUE)==WAIT_IO_COMPLETION);
++    CHECK(atomic_load(&apc_ran)==73);CloseHandle(never);return 0;
++}
++static DWORD multi_arm_worker(void *argument) {
++    Sleep(2);LARGE_INTEGER due;due.QuadPart=-1;
++    CHECK(SetWaitableTimer((HANDLE)argument,&due,0,NULL,NULL,FALSE));return 0;
++}
++static HANDLE cancel_entered;
++static DWORD multi_cancel_worker(void *argument) {
++    HANDLE pair[2]={argument,CreateEventA(NULL,TRUE,FALSE,NULL)};
++    CHECK(SetEvent(cancel_entered));
++    WaitForMultipleObjects(2,pair,FALSE,INFINITE);return 0;
++}
++static void test_multi_waits(void) {
++    HANDLE a=CreateEventA(NULL,FALSE,TRUE,NULL),b=CreateEventA(NULL,FALSE,TRUE,NULL);
++    HANDLE pair[2]={a,b};
++    CHECK(WaitForMultipleObjects(2,pair,FALSE,0)==WAIT_OBJECT_0);
++    CHECK(WaitForSingleObject(b,0)==WAIT_OBJECT_0); // wait-any consumes only the lowest ready index
++    CHECK(SetEvent(a));
++    CHECK(WaitForMultipleObjects(2,pair,TRUE,0)==WAIT_TIMEOUT);
++    CHECK(WaitForSingleObject(a,0)==WAIT_OBJECT_0); // incomplete wait-all must not consume a
++    HANDLE sem=CreateSemaphoreA(NULL,1,2,NULL),mutex=CreateMutexA(NULL,FALSE,NULL);
++    CHECK(SetEvent(a));HANDLE all[4]={a,sem,mutex,b};
++    CHECK(WaitForMultipleObjects(4,all,TRUE,0)==WAIT_TIMEOUT);
++    CHECK(!ReleaseMutex(mutex) && GetLastError()==ERROR_NOT_OWNER);
++    CHECK(WaitForSingleObject(sem,0)==WAIT_OBJECT_0);CHECK(ReleaseSemaphore(sem,1,NULL));
++    CHECK(SetEvent(b));CHECK(WaitForMultipleObjects(4,all,TRUE,1000)==WAIT_OBJECT_0);
++    CHECK(WaitForSingleObject(a,0)==WAIT_TIMEOUT && WaitForSingleObject(b,0)==WAIT_TIMEOUT);
++    CHECK(WaitForSingleObject(sem,0)==WAIT_TIMEOUT);CHECK(ReleaseMutex(mutex));
++    CHECK(SetEvent(a));HANDLE duplicate[2]={a,a};
++    CHECK(WaitForMultipleObjects(2,duplicate,FALSE,0)==WAIT_FAILED && GetLastError()==ERROR_INVALID_PARAMETER);
++    CHECK(WaitForMultipleObjects(0,pair,FALSE,0)==WAIT_FAILED);
++    CHECK(WaitForMultipleObjects(65,pair,FALSE,0)==WAIT_FAILED);
++    CHECK(WaitForMultipleObjects(2,NULL,FALSE,0)==WAIT_FAILED);
++    HANDLE invalid[2]={a,(HANDLE)(uintptr_t)0xA5A5A5A5u};
++    CHECK(WaitForMultipleObjects(2,invalid,FALSE,0)==WAIT_FAILED && GetLastError()==ERROR_INVALID_HANDLE);
++    CHECK(WaitForSingleObject(a,0)==WAIT_OBJECT_0); // validate before consuming any state
++    HANDLE timer=CreateWaitableTimerW(NULL,FALSE,NULL);LARGE_INTEGER due;due.QuadPart=-50000;
++    HANDLE timed[2]={a,timer};CHECK(SetWaitableTimer(timer,&due,0,NULL,NULL,FALSE));
++    CHECK(WaitForMultipleObjects(2,timed,FALSE,INFINITE)==WAIT_OBJECT_0+1);
++    CHECK(WaitForSingleObject(timer,0)==WAIT_TIMEOUT);
++    HANDLE manual=CreateWaitableTimerW(NULL,TRUE,NULL);due.QuadPart=-1;
++    CHECK(SetWaitableTimer(manual,&due,0,NULL,NULL,FALSE));timed[1]=manual;
++    CHECK(WaitForMultipleObjects(2,timed,FALSE,1000)==WAIT_OBJECT_0+1);
++    CHECK(WaitForMultipleObjects(2,timed,FALSE,0)==WAIT_OBJECT_0+1);
++    CHECK(CancelWaitableTimer(manual));CHECK(WaitForMultipleObjects(2,timed,FALSE,0)==WAIT_TIMEOUT);
++    HANDLE armer=CreateThread(NULL,0,multi_arm_worker,timer,0,NULL);CHECK(armer!=NULL);
++    timed[1]=timer;CHECK(WaitForMultipleObjects(2,timed,FALSE,1000)==WAIT_OBJECT_0+1);
++    CHECK(WaitForSingleObject(armer,1000)==WAIT_OBJECT_0);CloseHandle(armer);
++    MultiWake wake={CreateEventA(NULL,FALSE,FALSE,NULL),CreateEventA(NULL,FALSE,FALSE,NULL),0,{0}};
++    HANDLE thread=CreateThread(NULL,0,multi_wake_worker,&wake,0,NULL);CHECK(thread!=NULL);
++    for(unsigned i=0;i<256;i++) {
++        LARGE_INTEGER now;QueryPerformanceCounter(&now);wake.sent=now.QuadPart;
++        CHECK(SetEvent(wake.event));CHECK(WaitForSingleObject(wake.ack,2000)==WAIT_OBJECT_0);
++    }
++    HANDLE exited[2]={a,thread};CHECK(WaitForMultipleObjects(2,exited,FALSE,2000)==WAIT_OBJECT_0+1);
++    qsort(wake.latency,256,sizeof wake.latency[0],compare_latency);
++    printf("multi-wait event wake: median %.3f ms p95 %.3f ms max %.3f ms\n",wake.latency[128],wake.latency[243],wake.latency[255]);
++    CHECK(CloseHandle(thread));CHECK(CloseHandle(wake.event));CHECK(CloseHandle(wake.ack));
++    apc_entered=CreateEventA(NULL,FALSE,FALSE,NULL);apc_event=CreateEventA(NULL,FALSE,FALSE,NULL);
++    atomic_store(&apc_ran,0);thread=CreateThread(NULL,0,multi_apc_worker,NULL,0,NULL);CHECK(thread!=NULL);
++    CHECK(WaitForSingleObject(apc_entered,2000)==WAIT_OBJECT_0);CHECK(QueueUserAPC(multi_apc,thread,73));
++    CHECK(WaitForSingleObject(thread,2000)==WAIT_OBJECT_0);CHECK(atomic_load(&apc_ran)==73);
++    CloseHandle(thread);CloseHandle(apc_entered);CloseHandle(apc_event);
++    cancel_entered=CreateEventA(NULL,FALSE,FALSE,NULL);
++    thread=CreateThread(NULL,0,multi_cancel_worker,a,0,NULL);CHECK(thread!=NULL);
++    CHECK(WaitForSingleObject(cancel_entered,2000)==WAIT_OBJECT_0);Sleep(2);
++    CHECK(TerminateThread(thread,0));CHECK(WaitForSingleObject(thread,2000)==WAIT_OBJECT_0);
++    CHECK(SetEvent(a));CHECK(WaitForMultipleObjects(2,pair,FALSE,1000)==WAIT_OBJECT_0);
++    CloseHandle(thread);CloseHandle(cancel_entered);
++    CloseHandle(a);CloseHandle(b);CloseHandle(sem);CloseHandle(mutex);CloseHandle(timer);CloseHandle(manual);
++    puts("multi-wait: ordered wait-any, atomic wait-all, timer deadlines, validation, thread exit, APC reentrancy and 256 wake races verified");
++}
++
+ int main(void)
+ {
++    test_multi_waits();
+     /* Repeated immediate wake at release-to-wait exercises the lost-wakeup gap. */
+     for (int shared=0;shared<2;shared++) {
+         mode=shared ? CONDITION_VARIABLE_LOCKMODE_SHARED : 0;
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -38514,7 +38689,284 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  }
 
  BOOL DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc, PHANDLE dst,
-@@ -1407,6 +1448,21 @@
+@@ -599,6 +640,18 @@
+     if (options & DUPLICATE_CLOSE_SOURCE)
+         obj_release(o);
+     return TRUE;
++}
++
++/* Object transitions wake multi-object waits directly. Waiters hold this
++ * gate while testing object state, then release it atomically in cond_wait.
++ * Notifiers acquire it only AFTER releasing their object lock. */
++static pthread_mutex_t w32_multi_lock=PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t w32_multi_cond=PTHREAD_COND_INITIALIZER;
++static void w32_multi_cancel_unlock(void *gate) {pthread_mutex_unlock((pthread_mutex_t *)gate);}
++static void w32_multi_notify(void) {
++    pthread_mutex_lock(&w32_multi_lock);
++    pthread_cond_broadcast(&w32_multi_cond);
++    pthread_mutex_unlock(&w32_multi_lock);
+ }
+
+ /* ---- deadline helper -------------------------------------------------- */
+@@ -650,13 +703,36 @@
+     return 1;
+ }
+
++/* Caller holds the object's lock. Readiness does not consume an event,
++ * semaphore count or mutex acquisition; wait-all commits only after all pass. */
++static int w32_ready_locked(w32_object *o,DWORD tid) {
++    switch(o->kind) {
++    case K_EVENT:return o->signaled;
++    case K_THREAD:return o->exited;
++    case K_SEM:return o->sem_count>0;
++    case K_MUTEX:return o->mtx_owner==0 || o->mtx_owner==tid;
++    case K_WAITABLE_TIMER:return waitable_due(o);
++    default:return 1;
++    }
++}
++static void w32_take_locked(w32_object *o,DWORD tid) {
++    switch(o->kind) {
++    case K_EVENT:if(!o->manual_reset)o->signaled=0;break;
++    case K_WAITABLE_TIMER:
++        if(!o->waitable_manual_reset){o->waitable_triggered=0;o->waitable_armed=0;}break;
++    case K_SEM:o->sem_count--;break;
++    case K_MUTEX:o->mtx_owner=tid;o->mtx_recursion++;break;
++    default:break;
++    }
++}
++
+ /*
+  * Wait on a single object. The object lock must NOT be held.
+  * Returns WAIT_OBJECT_0 / WAIT_TIMEOUT.
+  */
+ static DWORD wait_single(w32_object *o, DWORD ms)
+ {
+-    struct timespec ts;
++    struct timespec ts={0};
+     int timed = (ms != INFINITE);
+     if (timed) deadline_from_ms(ms, &ts);
+
+@@ -664,17 +740,7 @@
+     DWORD result = WAIT_OBJECT_0;
+
+     for (;;) {
+-        int ready = 0;
+-        switch (o->kind) {
+-        case K_EVENT:  ready = o->signaled; break;
+-        case K_THREAD: ready = o->exited;   break;
+-        case K_SEM:    ready = (o->sem_count > 0); break;
+-        case K_MUTEX:
+-            ready = (o->mtx_owner == 0 || o->mtx_owner == GetCurrentThreadId());
+-            break;
+-        case K_WAITABLE_TIMER: ready = waitable_due(o); break;
+-        default:       ready = 1; break;
+-        }
++        int ready = w32_ready_locked(o,GetCurrentThreadId());
+         if (ready) break;
+
+         /* An armed timer has its own deadline. Waiting on the caller's alone
+@@ -694,17 +760,7 @@
+         }
+     }
+
+-    if (result == WAIT_OBJECT_0) {
+-        switch (o->kind) {
+-        case K_EVENT: if (!o->manual_reset) o->signaled = 0; break;
+-        case K_WAITABLE_TIMER:
+-            if (!o->waitable_manual_reset) { o->waitable_triggered = 0; o->waitable_armed = 0; }
+-            break;
+-        case K_SEM:   o->sem_count--; break;
+-        case K_MUTEX: o->mtx_owner = GetCurrentThreadId(); o->mtx_recursion++; break;
+-        default: break;
+-        }
+-    }
++    if (result == WAIT_OBJECT_0) w32_take_locked(o,GetCurrentThreadId());
+     pthread_mutex_unlock(&o->lock);
+     return result;
+ }
+@@ -733,54 +789,63 @@
+     return WaitForSingleObject(h, ms);
+ }
+
+-/*
+- * WaitForMultipleObjects: polling implementation. Adequate for the light
+- * multi-object waits the Xbox kernel HLE issues; not a high-throughput path.
+- */
+-DWORD WaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL waitAll, DWORD ms)
+-{
+-    return WaitForMultipleObjectsEx(count, handles, waitAll, ms, FALSE);
+-}
+-
+-DWORD WaitForMultipleObjectsEx(DWORD count, const HANDLE *handles, BOOL waitAll,
+-                               DWORD ms, BOOL alertable)
+-{
+-    struct timespec ts;
+-    int timed = (ms != INFINITE);
+-    if (timed) deadline_from_ms(ms, &ts);
+-
+-    /* Win32 fails the whole wait up front if any handle is invalid. */
+-    for (DWORD i = 0; i < count; i++) {
+-        HANDLE h = handles[i];
+-        if (h && h != PSEUDO_CURRENT_THREAD && h != PSEUDO_CURRENT_PROCESS && !w32_is_object(h)) {
+-            SetLastError(ERROR_INVALID_HANDLE);
+-            return WAIT_FAILED;
++/* Event-driven multi-object waits also drive the kernel's APU IRQ/vblank
++ * dispatcher. Polling usleep here left an asserted IRQ asleep until its next
++ * timeout and consumed wait-all auto-reset events before the other objects. */
++DWORD WaitForMultipleObjects(DWORD count,const HANDLE *handles,BOOL waitAll,DWORD ms) {
++    return WaitForMultipleObjectsEx(count,handles,waitAll,ms,FALSE);
++}
++DWORD WaitForMultipleObjectsEx(DWORD count,const HANDLE *handles,BOOL waitAll,DWORD ms,BOOL alertable) {
++    if(!count || count>MAXIMUM_WAIT_OBJECTS || !handles){SetLastError(ERROR_INVALID_PARAMETER);return WAIT_FAILED;}
++    w32_object *objects[MAXIMUM_WAIT_OBJECTS];
++    for(DWORD i=0;i<count;i++) {
++        for(DWORD k=0;k<i;k++)if(handles[k]==handles[i]){SetLastError(ERROR_INVALID_PARAMETER);return WAIT_FAILED;}
++        HANDLE h=handles[i];
++        if(h==PSEUDO_CURRENT_THREAD || h==PSEUDO_CURRENT_PROCESS)objects[i]=NULL;
++        else if(!w32_is_object(h)){SetLastError(ERROR_INVALID_HANDLE);return WAIT_FAILED;}
++        else objects[i]=(w32_object *)h;
++    }
++    struct timespec deadline={0};
++    int timed=ms!=INFINITE;
++    if(timed)deadline_from_ms(ms,&deadline);
++    DWORD tid=GetCurrentThreadId();
++    pthread_mutex_lock(&w32_multi_lock);
++    for(;;) {
++        if(alertable && t_self_obj) {
++            pthread_mutex_lock(&t_self_obj->lock);
++            int pending=t_self_obj->apc_count>0;
++            pthread_mutex_unlock(&t_self_obj->lock);
++            if(pending) {
++                pthread_mutex_unlock(&w32_multi_lock);
++                if(drain_apcs()>0)return WAIT_IO_COMPLETION;
++                pthread_mutex_lock(&w32_multi_lock);continue;
++            }
+         }
+-    }
+-
+-    for (;;) {
+-        if (alertable && drain_apcs() > 0)
+-            return WAIT_IO_COMPLETION;
+-
+-        if (waitAll) {
+-            DWORD got = 0;
+-            for (DWORD i = 0; i < count; i++)
+-                if (WaitForSingleObject(handles[i], 0) == WAIT_OBJECT_0) got++;
+-            if (got == count) return WAIT_OBJECT_0;
+-        } else {
+-            for (DWORD i = 0; i < count; i++)
+-                if (WaitForSingleObject(handles[i], 0) == WAIT_OBJECT_0)
+-                    return WAIT_OBJECT_0 + i;
++        // Multi-object scans are serialized by the gate. Single-object paths
++        // hold just one object lock; notifications never nest object -> gate.
++        for(DWORD i=0;i<count;i++)if(objects[i])pthread_mutex_lock(&objects[i]->lock);
++        DWORD ready=0,first=count;
++        struct timespec until=deadline;
++        int bounded=timed;
++        for(DWORD i=0;i<count;i++) {
++            w32_object *o=objects[i];
++            if(!o || w32_ready_locked(o,tid)){ready++;if(first==count)first=i;}
++            if(o && o->kind==K_WAITABLE_TIMER && o->waitable_armed && !o->waitable_triggered &&
++               (!bounded || timespec_before(&o->waitable_due_time,&until))) {
++                until=o->waitable_due_time;bounded=1;
++            }
+         }
+-
+-        if (timed) {
+-            struct timespec now;
+-            clock_gettime(CLOCK_REALTIME, &now);
+-            if (now.tv_sec > ts.tv_sec ||
+-                (now.tv_sec == ts.tv_sec && now.tv_nsec >= ts.tv_nsec))
+-                return WAIT_TIMEOUT;
+-        }
+-        usleep(1000);
++        int complete=waitAll?ready==count:first<count;
++        if(complete)for(DWORD i=0;i<count;i++)if(objects[i] && (waitAll || i==first))w32_take_locked(objects[i],tid);
++        for(DWORD i=count;i>0;i--)if(objects[i-1])pthread_mutex_unlock(&objects[i-1]->lock);
++        if(complete){pthread_mutex_unlock(&w32_multi_lock);return WAIT_OBJECT_0+(waitAll?0:first);}
++        struct timespec now;
++        if(timed){clock_gettime(CLOCK_REALTIME,&now);if(!timespec_before(&now,&deadline)){pthread_mutex_unlock(&w32_multi_lock);return WAIT_TIMEOUT;}}
++        int rc;
++        pthread_cleanup_push(w32_multi_cancel_unlock,&w32_multi_lock);
++        rc=bounded?pthread_cond_timedwait(&w32_multi_cond,&w32_multi_lock,&until):pthread_cond_wait(&w32_multi_cond,&w32_multi_lock);
++        pthread_cleanup_pop(0);
++        if(rc && rc!=ETIMEDOUT){pthread_mutex_unlock(&w32_multi_lock);SetLastError(ERROR_INVALID_PARAMETER);return WAIT_FAILED;}
+     }
+ }
+
+@@ -810,6 +875,7 @@
+     o->signaled = 1;
+     pthread_cond_broadcast(&o->cond);
+     pthread_mutex_unlock(&o->lock);
++    w32_multi_notify();
+     return TRUE;
+ }
+
+@@ -863,6 +929,7 @@
+     if (o->sem_max && o->sem_count > o->sem_max) o->sem_count = o->sem_max;
+     pthread_cond_broadcast(&o->cond);
+     pthread_mutex_unlock(&o->lock);
++    w32_multi_notify();
+     return TRUE;
+ }
+
+@@ -902,6 +969,7 @@
+         pthread_cond_broadcast(&o->cond);
+     }
+     pthread_mutex_unlock(&o->lock);
++    w32_multi_notify();
+     return TRUE;
+ }
+
+@@ -929,6 +997,7 @@
+     o->signaled  = 1;
+     pthread_cond_broadcast(&o->cond);
+     pthread_mutex_unlock(&o->lock);
++    w32_multi_notify();
+
+     obj_release(o);   /* drop the trampoline's reference */
+     return NULL;
+@@ -982,6 +1051,7 @@
+         o->signaled  = 1;
+         pthread_cond_broadcast(&o->cond);
+         pthread_mutex_unlock(&o->lock);
++        w32_multi_notify();
+         obj_release(o);
+     }
+     pthread_exit(NULL);
+@@ -1033,6 +1103,7 @@
+     o->signaled  = 1;
+     pthread_cond_broadcast(&o->cond);
+     pthread_mutex_unlock(&o->lock);
++    w32_multi_notify();
+     return TRUE;
+ }
+
+@@ -1069,6 +1140,7 @@
+         ok = 1;
+     }
+     pthread_mutex_unlock(&o->lock);
++    if(ok)w32_multi_notify();
+     return ok;
+ }
+
+@@ -1243,6 +1315,7 @@
+     o->waitable_triggered = 0;
+     pthread_mutex_unlock(&o->lock);
+     pthread_cond_broadcast(&o->cond);
++    w32_multi_notify();
+     return TRUE;
+ }
+
+@@ -1254,6 +1327,7 @@
+     o->waitable_triggered = 0;
+     o->waitable_armed = 0;
+     pthread_mutex_unlock(&o->lock);
++    w32_multi_notify();
+     return TRUE;
+ }
+
+@@ -1407,6 +1481,21 @@
 
  LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
  {
@@ -38536,7 +38988,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      LPVOID result = virtual_alloc_impl(address, size, allocationType, protect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1432,6 +1488,12 @@
+@@ -1432,6 +1521,12 @@
 
  BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
  {
@@ -38549,7 +39001,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_free_impl(address, size, freeType);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1445,6 +1507,14 @@
+@@ -1445,6 +1540,14 @@
 
  BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
  {
@@ -38564,7 +39016,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_protect_impl(address, size, newProtect, oldProtect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1870,9 +1940,23 @@
+@@ -1870,9 +1973,23 @@
                            DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
  {
      (void)file; (void)sa; (void)protect;
@@ -38591,7 +39043,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int fd = anon_map_fd(name);
      if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
      if (ftruncate(fd, (off_t)size) != 0) {
-@@ -1902,6 +1986,20 @@
+@@ -1902,6 +2019,20 @@
 
      off_t  off = ((off_t)offHigh << 32) | offLow;
      SIZE_T len = count ? count : (o->map_size - (SIZE_T)off);
@@ -38612,7 +39064,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int prot   = PROT_READ | ((access != FILE_MAP_READ) ? PROT_WRITE : 0);
      int flags  = MAP_SHARED;
 
-@@ -1948,6 +2046,10 @@
+@@ -1948,6 +2079,10 @@
 
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
@@ -38623,7 +39075,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      size_t len = view_take(baseAddr);
      if (len == 0) return FALSE;
      return munmap((void *)baseAddr, len) == 0;
-@@ -2038,6 +2140,13 @@
+@@ -2038,6 +2173,13 @@
      b->ullAvailPhys     = avail;
      b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
      b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;

@@ -8,11 +8,12 @@ const source = fs.readFileSync(path.join(__dirname, '../../web/audio-worklet.js'
 
 function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
   let Processor;
+  const messages = [];
   const memory = new SharedArrayBuffer(16 + cap * 4);
   const hdr = new Uint32Array(memory, 0, 4), data = new Int16Array(memory, 16);
   hdr[0] = hdr[1] = initial; hdr[2] = cap;
   vm.runInNewContext(source, {
-    AudioWorkletProcessor: class { constructor() { this.port = {postMessage() {}}; } },
+    AudioWorkletProcessor: class { constructor() { this.port = {postMessage(message) {messages.push(message);}}; } },
     sampleRate: rate, Uint32Array, Int16Array, Atomics,
     registerProcessor(name, type) { if (name === 'nfl2k5-output') Processor = type; },
   });
@@ -20,7 +21,7 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
   // Most cases exercise a running stream after its initial buffering.
   processor.started = afterStartup;
   let next = 100;
-  return {hdr, processor,
+  return {hdr, processor, messages,
     put(count) {
       let w = hdr[0];
       assert(count <= cap - ((w - hdr[1]) >>> 0));
@@ -67,12 +68,39 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
   assert(f.render(128).every(x => x === 0));
   assert.equal(f.hdr[1], 0);
   assert.equal(f.processor.underruns, 0);
+  assert.equal(f.processor.underrunFrames, 0);
+  assert.equal(f.processor.maxUnderrunFrames, 0);
   f.put(1024);
   assert.deepEqual(f.render(8).map(x => x * 32768), [100,101,102,103,104,105,106,107]);
   assert.equal(f.hdr[1], 8);
   assert.equal(f.processor.underruns, 0);
   console.log('ok: startup buffering preserves the first samples without underruns');
 }
+
+// Missing output frames distinguish a partial render block from a full gap.
+for (const rate of [48000, 96000]) {
+  const f = fixture(rate);
+  f.put(2);
+  const block = f.render(8);
+  const missing = block.filter(x => x === 0).length;
+  assert.equal(f.processor.underruns, 1);
+  assert.equal(f.processor.underrunFrames, missing);
+  f.render(8);
+  assert.equal(f.processor.underruns, 2);
+  assert.equal(f.processor.underrunFrames, missing + 8);
+  assert.equal(f.processor.maxUnderrunFrames, missing + 8);
+  f.put(12);f.render(4);
+  assert.equal(f.processor.underrunRun, 0);
+  assert.equal(f.processor.maxUnderrunFrames, missing + 8);
+  // A valid zero-valued PCM sample is not an underrun.
+  const memory = f.processor.data;memory.fill(0);
+  f.render(2);
+  assert.equal(f.processor.underrunFrames, missing + 8);
+  f.render(rate / 2);
+  assert.equal(f.messages.at(-1).underrunFrames, f.processor.underrunFrames);
+  assert.equal(f.messages.at(-1).maxUnderrunFrames, f.processor.maxUnderrunFrames);
+}
+console.log('ok: exact missing-frame counts span blocks, reset on recovery and exclude authored silence');
 
 // Repeated starvation must never turn unsigned ring occupancy into billions.
 for (const rate of [8000, 11025, 16000, 22050, 24000, 44100, 48000, 96000]) {

@@ -29,7 +29,8 @@ typedef struct {
     volatile int mmio_waiters;
     bool exiting;
 } MCPXAPUState;
-static bool s_apu_lock_profile;
+static bool s_apu_lock_profile=true;
+/* PROFILE */
 static int in_frame, writes, frames, started, waits;
 static void qemu_mutex_lock(pthread_mutex_t *m) { assert(!pthread_mutex_lock(m)); }
 static void qemu_mutex_unlock(pthread_mutex_t *m) { assert(!pthread_mutex_unlock(m)); }
@@ -98,7 +99,7 @@ int main(void) {
     pthread_cond_destroy(&d.cond);pthread_mutex_destroy(&d.lock);pthread_mutexattr_destroy(&attr);
     puts("PASS Wasm APU handoff: 10000 contended writes, frame-boundary exclusion, continued mixing and shutdown");
 }
-'''.replace('/* HANDOFF */', function('static void mcpx_apu_service_mmio_waiters(')).replace('/* WRITE */', function('void mcpx_apu_mmio_write('))
+'''.replace('/* PROFILE */',source[source.index('/* APU schedule profile:'):source.index('/* Forward declarations')]).replace('/* HANDOFF */', function('static void mcpx_apu_service_mmio_waiters(')).replace('/* WRITE */', function('void mcpx_apu_mmio_write('))
 out = root / 'build-web-tests/apu-lock-handoff'
 out.mkdir(parents=True, exist_ok=True)
 (out / 'test.c').write_text(harness, encoding='utf-8')
