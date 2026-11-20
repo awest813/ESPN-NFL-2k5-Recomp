@@ -89,3 +89,11 @@ This remains the SDL GPU subset used by this game, with one device per
 runtime. Device recreation/automatic recovery after GPU loss and the full
 SDL GPU API are outside this verification. A sustained 30 FPS floor is not
 established by these rendering tests.
+
+The [integer D24 audit](WEB-STADIUM-FIDELITY.md#integer-d24-triangle-depth-precision-2026-11-20)
+adds native-unit truncation, exact power-of-two projection and anchored
+triangle W depth. Its independent software/Vulkan/WebGPU checks retain the
+near/far boundary cases. Generated line vertex modules are now compiled in
+the vertex regression after retail testing exposed an outdated output
+constructor. D16/floating-depth conversion and exhaustive depth precision
+remain outside this verification.

@@ -58,6 +58,9 @@ static void compact_vertex_case(void) {
 }
 int main(void) {
     enum { CASES = 86, VERTICES = 32 };
+    unsigned line_programs=0;
+    FILE *line_manifest=fopen("line-cases.txt","wb");
+    if(!line_manifest)abort();
     for (unsigned test = 0; test < CASES; test++) {
         s_vp.start = test >= 64 ? 0 : test % 5;
         unsigned length = test >= 64 ? 0 : test < 22 ? 1 : 12;
@@ -191,18 +194,27 @@ int main(void) {
         if (!source) return 1;
         char name[96];
         snprintf(name, sizeof name, "case-%03u.wgsl", test); save(name, source, strlen(source)); free(source);
+        source=sg_vp_translate_line_wgsl(s_vp.start,vp_input_mask(s_vp.start));
+        if(source) {
+            snprintf(name,sizeof name,"line-case-%03u.wgsl",test);
+            save(name,source,strlen(source));free(source);line_programs++;
+            fprintf(line_manifest,"%s\n",name);
+        }
         snprintf(name, sizeof name, "case-%03u.constants.bin", test); save(name, s_vp.c, sizeof s_vp.c);
         snprintf(name, sizeof name, "case-%03u.inputs.bin", test); save(name, inputs, sizeof inputs);
         snprintf(name, sizeof name, "case-%03u.expected.bin", test); save(name, outputs, sizeof outputs);
         if((test>=71 && test<=73) || test>=75) {snprintf(name,sizeof name,"case-%03u.strict",test);save(name,"",0);}
     }
     compact_vertex_case();
+    fclose(line_manifest);
     s_vp.start = 0;
     memset(s_vp.prog, 0, sizeof s_vp.prog);
     s_vp.prog[0][1] = 1u << 21;
     s_vp.prog[0][3] = (15u << 12) | 1u; /* MOV writes c0 */
     if (sg_vp_translate_wgsl(0)) return 2;
     if (sg_vp_translate_wgsl(VP_PROG_LEN)) return 3;
+    if(!line_programs)return 4;
+    printf("Generated %u production line vertex programs\n",line_programs);
     puts("Generated 86 WGSL programs with CPU references; constant writes correctly refused");
     return 0;
 }

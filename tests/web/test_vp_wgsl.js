@@ -20,6 +20,21 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
       device.addEventListener('uncapturederror', e => { window.gpuError = e.error.message; });
     });
     let count = 0;
+    // Read this generation's manifest; stale shaders in a reused output
+    // directory must not count as current translator coverage.
+    const lineFiles=fs.readFileSync(path.join(dir,'line-cases.txt'),'utf8').trim().split(/\r?\n/);
+    if(!lineFiles.length || lineFiles.some(n=>!/^line-case-\d+\.wgsl$/.test(n)) || new Set(lineFiles).size!==lineFiles.length)
+      throw Error('Invalid generated production line vertex manifest');
+    for(const file of lineFiles) {
+      await page.evaluate(async source=>{
+        const module=device.createShaderModule({code:source});
+        const info=await module.getCompilationInfo();
+        const errors=info.messages.filter(m=>m.type==='error');
+        if(errors.length)throw Error(errors.map(e=>e.message).join('\n'));
+        if(window.gpuError)throw Error(window.gpuError);
+      },fs.readFileSync(path.join(dir,file),'utf8'));
+    }
+    console.log(`PASS ${lineFiles.length} generated production line vertex modules compile`);
     for (const file of fs.readdirSync(dir).filter(n => /^case-\d+\.wgsl$/.test(n)).sort()) {
       console.log('Checking', file);
       const base = path.join(dir, file.replace('.wgsl', ''));

@@ -230,3 +230,15 @@ closed. These bounded checks include pauses and do not establish an FPS
 floor, uninterrupted whole-game audio, exact Xbox output, challenge completion
 or execution coverage of every corrected join. The production-block fixture
 provides the branch-specific evidence.
+
+## Ice Bowl depth-rendering regression — November 20, 2026
+
+The final D24 candidate renders the historical frozen field and advances
+from 1st-and-10 at GB32, Q4 4:50 to 2nd-and-4 at GB38, Q4 4:35. Pause/quit
+returns to the objective. Its three sampled audio counters remain zero and
+the final audit passes without browser/GPU/runtime failures. The earlier
+candidate's generated-line constructor error and failed black-field capture
+are preserved separately, with the correction and regression documented in
+[the depth audit](WEB-STADIUM-FIDELITY.md#integer-d24-triangle-depth-precision-2026-11-20).
+Challenge completion, exact Xbox scene parity and a 30 FPS floor remain
+unverified.
