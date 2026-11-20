@@ -1,4 +1,4 @@
-"""Check Web host clocks against the SDK's JavaScript nanosecond conversion."""
+"""Check Web host clock rounding and compatibility across SDK conversions."""
 import argparse
 from pathlib import Path
 import shutil
@@ -45,6 +45,9 @@ static double controlled_clock(void){clock_calls++;return fake_ms;}
 EM_JS(uint64_t, sdk_reference_ns, (double now), {
     return BigInt(Math.round(now * 1000 * 1000));
 });
+EM_JS(uint64_t, sdk_single_multiply_ns, (double now), {
+    return BigInt(Math.round(now * 1e6));
+});
 #define emscripten_get_now controlled_clock
 /* PRODUCTION */
 #undef emscripten_get_now
@@ -60,8 +63,11 @@ EM_JS(uint64_t, sdk_reference_ns, (double now), {
 #undef QueryPerformanceCounter
 #undef QueryPerformanceFrequency
 static uint64_t checks;
+static uint64_t sdk_rounding_slack(uint64_t ns);
 static void check(double value) {
     fake_ms=value;uint64_t expected=sdk_reference_ns(value);LARGE_INTEGER qpc,freq;
+    uint64_t single=sdk_single_multiply_ns(value),slack=sdk_rounding_slack(expected);
+    assert((single>=expected?single-expected:expected-single)<=slack);
     unsigned before=clock_calls;
     assert(QueryPerformanceCounter(&qpc) && QueryPerformanceFrequency(&freq));
     assert(freq.QuadPart==1000000000LL && (uint64_t)qpc.QuadPart==expected);
@@ -92,13 +98,31 @@ static uint64_t legacy_qpc(void) {
 static uint64_t direct_qpc(void) {
     LARGE_INTEGER t;assert(actual_QueryPerformanceCounter(&t));return (uint64_t)t.QuadPart;
 }
+/* SDKs use either now*1000*1000 or now*1e6. At epoch-sized pthread
+ * timestamps those can differ by one floating-point ULP. Keep an exact
+ * bracket against our specified conversion, then bound SDK disagreement
+ * separately rather than assuming identical rounding across SDK versions. */
+static uint64_t reference_live_ns(void) {
+    return sdk_reference_ns(emscripten_get_now());
+}
+static uint64_t sdk_rounding_slack(uint64_t ns) {
+    double value=(double)ns;
+    double ulp=nextafter(value,INFINITY)-value;
+    return ulp<1.0?1:(uint64_t)ulp;
+}
 static void check_live(void) {
     uint64_t previous=0;
     for(unsigned i=0;i<1000;i++) {
-        uint64_t before=legacy_qpc(),value=direct_qpc(),after=legacy_qpc();
+        uint64_t before=reference_live_ns(),value=direct_qpc(),after=reference_live_ns();
         assert(before<=value && value<=after && value>=previous);previous=value;
-        uint64_t a=legacy_ticks(),b=direct_ticks(),c=legacy_ticks();
-        assert(a<=b && b<=c);
+        before=legacy_qpc();value=direct_qpc();after=legacy_qpc();
+        uint64_t slack=sdk_rounding_slack(after);
+        assert((value>=before || before-value<=slack) &&
+               (value<=after || value-after<=slack));
+        before=legacy_qpc();value=direct_ticks();after=legacy_qpc();
+        slack=sdk_rounding_slack(after);
+        uint64_t lower=(before>slack?before-slack:0)/1000000ULL;
+        assert(lower<=value && value<=(after+slack)/1000000ULL);
     }
 }
 static volatile uint64_t observed;
@@ -131,7 +155,7 @@ int main(int argc,char **argv) {
     uint64_t sequential=checks,before_worker=direct_qpc();pthread_t thread;assert(!pthread_create(&thread,NULL,worker,NULL));
     assert(!pthread_join(thread,NULL));assert(checks==sequential+2000);
     assert(before_worker<=worker_qpc && worker_qpc<=direct_qpc());
-    printf("PASS %llu Web clock values against SDK JS rounding: half-ns, precision boundaries, DWORD wrap and worker calls\n",(unsigned long long)checks);
+    printf("PASS %llu Web clock values: exact specified JS rounding, bounded single-multiply SDK rounding, half-ns, precision boundaries, DWORD wrap and worker calls\n",(unsigned long long)checks);
     if(argc>1) {
         uint64_t (*old[])(void)={legacy_ticks,legacy_qpc},(*new[])(void)={direct_ticks,direct_qpc};
         for(unsigned kind=0;kind<2;kind++) {

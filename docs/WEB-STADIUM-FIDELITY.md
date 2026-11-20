@@ -3211,3 +3211,28 @@ Owned audit browser and server were closed. This retains the existing clock
 contract but does not establish continuous audio, all-mode/stadium/staff
 reference fidelity or a sustained 30 FPS floor. The preceding `a91d540` Build
 and Pages workflows passed.
+
+### SDK-independent host clock validation
+
+The first `b0927c3` CI Build failed in the live clock bracket. Emscripten 7
+uses `Math.round(now * 1e6)` in its WASI clock, while the locally installed
+SDK and our direct clock use `Math.round(now * 1000 * 1000)`. At epoch-sized
+pthread timestamps those conversions can differ by one floating-point ULP
+(256 ns at the current epoch). The original exact SDK bracket incorrectly
+assumed that both SDK versions performed identical rounding.
+
+The fixture now retains an exact live bracket against the specified direct
+conversion and checks SDK compatibility separately within one ULP, with a
+minimum allowance of one nanosecond for integer rounding. Tick-count bounds
+are derived from the same nanosecond interval before division, including
+millisecond boundaries. All 103,292 controlled inputs also compare both
+JavaScript conversions within that bound. The local undefined-behavior run
+passes. Runtime clock, sleep and guest scheduling behavior are unchanged.
+
+A read-only Downloads recheck also confirms `mcpx_1.0.bin` under
+`Xbox-Emulator-Files/mcpx`: it is 512 bytes, matches the isolated reference
+copy, and has SHA-256
+`e99e3a772bf5f5d262786aee895664eb96136196e37732fe66e14ae062f20335`.
+The previous missing-ROM note is stale. Existing reference stills and the
+isolated BIOS/HDD/DVD configuration are available; this check did not launch
+or change xemu and does not establish matched-scene fidelity.
