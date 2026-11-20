@@ -102346,6 +102346,9 @@ loc_003D4CAF: ;
 loc_003D4CB7: ;
     _fa = (uint32_t)(eax) & 0xFFFFFFFFu; _fb = (uint32_t)(eax) & 0xFFFFFFFFu;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* test eax, eax (32-bit) */
+    /* NFL2K5-GENPATCH:JOIN_3D4CFB_OVERLAP_TEST */
+    if (TEST_NZ(_fa, _fb)) goto loc_003D4D01;
+    goto loc_003D4CFD;
     goto loc_003D4CFB;
 
 loc_003D4CBB: ;
@@ -102407,6 +102410,9 @@ loc_003D4CF5: ;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* cmp edi, eax (32-bit) */
 
 loc_003D4CFB: ;
+    /* NFL2K5-GENPATCH:JOIN_3D4CFB_OVERLAP_CMP */
+    if (CMP_NE(_fa, _fb)) goto loc_003D4D01;
+    goto loc_003D4CFD;
     if (RECOMP_FLAGS_FALLBACK(0x003D4CFBu, _flags) /* jne: not equal / not zero */) goto loc_003D4D01;
 
 loc_003D4CFD: ;
@@ -102614,6 +102620,9 @@ loc_003D4CAF: ;
 loc_003D4CB7: ;
     _fa = (uint32_t)(eax) & 0xFFFFFFFFu; _fb = (uint32_t)(eax) & 0xFFFFFFFFu;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* test eax, eax (32-bit) */
+    /* NFL2K5-GENPATCH:JOIN_3D4CFB_TEST */
+    if (TEST_NZ(_fa, _fb)) goto loc_003D4D01;
+    goto loc_003D4CFD;
     goto loc_003D4CFB;
 
 loc_003D4CBB: ;

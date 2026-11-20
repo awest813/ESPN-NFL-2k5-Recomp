@@ -81657,6 +81657,8 @@ loc_002FAD3F: ;
 loc_002FAD42: ;
     /* NFL2K5-GENPATCH:JOIN_2FAD42_CMP */
     if (CMP_EQ(_fa, _fb)) goto loc_002FAD46;
+    /* NFL2K5-GENPATCH:JOIN_2FAD42_COMPLETE */
+    goto loc_002FAD44;
     if (RECOMP_FLAGS_FALLBACK(0x002FAD42u, _flags) /* je: equal / zero */) goto loc_002FAD46;
 
 loc_002FAD44: ;

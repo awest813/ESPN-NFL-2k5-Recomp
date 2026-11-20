@@ -26554,6 +26554,8 @@ loc_00167701: ;
 loc_00167707: ;
     /* NFL2K5-GENPATCH:JOIN_167707_CMP */
     if (CMP_NE(_fa, _fb)) goto loc_00167673;
+    /* NFL2K5-GENPATCH:JOIN_167707_COMPLETE */
+    goto loc_0016770D;
     if (RECOMP_FLAGS_FALLBACK(0x00167707u, _flags) /* jne: not equal / not zero */) goto loc_00167673;
 
 loc_0016770D: ;

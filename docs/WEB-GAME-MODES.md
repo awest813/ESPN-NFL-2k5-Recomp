@@ -161,3 +161,72 @@ challenge is not completed or won, and original-Xbox output identity and the
 30 FPS floor are not established. Reports, artifact hashes, images and logs
 remain under `rgb565-historical-retail` and `rgb565-heidi-final-retail` in the
 private build-test directory; their browsers and owned servers closed.
+
+## Remaining resolved flag joins — November 20, 2026
+
+A follow-up checks the original disc bytes at `00167701`/`00167817` and
+`002FAD00`–`002FAD44`. The first join branches on JNE at `00167707` and
+continues at `0016770D` when false; the second branches on JE at `002FAD42`
+and continues at `002FAD44` when false. Existing patches already resolve the
+TEST predecessor separately from the CMP predecessor, but each CMP false
+path still invokes the obsolete flags fallback. Explicit completion branches
+now bypass that fallback without suppressing diagnostics at other sites.
+
+The expanded `test_gameplay_flag_joins.py` executes the production join and
+TEST-predecessor blocks, with the original fall-through ordering preserved.
+It checks 4,352 additional branch outcomes across both predecessors, all
+single-bit operand pairs and unsigned edge values. The pre-fix source
+reproduces nonzero fallback calls; the corrected Wasm fixture passes with
+zero fallback calls and verifies regeneration/idempotence. This establishes
+the branch continuations and removes false unknown-flags diagnostics; it
+does not establish new retail mode coverage or a gameplay performance gain.
+
+### State-transition TEST/CMP split in overlapping bodies
+
+The same audit finds a functional error at `003D4CFB`. Original bytes at
+`003D4CB7` are `85 C0 EB 40` (`TEST EAX,EAX; JMP 003D4CFB`); the other
+predecessor loads a signed byte from `[ESI+3]` and compares it with EDI.
+The joined JNE skips the state-3 write when its respective predicate is true.
+The preceding return-value-5 shortcut goes directly to that write.
+
+The existing standalone `sub_003D4C02` patch uses `CMP_NE` even for the TEST
+predecessor. Its saved operands are both EAX, so nonzero results incorrectly
+advance the state. The same original instructions are also lifted into
+`sub_003D4940`; that overlapping body still uses the unresolved fallback for
+both predecessors. Resolving only the standalone entry leaves this second
+copy incorrect.
+
+Persistent patches now decide TEST before the join in both bodies and use
+CMP only for the comparison predecessor. The production-block fixture
+preserves the return-value-5 shortcut and checks all 256 signed byte counts,
+matching/neighboring indices and 32-bit return-value edges. Before the fix,
+the 6,164 added cases report eight standalone TEST mismatches, eight
+overlapping TEST mismatches and 2,808 overlapping CMP mismatches. After the
+fix all four predecessor/body combinations have zero mismatches; the full
+fixture also passes regeneration/idempotence and zero obsolete fallback
+calls. This proves the corrected branch semantics, without attributing a
+particular visible mode failure to this state update.
+
+The final optimized Web link and complete launcher/static-host suite pass.
+The frozen `frontend-join-retail` candidate renders the Heidi objective,
+controller assignment and Oakland kickoff. Its return reaches OAK34 at
+Q4 1:02; the offensive play reaches 2nd-and-4 at OAK40, Q4 0:47. Four sampled
+audio counters remain at zero underruns/missing frames. No FLAGS,
+unresolved-call, browser, GPU or DSP failures appear in that sequence.
+
+The first case nevertheless remains failed: the audit incorrectly waits for
+a new objective push after quitting. The game pops three states instead,
+and its inspected screenshot correctly shows the objective in neutral
+framing. The raw timeout is retained. A separate case re-enters the field,
+pauses, quits with the observed pop-event expectation and verifies the
+objective again; that case passes with no diagnostic failures. Its final
+cumulative audio sample also remains zero. The overall harness exits with
+status 1 because the first failed case is deliberately retained, rather than
+being rewritten as a clean run.
+
+The private run directory preserves both cases, seven inspected screenshots,
+raw logs and nine build/source hashes. The owned browser and server are
+closed. These bounded checks include pauses and do not establish an FPS
+floor, uninterrupted whole-game audio, exact Xbox output, challenge completion
+or execution coverage of every corrected join. The production-block fixture
+provides the branch-specific evidence.

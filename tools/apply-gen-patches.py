@@ -208,6 +208,9 @@ PATCHES = [
     ("JOIN_167707_CMP", "sub_001675E0", "loc_00167707: ;", "after", """\
     if (CMP_NE(_fa, _fb)) goto loc_00167673;
 """),
+    ("JOIN_167707_COMPLETE", "sub_001675E0", "if (RECOMP_FLAGS_FALLBACK(0x00167707u, _flags) /* jne: not equal / not zero */) goto loc_00167673;", "before", """\
+    goto loc_0016770D;
+"""),
     # Flag joins reached during the kickoff (2026-09-25): a je where one path
     # arrives from a cmp and the other from a test, which the lifter cannot
     # merge (RECOMP_FLAGS_FALLBACK, never taken). Resolve each path before the
@@ -231,6 +234,9 @@ PATCHES = [
     goto loc_002FAD44;
 """),
     ("JOIN_2FAD42_CMP", "sub_002FA9C0", "loc_002FAD42: ;", "after", """    if (CMP_EQ(_fa, _fb)) goto loc_002FAD46;
+"""),
+    ("JOIN_2FAD42_COMPLETE", "sub_002FA9C0", "if (RECOMP_FLAGS_FALLBACK(0x002FAD42u, _flags) /* je: equal / zero */) goto loc_002FAD46;", "before", """\
+    goto loc_002FAD44;
 """),
     ("JOIN_2F7CA4_TEST", "sub_002F7C50", "goto loc_002F7CA4;", "before", """\
     if (TEST_Z(_fa, _fb)) goto loc_002F7CE3;
@@ -264,11 +270,24 @@ PATCHES = [
     if (CMP_NE(_fa, _fb)) goto loc_000A2834;
     goto loc_000A2824;
 """),
-    # Press Start/front-end path (2026-10-06): both predecessors have already
-    # populated _fa/_fb (test eax,eax or cmp edi,eax), so the joined `jne`
-    # can use the preserved operands directly.  The generic fallback always
-    # returned false and sent the title state machine down the wrong path.
+    # This state update is lifted both into sub_003D4940 and its overlapping
+    # entry sub_003D4C02. TEST EAX,EAX must use TEST_NZ: comparing its equal
+    # saved operands incorrectly advances every nonzero result to state 3.
+    # The other predecessor is CMP EDI,sign_extend(byte [ESI+3]). Resolve
+    # both predecessors in both bodies, retaining the return-value-5 shortcut.
+    ("JOIN_3D4CFB_TEST", "sub_003D4C02", "goto loc_003D4CFB;", "before", """\
+    if (TEST_NZ(_fa, _fb)) goto loc_003D4D01;
+    goto loc_003D4CFD;
+"""),
     ("JOIN_3D4CFB_NE", "sub_003D4C02", "if (RECOMP_FLAGS_FALLBACK(0x003D4CFBu, _flags) /* jne: not equal / not zero */) goto loc_003D4D01;", "before", """\
+    if (CMP_NE(_fa, _fb)) goto loc_003D4D01;
+    goto loc_003D4CFD;
+"""),
+    ("JOIN_3D4CFB_OVERLAP_TEST", "sub_003D4940", "goto loc_003D4CFB;", "before", """\
+    if (TEST_NZ(_fa, _fb)) goto loc_003D4D01;
+    goto loc_003D4CFD;
+"""),
+    ("JOIN_3D4CFB_OVERLAP_CMP", "sub_003D4940", "if (RECOMP_FLAGS_FALLBACK(0x003D4CFBu, _flags) /* jne: not equal / not zero */) goto loc_003D4D01;", "before", """\
     if (CMP_NE(_fa, _fb)) goto loc_003D4D01;
     goto loc_003D4CFD;
 """),
