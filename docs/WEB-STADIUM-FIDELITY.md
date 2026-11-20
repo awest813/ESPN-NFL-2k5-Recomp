@@ -2826,3 +2826,20 @@ now includes the production completion helper and passes. The other ordinary
 Web Python checks pass, and browser/native APU/kernel/video builds pass.
 The correction addresses this accounting defect; it does not establish audio
 continuity or original-Xbox output matching.
+
+
+The corrected packaged build completes an approximately 246-second dry
+Detroit/San Diego demo run with executable DSP enabled and both APU and
+renderer timing diagnostics disabled. No browser/GPU failure is reported.
+The 20 basic five-second FPS averages after 150 seconds range from 27.5 to
+30.1. Audio records 69 affected blocks and 8,832 missing output frames
+(184 ms at 48 kHz), with a longest gap of 2,816 frames (58.7 ms). The final
+view reaches fourth-and-seven at 2:28 in the first quarter, with stadium
+seating, banners, video board, field, players and readable overlays visible.
+The matchup and diagnostic settings differ from earlier runs, so these values
+cannot prove a controlled continuity/performance improvement. Evidence and
+exact served Wasm/JS/patch hashes are retained in
+`build-web-tests/apu-read-handoff-retail`. The correction's `2a0235b` Build
+workflow passes; Pages deployment is still in progress at this observation.
+Audio continuity, original-Xbox fidelity, complete modes/stadium/staff coverage
+and a sustained 30 FPS floor remain unfinished.
