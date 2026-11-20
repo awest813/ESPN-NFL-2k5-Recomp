@@ -65,7 +65,7 @@ class NFL2K5Output extends AudioWorkletProcessor {
     const n = L.length, hdr = this.hdr, data = this.data, mask = this.mask;
     let w = Atomics.load(hdr, 0);
     let r = Atomics.load(hdr, 1);
-    // Prime two APU submissions before playback. Keep their exact samples;
+    // Prime 2048 source frames before playback. Keep their exact samples;
     // adding zero frames to the producer would put gaps into the game audio.
     if (!this.started && ((w - r) >>> 0) < Math.min(2048, this.cap)) {
       L.fill(0); R.fill(0);

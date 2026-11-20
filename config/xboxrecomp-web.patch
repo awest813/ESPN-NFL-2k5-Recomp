@@ -395,12 +395,18 @@ diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
      if (!SDL_PutAudioStreamData(g_sdl_stream, samples, copy_samples * XA2_FRAME_BYTES))
          return 0;
 
-@@ -223,4 +258,4 @@
+@@ -222,5 +257,9 @@
+
  int xa2_get_buffer_size(void)
  {
-     return XA2_BUF_SAMPLES;
+-    return XA2_BUF_SAMPLES;
 -}
 \ No newline at end of file
++    /* The EP produces 256 complete frames every eight APU subframes. The
++     * worklet can consume them immediately; waiting for four blocks withholds
++     * up to 16 ms of ready PCM during a producer stall. Its ring and priming
++     * limits are independent of submission size and remain unchanged. */
++    return g_web_audio ? 256 : XA2_BUF_SAMPLES;
 +}
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 --- a/src/kernel/CMakeLists.txt
@@ -5475,7 +5481,43 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      case NV_PAPU_ISTS:
          qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
          update_irq(d);
-@@ -433,12 +466,26 @@
+@@ -225,6 +258,7 @@
+ {
+     (void)errp;
+     d->monitor.stream = NULL;
++    d->monitor.submit_n = 0;
+     d->monitor.queued_bytes_low = 1024;
+     d->monitor.queued_bytes_high = 3072;
+
+@@ -269,7 +303,7 @@
+
+ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
+ {
+-    (void)d;
++    d->monitor.submit_n = 0;
+     if (xa2_is_active()) {
+         xa2_shutdown();
+         return;
+@@ -321,8 +355,8 @@
+      * output plus the software mixer on top, gathered into XAudio2-sized
+      * buffers. */
+     if (xa2_is_active()) {
+-        static int16_t acc[1024][2];
+-        static int acc_n;
++        int16_t (*acc)[2] = d->monitor.submit_buf;
++        int acc_n = d->monitor.submit_n;
+         int buf_size = xa2_get_buffer_size();
+         int i;
+
+@@ -361,6 +395,7 @@
+                 acc_n = 0;
+             }
+         }
++        d->monitor.submit_n = acc_n;
+         /* The next frame starts silent: the EP writes all 256 samples when
+          * the pipeline runs, and an idle APU contributes nothing. */
+         memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
+@@ -433,12 +468,26 @@
 
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 
@@ -5502,7 +5544,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      }
 
      while (!d->pause_requested) {
-@@ -446,13 +493,30 @@
+@@ -446,13 +495,30 @@
          int64_t remaining_ms = (d->next_frame_time_us - now_us) / 1000;
          if (remaining_ms > 0) {
              qemu_cond_timedwait(&d->cond, &d->lock, (int)remaining_ms);
@@ -5536,7 +5578,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -481,11 +545,39 @@
+@@ -481,11 +547,39 @@
      float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
      memset(mixbins, 0, sizeof(mixbins));
 
@@ -5576,7 +5618,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      mcpx_debug_end_frame();
  }
-@@ -494,17 +586,49 @@
+@@ -494,17 +588,49 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -5626,7 +5668,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              continue;
          }
 
-@@ -553,6 +677,24 @@
+@@ -553,6 +679,24 @@
                      if (on && (st_n || st_timeouts))
                          fprintf(stderr, "[APU] ISR stalls: %u in 5 s, total %.1f ms, max %.1f ms, >40 ms %u\n",
                                  st_n, st_total / 1000.0, st_max / 1000.0, st_timeouts);
@@ -5651,7 +5693,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
                      st_n = st_timeouts = 0;
                      st_total = st_max = 0;
                      st_last_log = now_ms;
-@@ -561,6 +703,10 @@
+@@ -561,6 +705,10 @@
          }
 
          throttle(d);
@@ -5662,7 +5704,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
          int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
-@@ -571,7 +717,40 @@
+@@ -571,7 +719,40 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -5703,7 +5745,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,7 +800,9 @@
+@@ -621,7 +802,9 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
@@ -5713,7 +5755,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      if (d->gp.dsp) {
          memset((void *)d->gp.dsp->core.pram_opcache, 0,
-@@ -648,6 +829,17 @@
+@@ -648,6 +831,17 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
@@ -5731,7 +5773,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -665,6 +857,19 @@
+@@ -665,6 +859,19 @@
 
      /* Init DSP (GP/EP - stubbed) */
      mcpx_apu_dsp_init(d);
@@ -5751,7 +5793,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      /* Init software mixer for DirectSound bridge */
      mixer_init();
-@@ -705,6 +910,8 @@
+@@ -705,6 +912,8 @@
      qemu_thread_join(&d->apu_thread);
      mcpx_apu_vp_finalize(d);
      mcpx_apu_monitor_finalize(d);
@@ -5760,7 +5802,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      free(d);
      g_state = NULL;
-@@ -737,8 +944,12 @@
+@@ -737,8 +946,12 @@
          if (is_write) {
              mcpx_apu_write(d, addr, val, size);
          }
@@ -5775,7 +5817,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -746,9 +957,31 @@
+@@ -746,9 +959,31 @@
   * addr is offset from APU base (0xFE800000)
   * ============================================================ */
 
@@ -5807,7 +5849,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      if (addr >= 0x20000 && addr < 0x30000) {
          return mcpx_apu_vp_read(d, addr - 0x20000, size);
      } else if (addr < 0x20000) {
-@@ -766,9 +999,32 @@
+@@ -766,9 +1001,32 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -5998,7 +6040,16 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
 
      struct {
          struct {
-@@ -513,10 +415,17 @@
+@@ -498,6 +400,8 @@
+     struct {
+         McpxApuDebugMonitorPoint point;
+         int16_t frame_buf[256][2];
++        int16_t submit_buf[1024][2];
++        int submit_n; /* Pending host output belongs to this APU instance. */
+         void *stream; /* SDL_AudioStream* - stubbed */
+         int queued_bytes_low, queued_bytes_high;
+     } monitor;
+@@ -513,10 +417,17 @@
  void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
  void mcpx_apu_vp_reset(MCPXAPUState *d);
 

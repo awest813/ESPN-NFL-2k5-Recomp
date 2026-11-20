@@ -78,6 +78,7 @@ async function checkWorklet(page, rate, label) {
                          20000, audio.toString());
   check(!!st && st.state === 'running', `${label}: AudioWorklet output running`);
   if (!st) return;
+  check(!!(await hasLog(page, /^\[SMOKE\] publication frames=256$/, 3000)), `${label}: ready blocks use 256-frame Web submissions`);
   check(st.contextRate === rate, `${label}: AudioContext at ${st.contextRate} Hz`);
   check(Math.abs(st.frequency - 440) < 440 * 0.02, `${label}: tone at ${st.frequency.toFixed(1)} Hz (440 expected)`);
   check(st.peak > 0.33 && st.peak < 0.40, `${label}: level ${st.peak.toFixed(3)} (0.366 expected)`);
@@ -204,6 +205,7 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
         logs: window.smokeLog,
       })));
       check(!!peak, `SDL fallback: the tone reaches Web Audio through SDL (peak ${peak && peak.toFixed(2)})`);
+      check(!!(await hasLog(page, /^\[SMOKE\] publication frames=1024$/, 3000)), 'SDL fallback retains 1024-frame submissions');
       await page.close();
     }
     {

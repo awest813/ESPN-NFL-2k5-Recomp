@@ -63,6 +63,7 @@ void xbox_FramebufferSnapshot(uint32_t fb_va, uint32_t pitch);
 void xbox_FramebufferSetKeyHook(void (*hook)(unsigned vk));
 int  xa2_init(void);
 int  xa2_submit_samples(const int16_t *samples, int frames);
+int  xa2_get_buffer_size(void);
 void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
 
 static SDL_GPUDevice *g_dev;
@@ -144,16 +145,19 @@ static int SDLCALL audio_thread(void *arg)
     const char *silence_env = getenv("SMOKE_SILENCE_MS");
     Uint64 silence_ms = silence_env ? (Uint64)strtoul(silence_env, NULL, 10) : 0;
     if (!xa2_init()) { printf("[SMOKE] audio init failed\n"); return 0; }
+    int frames=xa2_get_buffer_size();
+    if(frames<=0 || frames>1024)return 1;
     printf("[SMOKE] audio open\n");
+    printf("[SMOKE] publication frames=%d\n",frames);
     Uint64 started = SDL_GetTicks();
     for (;;) {
         int silent = SDL_GetTicks() - started < silence_ms;
-        for (int i = 0; i < 1024; i++) {
+        for (int i = 0; i < frames; i++) {
             int16_t s = silent ? 0 : (int16_t)(sin(phase) * 12000);
             phase += 2 * M_PI * 440.0 / 48000.0;
             block[i][0] = block[i][1] = s;
         }
-        while (!xa2_submit_samples(&block[0][0], 1024))
+        while (!xa2_submit_samples(&block[0][0], frames))
             SDL_Delay(5);
     }
     return 0;

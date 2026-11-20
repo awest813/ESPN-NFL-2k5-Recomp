@@ -4769,3 +4769,98 @@ sample, retain the same priming/ring/catch-up limits, and be tested against
 controlled stalls before any retail improvement claim. It will not by itself
 prove a solution for the observed 51 ms deadline lag. Submission behavior is
 unchanged in this history-only checkpoint.
+
+
+### Publish completed Web audio blocks sooner (2026-11-20)
+
+The Web AudioWorklet path now requests 256-frame monitor submissions, matching
+the completed EP output block. Previously the monitor held four ready blocks
+before publishing 1,024 frames, withholding up to 16 ms of already produced
+PCM. The SDL/native fallback still requests 1,024 frames. PCM ring capacity,
+2,048-frame startup priming, 6,144-frame submission queue ceiling, rational
+48 kHz pacing, 64 ms catch-up policy, DSP execution and optional wake defaults
+are unchanged. No silence is added or source frames skipped. The worklet's
+priming comment now describes source frames rather than a submission count.
+
+A new fixture executes the production monitor branch and buffer-size getter
+under Wasm undefined-behavior instrumentation with deterministic stereo input,
+unit gain and an inactive software mixer. It feeds the actual emitted packets
+into the production worklet. The identical ready-block schedule includes a
+28 ms producer stall at batch eleven. Before the fix, the Web path reproduces
+384 missing output frames (8 ms). Afterward it has zero missing frames, retains
+every source sample in order and starts playback at the same fixture frame.
+The 1,024-frame grouping control still reproduces that gap.
+
+Restart checks also expose the monitor's static pending buffer crossing APU
+instances: an incomplete 1,024-frame stream leaves samples which prevent a
+fresh 256-frame stream from flushing correctly. The regression reproduces
+against the preserved pre-ownership patch; both Web and native restart cases
+pass after the pending buffer/count move into `MCPXAPUState.monitor`. Monitor
+initialization/finalization reset that count at output-stream boundaries. The
+buffer capacity does not grow, and normal in-game mode transitions retain the
+same APU instance. Actual GP/EP firmware and memory-bridge checks pass with
+Web LTO after this state-layout change.
+
+The expanded matrix covers seven stall lengths (0, 8, 16, 24, 28, 40 and 56 ms)
+and four positions relative to packet completion. All 28 pairs preserve
+458,752 stereo source frames per monitor path, maintain the same priming start
+and stay within the existing queue ceiling. Earlier publication never increases
+missing frames in this matrix. Longer stalls still fail: the 56 ms/batch-eleven
+case decreases from 1,664 to 896 missing frames, rather than becoming continuous.
+This is a controlled ready-packet schedule, not a complete guest/DSP timing
+model or a proof that every host stall can be tolerated.
+
+The browser smoke producer now uses the actual backend buffer-size getter.
+Its AV test explicitly checks 256-frame Web and 1,024-frame SDL-fallback
+submissions. Real-browser checks pass pitch/level and uninterrupted fed audio
+at 8, 44.1, 48 and 96 kHz, controller/keyboard input, autoplay recovery and GPU
+presentation. The initial local AV run failed a renamed readiness-log assertion
+and the Windows-inappropriate GPU launch flags; restoring the readiness log
+and using the supported Windows GPU launch resolves these harness failures.
+The 35-second silence-to-tone test passes with zero missing frames, and its
+forced-gap case still verifies exact underrun timing and retention of all
+published PCM. Standalone worklet boundary/resampling/wrap and direct-submission
+checks also pass.
+
+The preceding event-history CI job exposes another extracted-fixture omission:
+the sample-counter fixture needs the trace header used by its live `se_frame`
+body. The one-line include fix is published separately as `4541b5d`; its local
+48 kHz pipeline-time, host-clock-independence and wrap checks pass. A fresh
+publication patch still reproduces 102 files from the unchanged runtime pin.
+
+
+The final optimized game and packaged launcher/static-host checks pass. The
+frozen `ready-block-retail` capture uses normal DSP/30 FPS defaults with APU/IRQ
+profiling off (audit input/mode tracing remains enabled). It inspects Jaguars
+at 49ers presentation, coin toss, stadium/player/staff rendering, kickoff and
+an opening defensive play. The last field screenshot verifies second-and-two
+at JAX 48, Q1 4:49, 0–0. It then returns through the VIP warning to the neutral
+main menu. Twenty-two screenshots, eleven snapshots and 39 unchanged artifact
+hashes are retained privately. The owned browser and server are closed.
+
+The early `kickoff-result` screenshot still shows setup; `after-kick` and
+`opening-play` verify actual play progression. Short key/button inputs needed
+retries; one-second A holds activated and completed the kick. A missed
+navigation pulse landed in Options, so the early `quit-menu`/`vip-warning`
+names are misleading: later `quit-submenu`, `actual-vip-warning` and
+`main-after-quit` verify the intended quit path. These input timings are part
+of the capture conditions, not a proven controller or game-state diagnosis.
+
+The retail case **fails** on audio. The final explicit snapshot at AudioContext
+second 737.5013333333334 reports 2,555 affected blocks / 326,400 missing frames.
+Later automatic records before close reach 5,161 blocks / 658,176 missing
+frames, with a longest continuous gap of 5,248 frames (109.33 ms at 48 kHz).
+The first gap is at second 104.20266666666667 and the last at 777.0613125;
+92 automatic failure records are retained. No APU profile or individual-history
+records are expected with profiling disabled. All reported failures are audio
+underruns; expected startup TODO diagnostics remain. Producer summaries report
+zero dropped submissions, which does not negate consumer starvation.
+
+The extended run includes title/menu idle, pause and navigation retries.
+Presentation windows fall below 30 FPS, including an 11.0 FPS window after
+loading. This is not a controlled performance comparison: matchup, host load,
+input timing and profiling differ from prior captures. The controlled fixture
+establishes the specific benefit of publishing ready PCM and the restart
+ownership fix. The retail failure establishes that the broader APU delivery/
+execution stalls persist; full audio/gameplay/rendering fidelity, all-mode
+coverage and a sustained 30 FPS floor remain unfinished.
