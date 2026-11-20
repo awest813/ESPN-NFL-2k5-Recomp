@@ -3318,3 +3318,21 @@ does not establish a performance gain, continuous retail audio, full reference
 fidelity or a sustained 30 FPS floor. Results and exact library/source hashes
 are retained in `build-web-tests/frame-pacing-monotonic`. The preceding
 `d5d6931` and `1e14ea1` Build workflows and `d5d6931` Pages deployment passed.
+
+The approximately 246-second unprofiled retail run on this frozen build reaches
+New England/Houston, third-and-seven at 2:31 in the first quarter. Checked
+frames show player models, stadium tiers/crowds, sideline staff and readable
+intro/HUD text. No browser or GPU failures are reported. Its 20 five-second
+FPS averages after 150 seconds range from 26.9 to 30.1. Audio records 104
+affected blocks and 13,312 missing frames (277.3 ms at 48 kHz), with a longest
+gap of 6,656 frames (138.7 ms). The largest increase in the audio telemetry
+is around 196.1 seconds; a future targeted profile should include that part
+of play. Matchup differences prevent a controlled comparison with earlier
+runs, and this unprofiled capture cannot establish APU rebase counts.
+
+The served Wasm/JS/worklet, both patches and SDL archive hashes match the
+saved manifest in `build-web-tests/sdl-monotonic-retail`. Its screenshots,
+console/audio samples and summary are retained there. The owned browser and
+HTTP server were closed. The new Build and Pages workflows were still running
+when the capture completed. Continuous audio, a sustained 30 FPS floor and
+all-mode/stadium/staff reference fidelity remain unfinished.
