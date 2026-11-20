@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location('mode_patches', root / 'tools/appl
 patcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(patcher)
 ids = {'JOIN_1AE8D5_ZERO', 'JOIN_2F7CA4_TEST', 'JOIN_2F7CA4_CMP', 'JOIN_2F7CA4_COMPLETE',
-       'JOIN_A2822_TEST', 'JOIN_A2822_CMP'}
+       'JOIN_A2822_TEST', 'JOIN_A2822_CMP', 'JOIN_221ABB_CMP', 'JOIN_221ABB_TEST', 'JOIN_221ABB_COMPLETE'}
 patcher.PATCHES = [p for p in patcher.PATCHES if p[0] in ids]
 assert len(patcher.PATCHES) == len(ids)
 patcher.GEN = str(out / 'generated')
@@ -33,12 +33,14 @@ for name in ids:
 a = (root / 'src/recomp/gen/recomp_0013.c').read_text(encoding='utf-8')
 b = (root / 'src/recomp/gen/recomp_0021.c').read_text(encoding='utf-8')
 c = (root / 'src/recomp/gen/recomp_0004.c').read_text(encoding='utf-8')
+d = (root / 'src/recomp/gen/recomp_0015.c').read_text(encoding='utf-8')
 def block(source, start, end):
     begin = source.index(start + ': ;')
     return source[begin:source.index(end + ': ;', begin)]
 zero = block(a, 'loc_001AE8B3', 'loc_001AE8B6') + block(a, 'loc_001AE8C7', 'loc_001AE8D7')
 status = block(b, 'loc_002F7C97', 'loc_002F7CA6')
 transition = block(c, 'loc_000A281B', 'loc_000A2824')
+kickoff = block(d, 'loc_00221AA6', 'loc_00221ABD')
 assert 'NFL2K5-GENPATCH:JOIN_1AE8D5_ZERO' in zero
 assert 'NFL2K5-GENPATCH:JOIN_2F7CA4_COMPLETE' in status
 harness = r'''
@@ -78,9 +80,22 @@ static int transition_join(unsigned path, uint32_t eax) {
 loc_000A2824: return 1;
 loc_000A2834: return 0;
 }
+static int kickoff_join(unsigned cmp, uint32_t memory_value) {
+    uint32_t edx=0,eax=0,_fa=0,_fb=0;int32_t _fas=0,_fbs=0;int _flags=0;
+    if(!cmp)goto loc_00221AB4;
+    /* KICKOFF */
+loc_00221ABD:return 0;
+loc_00221ACD:return 1;
+}
 int main(void) {
+    for(unsigned i=0;i<1024;i++) {
+        assert(kickoff_join(0,i)==((i&0x1C0)==0));
+        assert(kickoff_join(1,i)==((i&0x1C0)==0x40));
+    }
     const uint32_t edge[]={0,1,2,19,20,0x7fffffffu,0x80000000u,0xffffffffu};
     for (unsigned i=0;i<sizeof edge/sizeof *edge;i++) {
+        assert(kickoff_join(0,edge[i])==((edge[i]&0x1C0)==0));
+        assert(kickoff_join(1,edge[i])==((edge[i]&0x1C0)==0x40));
         assert(zero_join(0,edge[i]) == (edge[i] != 1));
         assert(zero_join(1,edge[i]) == (edge[i] != 1));
         assert(transition_join(0,edge[i]) == (edge[i] == 0));
@@ -98,9 +113,9 @@ int main(void) {
         assert(status_join(1,s,edge[i]) == (!(parity & 1) && edge[i] != 0));
     }
     assert(gaps == 0);
-    puts("PASS gameplay flag joins: DEC/TEST zero, transition TEST/CMP, x87 status, null/non-null CMP, regeneration and no obsolete fallback");
+    puts("PASS gameplay flag joins: DEC/TEST zero, transition TEST/CMP, x87 status, null/non-null CMP, kickoff TEST/CMP, regeneration and no obsolete fallback");
 }
-'''.replace('/* ZERO */', zero).replace('/* STATUS */', status).replace('/* TRANSITION */', transition)
+'''.replace('/* ZERO */', zero).replace('/* STATUS */', status).replace('/* TRANSITION */', transition).replace('/* KICKOFF */', kickoff)
 (out / 'test.c').write_text(harness, encoding='utf-8')
 subprocess.run([shutil.which('emcc') or 'emcc', str(out / 'test.c'), '-O2', '-sENVIRONMENT=node', '-o', str(out / 'test.js')], check=True)
 subprocess.run([shutil.which('node') or 'node', str(out / 'test.js')], check=True, timeout=30)

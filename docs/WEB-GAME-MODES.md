@@ -139,3 +139,25 @@ attract/gameplay transitions. The camera callback's clock/team validation can
 accept retained match records while a full-screen menu is visible. The
 follow-up implementation and regression are recorded in the stadium/fidelity
 ledger; broader mode and scene coverage remains open.
+
+## Heidi Bowl historical-mode regression — November 20, 2026
+
+The RGB565 renderer audit also exercises the second Anniversary scenario,
+The Heidi Bowl. Its objective starts NYJ32–OAK29 at Q4 1:05, kickoff at NYJ30;
+selection displays Jets 1965–1968 and Raiders 1966–1967 uniforms. Oakland's
+stadium/crowd, sideline figures, long shadows and readable field/play-call UI
+render. The first attempt returns 18 yards to OAK32 at 1:01 but logs
+`[FLAGS] 00221ABB`; that audit is retained as failed. Source inspection finds
+an obsolete fallback on the already-resolved nonzero TEST predecessor. The
+persistent completion branch and regression are described in the fidelity
+ledger; the audit classifier and diagnostic logging are unchanged.
+
+The rebuilt replay returns 19 yards to OAK33 at 1:02 and completes a 22-yard
+pass to NYJ45 at 0:48. Pause, quit submenu and return to the objective work.
+There are no FLAGS, unresolved-call, browser/GPU/DSP failures in that replay.
+Its last sampled audio counter is one block / 128 frames (2.667 ms); inspection
+pauses prevent treating the whole run as uninterrupted active play. The
+challenge is not completed or won, and original-Xbox output identity and the
+30 FPS floor are not established. Reports, artifact hashes, images and logs
+remain under `rgb565-historical-retail` and `rgb565-heidi-final-retail` in the
+private build-test directory; their browsers and owned servers closed.

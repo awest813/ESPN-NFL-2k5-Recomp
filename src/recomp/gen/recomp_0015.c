@@ -84219,6 +84219,8 @@ loc_00221AB4: ;
 loc_00221ABB: ;
     /* NFL2K5-GENPATCH:JOIN_221ABB_TEST */
     if (TEST_Z(_fa, _fb)) goto loc_00221ACD;
+    /* NFL2K5-GENPATCH:JOIN_221ABB_COMPLETE */
+    goto loc_00221ABD;
     if (RECOMP_FLAGS_FALLBACK(0x00221ABBu, _flags) /* je: equal / zero */) goto loc_00221ACD;
 
 loc_00221ABD: ;

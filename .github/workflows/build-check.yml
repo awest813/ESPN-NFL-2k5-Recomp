@@ -98,6 +98,9 @@ jobs:
       - name: Check widescreen menu and world transitions (sanitizers)
         run: python3 -I tests/web/test_widescreen.py --native --build-dir build-widescreen
 
+      - name: Check RGB565 fragment blending and masks (sanitizers)
+        run: python3 -I tests/web/test_rgb565_merge.py --native --build-dir build-rgb565-merge
+
       - name: Check bounded APU register handoff under continuous arrivals (sanitizers)
         run: python3 -I tests/web/test_apu_lock_handoff.py --native --build-dir build-apu-handoff
 

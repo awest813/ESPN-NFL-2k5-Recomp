@@ -219,6 +219,11 @@ PATCHES = [
     ("JOIN_221ABB_TEST", "sub_00221A30", "loc_00221ABB: ;", "after", """\
     if (TEST_Z(_fa, _fb)) goto loc_00221ACD;
 """),
+    # Both predecessors are resolved above. The nonzero TEST path must also
+    # bypass the obsolete flags fallback (observed after a Heidi Bowl return).
+    ("JOIN_221ABB_COMPLETE", "sub_00221A30", "if (RECOMP_FLAGS_FALLBACK(0x00221ABBu, _flags) /* je: equal / zero */) goto loc_00221ACD;", "before", """\
+    goto loc_00221ABD;
+"""),
     # sub_002FA9C0: the same test/cmp join before a je at 0x002FAD42. The
     # fallback never branched, so the loop kept the wrong index (SOFTDRINK
     # Play Now crashed on a freed object right after, 2026-10-08).

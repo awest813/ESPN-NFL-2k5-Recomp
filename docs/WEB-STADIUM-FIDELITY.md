@@ -4080,3 +4080,69 @@ prove this retail run exercises the extreme-padding regression cases. The
 focused software/Vulkan checks provide that evidence. Exact artifact hashes,
 images, raw report/log and the trace summary remain private in the run
 directory. The browser and owned server are closed.
+
+### RGB565 software clears and fragment merging (2026-11-20)
+
+The previous format-size audit identifies a second concrete gap: the software
+path treats an RGB565 clear register as ARGB and reduces it again, clears the
+whole clip instead of the clear rectangle, and ignores both fragment blending
+and draw color masks on two-byte targets. These behaviors can overwrite
+existing layers or turn a translucent fragment opaque on a software target.
+They are synthetic/source reproductions; this pass does not attribute a
+particular retail scene to an RGB565 target.
+
+RGB565 clears now use the low 16 bits of the already packed clear value, as in
+[xemu's format-specific clear decoding](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/pgraph.c).
+They intersect the inclusive clear rectangle with the clip and preserve the
+channels absent from the clear flags. The separate draw color mask does not
+control clears. With no alpha storage, an alpha-only clear leaves RGB565
+unchanged. Other packed target conversions retain their previous behavior and
+remain incomplete.
+
+RGB565 fragments now decode the destination color with implicit alpha one,
+execute the existing four-channel integer merge and apply draw channel masks
+before packing back to 5:6:5. Alpha rejection and clip checks precede any
+destination read. The 32-bit merge arithmetic is retained. These checks do not
+establish NV2A blend precision, dithering or complete packed-format conformance.
+
+The protected-page fixture checks every clear-flag combination against
+independent expected packed bits, inset/disjoint/inverted rectangles, arbitrary
+high clear-register bits and untouched row padding. It fails against the
+frozen pre-fix source after adding the required framebuffer test stubs, then
+passes with ASAN/UBSAN against the fix. The earlier first build of this new
+fixture failed to link those missing test stubs; it is not counted as a
+rendering regression result.
+
+`test_rgb565_merge.py` executes production fragment functions against an
+independent integer oracle. Wasm UBSAN and native ASAN/UBSAN pass 196,608 cases:
+every 16-bit destination, destination-preserving round trips, ten factor pairs,
+five equations, all channel masks, alpha rejection and clipped/padded guards,
+with corresponding 32-bit checks. The old Wasm path fails the result assertion.
+These vectors establish the implemented merge model, not exact hardware
+rounding. The full native Vulkan renderer suite also passes. Native and Wasm CI
+now run the merge fixture. The published runtime patch reproduces 99 files
+from the pinned baseline and reverses cleanly without moving the submodule pin.
+
+The initial Heidi Bowl regression (`rgb565-historical-retail`) renders its
+objective, Jets 1965–1968/Raiders 1966–1967 uniform selection and Oakland field,
+then returns a kickoff 18 yards to OAK32 at Q4 1:01. It remains a failed audit:
+`[FLAGS] 00221ABB` appears after the return. The existing CMP and zero-TEST
+patches already resolve both predecessors, but nonzero TEST falls through to
+an obsolete fallback call. A persistent `JOIN_221ABB_COMPLETE` branch now
+continues directly to `00221ABD`; the diagnostic itself is not suppressed.
+The expanded gameplay-join fixture executes both predecessor truth tables,
+checks no fallback call, and verifies regeneration/idempotence. It fails on the
+old source's fallback count and passes after completion of the branch.
+
+The final optimized Web build and full launcher suite pass. A separate frozen
+`rgb565-heidi-final-retail` replay reaches a 19-yard return to OAK33 at Q4 1:02,
+then completes a 22-yard pass to NYJ45 at 0:48. Pause and quit return to the
+neutral-width objective. No FLAGS, unresolved-call, browser, GPU or DSP failures
+appear; expected startup TODO sites remain. The final sampled audio total is
+one block / 128 missing frames (2.667 ms), with inspection pauses included.
+The failed first report and clean final regression are both retained, with
+exact binary/generated-source hashes, images and logs. Both browsers and owned
+servers are closed. Challenge victory/completion, uninterrupted audio,
+original-Xbox parity, broader mode/model coverage and the 30 FPS floor remain
+unfinished. This retail replay does not prove it uses RGB565 targets; the
+focused fixtures establish the new packed-color behavior.
