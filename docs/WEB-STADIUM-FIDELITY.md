@@ -4020,3 +4020,63 @@ browser's nonzero exit reflects that retained navigation timeout, not a clean
 whole-run audit pass. Raw report/log, artifact hashes, images and interval
 calculations remain private under the run directory. Its browser and owned
 server are closed. No runtime patch or submodule pin changes are included.
+
+### Render-target storage size and padded rows (2026-11-20)
+
+A follow-up `quick-helmet-retail` capture of the preceding build checks
+Broncos–49ers selection after one and eleven seconds. Both helmet textures
+render, and uniform/helmet previews remain textured during navigation. This
+does not reproduce the earlier Bengals–49ers silhouette frame or establish its
+cause. That case remains partial, with no renderer change attributed to it.
+Its report, exact artifact hashes and images remain private; the browser and
+owned server closed.
+
+A separate source audit finds a concrete render-target defect: `surface_bpp()`
+uses integer `pitch / clip_w` as its pixel size. Pitch includes row padding,
+and clip width can describe a subset of the target. For example, a 20-pixel
+BGRA8 clip with 256-byte rows is misclassified as twelve bytes per pixel and
+rejected by both rendering paths. A three-pixel RGB565 clip with 32-byte rows
+is similarly rejected. These are synthetic reproductions, not a proven cause
+of a particular stadium or helmet image.
+
+The helper now reads the color-storage field of `NV097_SET_SURFACE_FORMAT`.
+The field definitions are in the pinned `src/nv2a/nv2a_regs.h`; format-based
+storage and independent row pitch are also used in
+[xemu's surface implementation](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/gl/surface.c)
+and its predecessor's
+[surface format map](https://github.com/xqemu/xqemu/blob/master/hw/xbox/nv2a/nv2a_pgraph.c).
+Unprogrammed/reserved color formats no longer acquire a guessed size from the
+viewport. The staging fixture and Vulkan target helper now program an explicit
+pitched color format instead of relying on an unset synthetic format field.
+
+The production software-raster regression fails before the fix and passes
+after it, checking RGB565/BGRA8 writes into padded rows with nonzero clip
+origins and untouched padding guards. It also passes ASAN/UBSAN with the
+existing protected-page/staged-write checks. The full native Vulkan suite
+passes, including new BGRA8 cases with 256/512-byte pitches, inset clips,
+independent reference pixels and preserved row/trailing guards. The optimized
+Web game build and complete launcher/browser suite pass. A fresh pinned
+checkout reproduces all 99 published runtime-patch files, and reverse checking
+passes without changing the submodule pin.
+
+This change corrects storage-size classification. It does not add swizzled
+render-target layout support, one-byte target rendering or missing packed
+format conversions, and does not repair the existing RGB565 blend/channel-mask
+limitations. Those broader format semantics remain incomplete. Original-Xbox
+scene matching and a sustained 30 FPS floor are not established.
+
+The frozen `surface-format-retail` candidate runs Rams at San Francisco with
+bounded surface tracing and the normal executable-DSP default. Selection
+helmets/UI, a crowd/EVENT STAFF close-up, player intro, kickoff return and an
+opening possession render; the game clock reaches Q1 4:28 at 0–0. No audit,
+runtime, DSP or GPU failures are reported, and all sampled audio counters
+remain at zero underruns. Expected startup TODO sites remain. This diagnostic
+is not a performance benchmark or proof of whole-game audio continuity.
+
+The 400-event surface trace records startup/menu color format `00000128`,
+including 2560/3072-byte pitches and 640/720-pixel clip widths. It exhausts
+its cap before the field, so it does not establish field-wide format usage or
+prove this retail run exercises the extreme-padding regression cases. The
+focused software/Vulkan checks provide that evidence. Exact artifact hashes,
+images, raw report/log and the trace summary remain private in the run
+directory. The browser and owned server are closed.
