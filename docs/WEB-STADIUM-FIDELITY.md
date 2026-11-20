@@ -2462,3 +2462,57 @@ interpretation and source fetches, while rainy line indices remain numerous.
 Further throughput work needs structural polling/line-transformation changes,
 with original-Xbox fidelity and full stadium/staff/mode coverage still open.
 The preceding `deed844` Build and Pages workflows both passed.
+
+
+### Instanced inputs for GPU line batching
+
+Moving line vertex programs off the CPU needs one endpoint-pair input record
+per segment. Inspection found prerequisites missing in the WebGPU bridge:
+it forced vertex stepping for all streams, bound only the first supplied
+vertex buffer at slot zero, assumed each slot's attributes were contiguous
+in the declaration and assigned layouts by description order. Those mappings
+now honor instance/vertex rates, every binding and its first-slot offset,
+interleaved attribute declarations and sparse/unordered buffer slots. Unused
+slots use the SDK's null-layout representation, which the first fixture run
+exposed as necessary. Layouts beyond the bridge's eight-buffer/sixteen-attribute
+limits are rejected instead of truncated. Duplicate/missing slots, duplicate
+shader locations, unknown formats/rates, reserved divisors and misaligned
+supported attributes/bindings are rejected before WebGPU replay.
+
+The renderer's production queue now retains explicit instance counts and uses
+them in indexed and unindexed submissions. Ordinary draws keep their existing
+single instance. Instanced uploads are copied independently and kept separate
+from ordinary adjacent-vertex merging, which would change instance addressing.
+Line vertex programs still execute on the CPU pending GPU shader integration;
+this establishes the required input/submission path without an FPS claim.
+
+The published bridge fails the new regression in an isolated baseline build.
+Intel hardware WebGPU and SwiftShader pass the new full-frame fixtures:
+indexed/unindexed instanced draws each match all 76,800 expected pixels,
+including per-instance positions/scales/colors, first instance 1, nonzero
+vertex/index/base-vertex and buffer offsets, nonzero binding slots, sparse
+slots and interleaved attributes. Indexed recording retains all released
+vertex/instance/index buffers and its pipeline until submission. Invalid
+layout/binding cases are rejected without GPU validation errors; the full
+existing shader, pinned line-coverage, lifetime and presentation suites pass.
+
+The ASAN/UBSAN native Vulkan fixture drives the actual production draw queue:
+three instances retain their uploaded data after the caller's array is
+mutated, with zero errors across all 76,800 target pixels. Queue unit checks
+also preserve instance counts/copies and reject unsafe merges. The complete
+native renderer, Linux kernel/video and browser game builds pass. A fresh
+pinned checkout reproduces all 93 patched runtime files, with reverse checks.
+The preceding `0a41e79` Build and Pages workflows both passed.
+
+
+The final sparse-layout fixture additionally renders through highest supported
+buffer slot 7 on hardware WebGPU and SwiftShader. The approximately 246-second
+owned headless retail integration selects Baltimore at Indianapolis. Coin,
+referee/player uniforms and readable coin-toss text render at 130 seconds;
+the 240-second view shows a pass in flight, players, referee, field numbers
+and line overlays. No browser/GPU failure is reported. FPS averages after
+150 seconds range from 28.6 to 30.1. Audio records 144 affected blocks and
+18,432 missing output frames (384 ms at 48 kHz), with a longest continuous gap
+of 2,688 frames (56 ms). This dry matchup is not a rain throughput test or a
+controlled performance comparison. Full scene/audio/game-mode fidelity,
+broader stadium/staff parity and a sustained 30 FPS floor remain unfinished.

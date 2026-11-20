@@ -83,6 +83,18 @@ int main(void) {
     assert(s_sg_queue.uploads[0].layers==6 && s_sg_queue.uploads[0].levels==3);
     assert(!memcmp(s_sg_queue.tdata,chain,504));
     puts("ok: queued cube upload retains all 504 authored RGBA bytes across three mip levels");
+    float instance_input[24];for(unsigned i=0;i<24;i++)instance_input[i]=(float)i;
+    d.pipe=(void*)99;d.vertices=instance_input;d.vertex_bytes=sizeof instance_input;
+    d.vertex_count=6;d.instance_count=3;d.tex_count=0;
+    unsigned before=s_sg_queue.count;
+    assert(sg_queue_draw(&d));instance_input[0]=999;assert(sg_queue_draw(&d));
+    assert(s_sg_queue.count==before+2);
+    for(unsigned k=0;k<2;k++) {
+        SgQueuedDraw *q=&s_sg_queue.draws[before+k];
+        assert(q->instance_count==3 && q->vertex_count==6 && !q->vertex_stride);
+        assert(*(float*)(s_sg_queue.vdata+q->vertex_offset)==(k?999:0));
+    }
+    puts("ok: instanced draws retain counts and immutable uploads without ordinary vertex merging");
     free(s_sg_queue.draws);free(s_sg_queue.tdata);
     free(s_sg_queue.vdata);free(s_sg_queue.udata);free(s_sg_queue.uploads);
 }

@@ -31,6 +31,8 @@ int main(void) {
 #define REJECT(change) do {SgQueuedDraw x=b;change;uint32_t before[9];memcpy(before,indices,sizeof before);assert(!sg_queue_merge(&q,&x));assert(!memcmp(before,indices,sizeof before));} while(0)
     REJECT(x.pipe=(void*)2); REJECT(x.vertex_stride=32); REJECT(x.vertex_offset++);
     REJECT(x.index_count=0); REJECT(x.index_offset++);
+    REJECT(x.instance_count=1); REJECT(x.instance_count=3);
+    draws[0].instance_count=1; REJECT(x.vertex_count=3); draws[0]=a;
     REJECT(x.tex_count=1); REJECT(x.vs_offset=16); REJECT(x.vs_size++);
     REJECT(x.fs_size++); REJECT(x.fs_offset=48); REJECT(x.stencil_ref=1);
     REJECT(x.scissor.x=1); REJECT(x.window_clip.x[3]=1); REJECT(x.window_clip.exclusive=1);
