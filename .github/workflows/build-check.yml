@@ -19,6 +19,18 @@ jobs:
       - name: Runtime functions exist
         run: python tools/ci/check-runtime-symbols.py src external/xboxrecomp/src config/xboxrecomp-web.patch
 
+      - name: Generate native interpreter ranges without an analysis checkout
+        run: |
+          python -I tools/gen-func-ranges.py --generated src/recomp/gen build/generated/nfl2k5_func_ranges.c
+          New-Item -ItemType Directory -Force build/range-input | Out-Null
+          Copy-Item src/recomp/gen/recomp_0000.c build/range-input/
+          python -I tools/gen-reg-locals.py --gen build/range-input --out build/range-locals
+          python -I tools/gen-func-ranges.py --generated build/range-input build/ranges-original.c
+          python -I tools/gen-func-ranges.py --generated build/range-locals build/ranges-optimized.c
+          if ((Get-FileHash build/ranges-original.c).Hash -ne (Get-FileHash build/ranges-optimized.c).Hash) {
+            throw 'Interpreter ranges changed during the register-locals pass'
+          }
+
       - name: Check out pinned SDL3 source (3.2.20)
         uses: actions/checkout@v4
         with:

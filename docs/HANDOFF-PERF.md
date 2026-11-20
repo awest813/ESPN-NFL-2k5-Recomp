@@ -58,6 +58,42 @@ The native APU build, native and Wasm DSP fixtures, optimized Web build and
 headless launcher checks passed. Retail gameplay FPS and audio continuity
 still need measurement on this build.
 
+### Retail WebGPU check on `f5465c8`
+
+The default 30 FPS cap and DSP path ran a CPU-controlled Raiders at 49ers
+game in Chrome 157. Team selection, the stadium intro, the coin toss, kickoff
+and two scrimmage plays completed. The final capture shows 3rd and 1, Q1
+4:17, 0–0. Screenshots, audio snapshots, raw logs and all 17 verified build
+hashes are under `build-web-tests/postinc-retail`.
+
+The 21 complete renderer windows between the kickoff formation and the final
+capture range from 6.7 to 17.7 FPS, with a 12.3 FPS median. All 755,686 3D
+batches in those windows used the GPU. That count does not separate guest
+command processing from GPU execution or establish the cause of the stalls.
+The CPU-controlled sequence includes between-play cameras and replays.
+
+The worklet missed 13,824 source frames during the same interval. From launch
+through the final snapshot it missed 71,936 frames, with a longest gap of
+1,664 frames (34.7 ms at 48 kHz). The audit failed on audio and presentation
+rate. The test used one matchup, one browser and one local build, with no
+matched run of the preceding runtime. It establishes a remaining failure
+after the DSP change and leaves the size of any retail improvement unknown.
+
+### Native Windows function ranges
+
+Windows CMake generates the interpreter range table from the numbered C chunks
+selected for compilation, including the register-local version used in optimized
+builds. A clean build with generated C can proceed without a separate analysis
+directory. The range generator rejects missing metadata, mismatched start
+addresses and duplicate definitions. Windows CI exercises the checked-in chunks
+and verifies that register localization preserves the first chunk's ranges.
+
+The raw and register-local retail sources produce identical tables with 33,530
+ranges. A fresh analysis of the local retail disc found 33,055 ranges, omitting
+481 translated entries and giving different ends for 427 shared starts. Using
+the compiled source keeps the interpreter table tied to the actual build even
+when the available analysis came from a different conversion run.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

@@ -10,7 +10,7 @@
                      Prompt needed).
       2. Generated   (-Game only) Prepare the recompiled game code: re-apply
                      hand patches, make the register-locals copy, check the
-                     AC97 reset hook, write the function-range table.
+                     AC97 reset hook.
       3. CMake       Configure and build into a build directory chosen from
                      the switches (table below).
       4. Finish      Run the toolchain check; for -Pack, copy the exe into
@@ -233,8 +233,6 @@ function Get-BuildLayout {
         Optimize    = -not $DebugGen
         GenDir      = if ($Pack) { "$Root\build\gen-$Pack" } else { "$Root\src\recomp\gen" }
         LocalsDir   = if ($Pack) { "$Root\build\gen-$Pack-locals" } else { "$Root\build\gen-locals" }
-        AnalysisDir = if ($Pack) { "$Root\analysis-$Pack" } else { "$Root\analysis" }
-        RangesFile  = "$buildDir\generated\nfl2k5_func_ranges.c"
         XbeSha256   = Get-PackXbeSha256
     }
 }
@@ -282,10 +280,6 @@ function Update-GeneratedCode {
     }
 
     Assert-Ac97Hook -GenDir $Layout.GenDir
-
-    # Address ranges of the converted functions, for the mod-pack interpreter
-    # (src/interp/interp_setup.c).
-    Invoke-Python 'gen-func-ranges.py' @($Layout.AnalysisDir, $Layout.RangesFile)
 }
 
 <# Fail if regeneration dropped the title's AC97 reset completion hook.

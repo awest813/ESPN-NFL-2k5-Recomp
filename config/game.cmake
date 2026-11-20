@@ -8,10 +8,11 @@ set(NFL2K5_LOCALS_DIR "${PROJECT_SOURCE_DIR}/build/gen-locals" CACHE PATH "Regis
 # instead of thread-local globals. tools/build.ps1 writes it.
 option(NFL2K5_REG_LOCALS "Compile the generated code with guest registers in locals" ON)
 if(NFL2K5_REG_LOCALS AND EXISTS "${NFL2K5_LOCALS_DIR}/recomp_0000.c")
-  file(GLOB NFL2K5_GENERATED CONFIGURE_DEPENDS "${NFL2K5_LOCALS_DIR}/*.c")
+  set(_nfl2k5_gen_src "${NFL2K5_LOCALS_DIR}")
 else()
-  file(GLOB NFL2K5_GENERATED CONFIGURE_DEPENDS "${NFL2K5_GEN_DIR}/*.c")
+  set(_nfl2k5_gen_src "${NFL2K5_GEN_DIR}")
 endif()
+file(GLOB NFL2K5_GENERATED CONFIGURE_DEPENDS "${_nfl2k5_gen_src}/*.c")
 if(NOT NFL2K5_GENERATED)
   message(FATAL_ERROR "Run tools/analyze.ps1 -Recompile before building the game.")
 endif()
@@ -20,11 +21,6 @@ if(EMSCRIPTEN)
   # the emulated APU through device accessors (tools/gen-web-devices.py,
   # src/platform/web/recomp_web_dev.h). The rewritten files replace their
   # originals in the build; the rest compile as they are.
-  if(NFL2K5_REG_LOCALS AND EXISTS "${NFL2K5_LOCALS_DIR}/recomp_0000.c")
-    set(_nfl2k5_gen_src "${NFL2K5_LOCALS_DIR}")
-  else()
-    set(_nfl2k5_gen_src "${NFL2K5_GEN_DIR}")
-  endif()
   set(_nfl2k5_dev_out "${CMAKE_BINARY_DIR}/gen-web-devices")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/gen-web-devices.py"
@@ -39,7 +35,16 @@ if(EMSCRIPTEN)
   endforeach()
 endif()
 if(WIN32)
-add_executable(NFL2K5 WIN32 src/main.c src/recomp_manual.c src/nfl2k5_input_hle.c src/nfl2k5_controls.c src/nfl2k5_controller_setup.c src/nfl2k5_controller_art.cpp src/nfl2k5_texture_packs.cpp src/nfl2k5_teams.c src/nfl2k5_team_files.c src/nfl2k5_video_menu.c src/nfl2k5_mod_packs.c src/nfl2k5_presentation.cpp src/nfl2k5_local_music.cpp src/nfl2k5_save_library.cpp src/nfl2k5_discord.cpp src/interp/x86_interp.c src/interp/interp_setup.c "${CMAKE_BINARY_DIR}/generated/nfl2k5_func_ranges.c" external/xemu-src/util/miniz/miniz.c src/nfl2k5_wma_encode.cpp src/presentation/webview2_host.cpp src/presentation/portraits.cpp src/nfl2k5.rc src/nfl2k5.manifest ${NFL2K5_GENERATED})
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(_nfl2k5_ranges_script "${PROJECT_SOURCE_DIR}/tools/gen-func-ranges.py")
+set(NFL2K5_FUNC_RANGES "${CMAKE_BINARY_DIR}/generated/nfl2k5_func_ranges.c")
+add_custom_command(OUTPUT "${NFL2K5_FUNC_RANGES}"
+  COMMAND "${Python3_EXECUTABLE}" "${_nfl2k5_ranges_script}"
+          --generated "${_nfl2k5_gen_src}" "${NFL2K5_FUNC_RANGES}"
+  DEPENDS "${_nfl2k5_ranges_script}" ${NFL2K5_GENERATED}
+  COMMENT "Generate interpreter ranges from compiled function metadata"
+  VERBATIM)
+add_executable(NFL2K5 WIN32 src/main.c src/recomp_manual.c src/nfl2k5_input_hle.c src/nfl2k5_controls.c src/nfl2k5_controller_setup.c src/nfl2k5_controller_art.cpp src/nfl2k5_texture_packs.cpp src/nfl2k5_teams.c src/nfl2k5_team_files.c src/nfl2k5_video_menu.c src/nfl2k5_mod_packs.c src/nfl2k5_presentation.cpp src/nfl2k5_local_music.cpp src/nfl2k5_save_library.cpp src/nfl2k5_discord.cpp src/interp/x86_interp.c src/interp/interp_setup.c "${NFL2K5_FUNC_RANGES}" external/xemu-src/util/miniz/miniz.c src/nfl2k5_wma_encode.cpp src/presentation/webview2_host.cpp src/presentation/portraits.cpp src/nfl2k5.rc src/nfl2k5.manifest ${NFL2K5_GENERATED})
 target_include_directories(NFL2K5 PRIVATE "${NFL2K5_GEN_DIR}" src external/xemu-src/util/miniz)
 # HTML presentation host (src/presentation): WebView2 SDK headers and static
 # loader. The engine itself is the WebView2 runtime that ships with Windows.
