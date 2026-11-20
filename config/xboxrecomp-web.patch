@@ -41967,12 +41967,14 @@ index 0000000..051d48e
 diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
 --- a/src/platform/win32_compat.c
 +++ b/src/platform/win32_compat.c
-@@ -34,11 +34,17 @@
+@@ -34,11 +34,19 @@
  #include <fenv.h>
  #include <sys/mman.h>
  #include "guest_memory.h"
 +#if defined(__EMSCRIPTEN__)
 +#include "wasm_fixed.h"
++#include <emscripten/emscripten.h>
++#include <math.h>
 +#endif
  #if defined(__APPLE__)
  #include <sys/sysctl.h>
@@ -41985,7 +41987,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  #else
  #include <sys/sysinfo.h>
  #endif
-@@ -421,6 +427,7 @@
+@@ -421,6 +429,7 @@
      int             fd;
      SIZE_T          map_size;
      char           *file_path;
@@ -41993,7 +41995,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  } w32_object;
 
  /* pseudo handles for "current thread"/"current process" */
-@@ -459,7 +466,15 @@
+@@ -459,7 +468,15 @@
  static uintptr_t *s_reg;            /* 0 = empty, 1 = tombstone */
  static size_t     s_reg_cap, s_reg_used, s_reg_live;
 
@@ -42010,7 +42012,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
 
  static void reg_insert_nolock(uintptr_t k)
  {
-@@ -535,12 +550,17 @@
+@@ -535,12 +552,17 @@
      return o;
  }
 
@@ -42031,7 +42033,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
          free(o->file_path);
      } else if (o->kind == K_FILEMAP) {
          if (o->fd >= 0) close(o->fd);
-@@ -553,6 +573,8 @@
+@@ -553,6 +575,8 @@
      pthread_cond_destroy(&o->cond);
      pthread_cond_destroy(&o->gate);
      free(o);
@@ -42040,7 +42042,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  }
 
  /* ---- fd-backed file handle (for the file-I/O HLE) -------------------- */
-@@ -576,13 +598,32 @@
+@@ -576,13 +600,32 @@
      return (o && o->kind == K_FILE) ? o->file_path : NULL;
  }
 
@@ -42075,7 +42077,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  }
 
  BOOL DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc, PHANDLE dst,
-@@ -599,6 +640,18 @@
+@@ -599,6 +642,18 @@
      if (options & DUPLICATE_CLOSE_SOURCE)
          obj_release(o);
      return TRUE;
@@ -42094,7 +42096,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
  }
 
  /* ---- deadline helper -------------------------------------------------- */
-@@ -650,13 +703,36 @@
+@@ -650,13 +705,36 @@
      return 1;
  }
 
@@ -42132,7 +42134,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int timed = (ms != INFINITE);
      if (timed) deadline_from_ms(ms, &ts);
 
-@@ -664,17 +740,7 @@
+@@ -664,17 +742,7 @@
      DWORD result = WAIT_OBJECT_0;
 
      for (;;) {
@@ -42151,7 +42153,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
          if (ready) break;
 
          /* An armed timer has its own deadline. Waiting on the caller's alone
-@@ -694,17 +760,7 @@
+@@ -694,17 +762,7 @@
          }
      }
 
@@ -42170,7 +42172,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      pthread_mutex_unlock(&o->lock);
      return result;
  }
-@@ -733,54 +789,63 @@
+@@ -733,54 +791,63 @@
      return WaitForSingleObject(h, ms);
  }
 
@@ -42280,7 +42282,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      }
  }
 
-@@ -810,6 +875,7 @@
+@@ -810,6 +877,7 @@
      o->signaled = 1;
      pthread_cond_broadcast(&o->cond);
      pthread_mutex_unlock(&o->lock);
@@ -42288,7 +42290,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return TRUE;
  }
 
-@@ -863,6 +929,7 @@
+@@ -863,6 +931,7 @@
      if (o->sem_max && o->sem_count > o->sem_max) o->sem_count = o->sem_max;
      pthread_cond_broadcast(&o->cond);
      pthread_mutex_unlock(&o->lock);
@@ -42296,7 +42298,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return TRUE;
  }
 
-@@ -902,6 +969,7 @@
+@@ -902,6 +971,7 @@
          pthread_cond_broadcast(&o->cond);
      }
      pthread_mutex_unlock(&o->lock);
@@ -42304,7 +42306,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return TRUE;
  }
 
-@@ -929,6 +997,7 @@
+@@ -929,6 +999,7 @@
      o->signaled  = 1;
      pthread_cond_broadcast(&o->cond);
      pthread_mutex_unlock(&o->lock);
@@ -42312,7 +42314,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
 
      obj_release(o);   /* drop the trampoline's reference */
      return NULL;
-@@ -982,6 +1051,7 @@
+@@ -982,6 +1053,7 @@
          o->signaled  = 1;
          pthread_cond_broadcast(&o->cond);
          pthread_mutex_unlock(&o->lock);
@@ -42320,7 +42322,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
          obj_release(o);
      }
      pthread_exit(NULL);
-@@ -1033,6 +1103,7 @@
+@@ -1033,6 +1105,7 @@
      o->signaled  = 1;
      pthread_cond_broadcast(&o->cond);
      pthread_mutex_unlock(&o->lock);
@@ -42328,7 +42330,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return TRUE;
  }
 
-@@ -1069,6 +1140,7 @@
+@@ -1069,6 +1142,7 @@
          ok = 1;
      }
      pthread_mutex_unlock(&o->lock);
@@ -42336,7 +42338,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return ok;
  }
 
-@@ -1243,6 +1315,7 @@
+@@ -1243,6 +1317,7 @@
      o->waitable_triggered = 0;
      pthread_mutex_unlock(&o->lock);
      pthread_cond_broadcast(&o->cond);
@@ -42344,7 +42346,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return TRUE;
  }
 
-@@ -1254,6 +1327,7 @@
+@@ -1254,6 +1329,7 @@
      o->waitable_triggered = 0;
      o->waitable_armed = 0;
      pthread_mutex_unlock(&o->lock);
@@ -42352,7 +42354,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      return TRUE;
  }
 
-@@ -1407,6 +1481,21 @@
+@@ -1407,6 +1483,21 @@
 
  LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
  {
@@ -42374,7 +42376,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      LPVOID result = virtual_alloc_impl(address, size, allocationType, protect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1432,6 +1521,12 @@
+@@ -1432,6 +1523,12 @@
 
  BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
  {
@@ -42387,7 +42389,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_free_impl(address, size, freeType);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1445,6 +1540,14 @@
+@@ -1445,6 +1542,14 @@
 
  BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
  {
@@ -42402,7 +42404,47 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      BOOL result = virtual_protect_impl(address, size, newProtect, oldProtect);
      xbox_guest_memory_protection_changed();   /* after the change: see guest_memory.h */
      return result;
-@@ -1870,9 +1973,23 @@
+@@ -1496,20 +1601,39 @@
+     fill_systemtime(st, &tm, ts.tv_nsec);
+ }
+
++#ifdef __EMSCRIPTEN__
++/* Match WASI clock_time_get's positive millisecond-to-nanosecond conversion,
++ * including its two multiplications and rounding. Keep the SDK's common
++ * pthread time origin without a JS BigInt/timespec round trip. */
++static ULONGLONG web_monotonic_ns(void)
++{
++    double us = emscripten_get_now() * 1000.0;
++    return (ULONGLONG)round(us * 1000.0);
++}
++#endif
++
+ ULONGLONG GetTickCount64(void)
+ {
++#ifdef __EMSCRIPTEN__
++    return web_monotonic_ns() / 1000000ULL;
++#else
+     struct timespec ts;
+     clock_gettime(CLOCK_MONOTONIC, &ts);
+     return (ULONGLONG)ts.tv_sec * 1000ULL + (ULONGLONG)ts.tv_nsec / 1000000ULL;
++#endif
+ }
+
+ DWORD GetTickCount(void) { return (DWORD)GetTickCount64(); }
+
+ BOOL QueryPerformanceCounter(PLARGE_INTEGER count)
+ {
++#ifdef __EMSCRIPTEN__
++    count->QuadPart = (LONGLONG)web_monotonic_ns();
++#else
+     struct timespec ts;
+     clock_gettime(CLOCK_MONOTONIC, &ts);
+     count->QuadPart = (LONGLONG)ts.tv_sec * 1000000000LL + ts.tv_nsec;
++#endif
+     return TRUE;
+ }
+
+@@ -1870,9 +1994,23 @@
                            DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
  {
      (void)file; (void)sa; (void)protect;
@@ -42429,7 +42471,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int fd = anon_map_fd(name);
      if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
      if (ftruncate(fd, (off_t)size) != 0) {
-@@ -1902,6 +2019,20 @@
+@@ -1902,6 +2040,20 @@
 
      off_t  off = ((off_t)offHigh << 32) | offLow;
      SIZE_T len = count ? count : (o->map_size - (SIZE_T)off);
@@ -42450,7 +42492,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      int prot   = PROT_READ | ((access != FILE_MAP_READ) ? PROT_WRITE : 0);
      int flags  = MAP_SHARED;
 
-@@ -1948,6 +2079,10 @@
+@@ -1948,6 +2100,10 @@
 
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
@@ -42461,7 +42503,7 @@ diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
      size_t len = view_take(baseAddr);
      if (len == 0) return FALSE;
      return munmap((void *)baseAddr, len) == 0;
-@@ -2038,6 +2173,13 @@
+@@ -2038,6 +2194,13 @@
      b->ullAvailPhys     = avail;
      b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
      b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;

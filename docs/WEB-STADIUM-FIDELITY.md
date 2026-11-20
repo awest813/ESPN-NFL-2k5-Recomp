@@ -3159,3 +3159,55 @@ capture in `build-web-tests/texture-swizzled-retail`. Owned browsers/server were
 closed. All-mode/stadium/staff reference fidelity, continuous audio and a
 sustained 30 FPS floor remain unfinished. The preceding `c0e5c18` Build and Pages
 workflows passed.
+
+
+### Direct Web host clock conversion
+
+Web `GetTickCount64`/`GetTickCount` and `QueryPerformanceCounter` now read the
+SDK's monotonic millisecond clock directly, preserving its common pthread
+origin. A shared helper performs the same two successive multiplications by
+1,000 and positive nanosecond rounding as the inspected SDK's
+`clock_time_get`, then returns the existing integer units. This removes the
+JavaScript BigInt/timespec conversion and reconstruction from these APIs.
+QPC frequency remains 1 GHz, DWORD tick wrap remains unchanged, and native
+builds retain their existing POSIX implementation. Sleep, acknowledgement
+polling and frame-pacing code are unchanged. A busy polling worker still
+needs separate work; lower call cost does not imply that it stops using a core.
+
+The new fixture extracts the production clock functions. It compares 103,292
+nonnegative, representable timestamp values with JavaScript's SDK conversion,
+covering half-nanosecond cases, adjacent floating-point values around precision
+boundaries, epoch-sized values, DWORD wrap and worker calls. It verifies one
+clock read per API call, the unchanged frequency, live reads bracketed by the
+old SDK path in both main and worker contexts, monotonicity, and a parent/worker
+clock-origin bracket. Undefined-behavior checking and the ordinary Web Python
+suite pass. The full Web game link, native kernel/APU/video build, fresh
+97-file patch application and reverse check also pass.
+
+Seven warmed paired rounds alternate the order of 200,000 calls per API path.
+Both benchmark paths use the real SDK clock; the direct variant uses the
+extracted production implementation without the controlled-clock test shim.
+Median call-loop times on this host are:
+
+| API | Prior timespec path | Direct path | Lower call time |
+| --- | ---: | ---: | ---: |
+| Tick count | 17.983 ms | 9.836 ms | 45.3% |
+| Performance counter | 17.919 ms | 10.100 ms | 43.6% |
+
+Run `python -I tests/web/test_web_host_clock.py --benchmark` to reproduce the
+comparison. Results are retained in `build-web-tests/web-host-clock-bench*`.
+These are isolated call costs, not a whole-game performance improvement.
+
+The approximately 246-second unprofiled retail DSP capture reaches
+Seattle/Oakland, first-and-ten at 2:38 in the first quarter. Checked frames
+show players, stadium/crowds, sideline staff and readable overlays. No browser
+or GPU failures are reported. Its 19 five-second FPS averages after 150 seconds
+range from 22.3 to 30.0. Audio records 37 affected blocks and 4,736 missing
+frames (98.7 ms at 48 kHz), with a longest gap of 1,152 frames (24.0 ms).
+Matchup differences prevent controlled comparison with preceding captures.
+Exact served Wasm/JS/worklet/patch hashes match the frozen current build and
+are saved with screenshots and logs in `build-web-tests/web-host-clock-retail`.
+Owned audit browser and server were closed. This retains the existing clock
+contract but does not establish continuous audio, all-mode/stadium/staff
+reference fidelity or a sustained 30 FPS floor. The preceding `a91d540` Build
+and Pages workflows passed.
