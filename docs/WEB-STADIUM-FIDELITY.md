@@ -4695,3 +4695,77 @@ separation of host waiting/reacquisition from pipeline execution remain the
 next diagnostic steps. The new anchors resolve clock-domain ambiguity;
 they do not fix audio continuity or establish exact Xbox audio fidelity or
 a sustained 30 FPS floor. This different matchup/timing is not an A/B result.
+
+
+### Bounded individual APU event history (2026-11-20)
+
+The opt-in APU lock profile now exposes a fixed 4,096-entry diagnostic history
+in shared Wasm memory. Each 32-byte slot has atomic timestamps and payload,
+an odd guard while being overwritten, and its exact even sequence when
+published. The single frame-thread writer publishes the header counter last.
+The audit validates the sequence before and after reading a slot, retries a
+busy/changed slot without acknowledging it, and records overwritten history
+as an audit failure. The 64-bit sequence and timestamp fields are retained as
+strings in JSON rather than truncated to 32 bits. This is diagnostic storage;
+PCM ring size, startup priming, catch-up policy and optional audio wakes are
+unchanged. Native builds keep the trace publisher inactive.
+
+Individual records cover frame gaps and lateness of at least 8 ms, timed-wait
+overshoot of at least 2 ms, MMIO handoffs and VP/DSP/output stages of at least
+2 ms, and every rebase. A wait record contains the requested microseconds;
+VP records contain the measured voice-wait count. Stage records are published
+after all stage clocks are sampled, so publication is not charged to the next
+stage. Existing clocks are reused. These thresholds deliberately omit shorter
+intervals, and overlapping gap/wait/lateness records must not be summed as
+independent CPU work. All durations remain elapsed wall time, including host
+descheduling and mutex reacquisition.
+
+The production publisher passes 50,000 concurrent publications, full retained
+tail validation, layout checks and a sequence crossing 2^32 in Wasm and under
+native address/undefined-behavior sanitizers. The serialized reader validates
+those actual C payloads, explicit overflow, once-only draining, busy slots and
+a guard changed during payload reads. The live stage-block fixture checks the
+exact 2 ms threshold, ordered spans and zero disabled-profile clock reads or
+publications. One-hour throttle and contended MMIO tests still pass. Native
+sanitizer CI runs the publisher explicitly without requiring Node; the Web
+suite runs both publisher and JS reader. The real browser audit fixture also
+reads a shared trace exactly once and retains existing error/clock/stream tests.
+The optimized game and launcher/static-host checks pass. A fresh pinned patch
+reproduces 102 runtime files, including the new header, and reverses cleanly.
+
+The frozen `apu-history-retail` run inspects Patriots at 49ers team/coach/intro
+presentation, coin-toss players and referee, stadium tiers/sideline figures,
+paused kickoff and VIP quit back to the neutral main menu. No active play is
+completed. Nine screenshots, six audio snapshots and 35 unchanged artifact
+hashes are retained privately. The owned browser and server are closed.
+
+The six explicit snapshots through AudioContext second 337.992 show zero
+underruns, but two later automatic records before close correctly override
+the requested partial result to **fail**. They reach eleven affected blocks /
+1,408 missing frames, with a longest continuous gap of 512 frames (10.67 ms).
+The first missing frame is at second 376.87466666666666 and the last at
+392.5413125. The written case detail mistakenly says seven snapshots; the
+report contains six, and its automatic failure result/counters are authoritative.
+Expected startup TODO diagnostics remain. Full Xbox scene/audio fidelity and
+a sustained 30 FPS floor are still unproven; this is not an A/B improvement.
+
+The drained history contains 47,915 consecutive records with no reported loss
+or retries: 23,603 waits, 19,475 frame gaps, 4,207 late deadlines, 553 DSP spans,
+40 MMIO handoffs, 34 VP spans and three output spans. Wait durations reach
+25.549 ms and frame gaps 25.775 ms without establishing that either alone
+causes an underrun. No rebase is recorded. Near the first cluster's observer
+last-gap estimate, DSP spans of 6.069, 7.326 and 9.575 ms accompany deadline
+lateness rising from roughly 20 to 36 ms. Around the second cluster, multiple
+DSP spans of 3–10 ms accompany lateness rising from roughly 24 to 51 ms;
+the logged neighborhood has no above-threshold wake or MMIO span. The APU is
+behind and catching up in that interval. These identify cumulative pipeline
+wall-time delay near the failures, not exclusive DSP CPU cost or an exact
+worklet execution timestamp. Raw event/clock analysis is retained privately.
+
+A related source audit finds that each completed 256-frame monitor block is
+held until four blocks form a 1,024-frame Web submission. Publishing completed
+blocks sooner is the next concrete experiment: it must preserve every PCM
+sample, retain the same priming/ring/catch-up limits, and be tested against
+controlled stalls before any retail improvement claim. It will not by itself
+prove a solution for the observed 51 ms deadline lag. Submission behavior is
+unchanged in this history-only checkpoint.

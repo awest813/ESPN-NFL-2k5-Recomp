@@ -5419,13 +5419,14 @@ diff --git a/src/apu/apu_shim.h b/src/apu/apu_shim.h
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
-@@ -34,6 +34,31 @@
+@@ -34,6 +34,33 @@
  uint8_t *g_apu_ram_ptr = NULL;
 
  MCPXAPUState *g_state = NULL;
 +/* Opt-in timing: keep extra clock reads off the normal audio/MMIO path. */
 +static bool s_apu_lock_profile;
 +/* APU schedule profile: diagnostics only; all durations are wall-clock us. */
++#include "apu_schedule_trace.h"
 +typedef struct {
 +    int64_t last_frame_us,max_gap_us,max_late_us,resync_us,wake_late_us;
 +    int64_t mmio_wait_us,mmio_max_us;
@@ -5439,6 +5440,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +static void mcpx_apu_profile_frame_gap(int64_t now)
 +{
 +    int64_t gap=s_apu_schedule.last_frame_us?now-s_apu_schedule.last_frame_us:0;
++    if(gap>=8000)apu_schedule_trace_record(APU_TRACE_GAP,s_apu_schedule.last_frame_us,now,0);
 +    if(gap>s_apu_schedule.max_gap_us) {
 +        s_apu_schedule.max_gap_us=gap;
 +        s_apu_schedule.gap_start_us=s_apu_schedule.last_frame_us;
@@ -5451,7 +5453,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
  /* Forward declarations for software mixer */
  static void mixer_init(void);
-@@ -105,7 +130,9 @@
+@@ -105,7 +132,9 @@
 
      switch (addr) {
      case NV_PAPU_XGSCNT:
@@ -5462,7 +5464,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
          break;
      default:
          if (addr < 0x20000) {
-@@ -134,6 +161,10 @@
+@@ -134,6 +163,10 @@
      (void)size;
 
      switch (addr) {
@@ -5473,12 +5475,13 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      case NV_PAPU_ISTS:
          qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
          update_irq(d);
-@@ -433,12 +464,24 @@
+@@ -433,12 +466,26 @@
 
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 
 +    if (s_apu_lock_profile && d->next_frame_time_us) {
 +        int64_t late=now_us-d->next_frame_time_us;
++        if(late>=8000)apu_schedule_trace_record(APU_TRACE_LATE,d->next_frame_time_us,now_us,0);
 +        if(late>s_apu_schedule.max_late_us) {
 +            s_apu_schedule.max_late_us=late;s_apu_schedule.late_at_us=now_us;
 +        }
@@ -5486,6 +5489,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      if (d->next_frame_time_us == 0 ||
          now_us - d->next_frame_time_us > 64000) {
 +        if(s_apu_lock_profile && d->next_frame_time_us) {
++            apu_schedule_trace_record(APU_TRACE_REBASE,d->next_frame_time_us,now_us,0);
 +            s_apu_schedule.resyncs++;
 +            s_apu_schedule.resync_at_us=now_us;
 +            s_apu_schedule.resync_us+=now_us-d->next_frame_time_us;
@@ -5498,7 +5502,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      }
 
      while (!d->pause_requested) {
-@@ -446,13 +489,29 @@
+@@ -446,13 +493,30 @@
          int64_t remaining_ms = (d->next_frame_time_us - now_us) / 1000;
          if (remaining_ms > 0) {
              qemu_cond_timedwait(&d->cond, &d->lock, (int)remaining_ms);
@@ -5508,6 +5512,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +            d->sleep_acc_us += (int)(woke-now_us);
 +            if(s_apu_lock_profile) {
 +                int64_t late=woke-now_us-remaining_ms*1000;
++                if(late>=2000)apu_schedule_trace_record(APU_TRACE_WAKE,now_us,woke,(unsigned)remaining_ms*1000);
 +                if(late>s_apu_schedule.wake_late_us) {
 +                    s_apu_schedule.wake_late_us=late;
 +                    s_apu_schedule.wake_start_us=now_us;s_apu_schedule.wake_end_us=woke;
@@ -5531,11 +5536,12 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -481,11 +540,29 @@
+@@ -481,11 +545,39 @@
      float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
      memset(mixbins, 0, sizeof(mixbins));
 
 +    int64_t stage_start = d->profile.enabled ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
++    int64_t vp_started=stage_start,vp_ended=0,dsp_ended=0;
 +    if (d->profile.enabled) {
 +        d->profile.voice_wait_us = 0;
 +        d->profile.voice_wait_count = 0;
@@ -5544,24 +5550,33 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +    if (d->profile.enabled) {
 +        int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 +        d->profile.vp_us = now - stage_start;
++        vp_ended=now;
 +        stage_start = now;
 +    }
      mcpx_apu_dsp_frame(d, mixbins);
 +    if (d->profile.enabled) {
 +        int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 +        d->profile.dsp_us = now - stage_start;
++        dsp_ended=now;
 +        stage_start = now;
 +    }
      mcpx_apu_monitor_frame(d);
-+    if (d->profile.enabled)
-+        d->profile.output_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - stage_start;
++    if (d->profile.enabled) {
++        int64_t now=qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++        d->profile.output_us = now - stage_start;
++        /* Publish after all stage clocks are sampled so trace writes cannot
++         * be charged to the next stage. Durations still include descheduling. */
++        if(d->profile.vp_us>=2000)apu_schedule_trace_record(APU_TRACE_VP,vp_started,vp_ended,d->profile.voice_wait_count);
++        if(d->profile.dsp_us>=2000)apu_schedule_trace_record(APU_TRACE_DSP,vp_ended,dsp_ended,0);
++        if(d->profile.output_us>=2000)apu_schedule_trace_record(APU_TRACE_OUTPUT,dsp_ended,now,0);
++    }
 
      d->ep_frame_div++;
 +    InterlockedExchangeAdd(&d->sample_count, NUM_SAMPLES_PER_FRAME);
 
      mcpx_debug_end_frame();
  }
-@@ -494,17 +571,48 @@
+@@ -494,17 +586,49 @@
   * APU frame thread (background processing)
   * ============================================================ */
 
@@ -5579,6 +5594,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +        if(s_apu_lock_profile) {
 +            int64_t ended=qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 +            int64_t elapsed=ended-started;
++            if(elapsed>=2000)apu_schedule_trace_record(APU_TRACE_MMIO,started,ended,pending);
 +            s_apu_schedule.mmio_wait_us+=elapsed;
 +            if(elapsed>s_apu_schedule.mmio_max_us) {
 +                s_apu_schedule.mmio_max_us=elapsed;
@@ -5610,7 +5626,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              continue;
          }
 
-@@ -553,6 +661,24 @@
+@@ -553,6 +677,24 @@
                      if (on && (st_n || st_timeouts))
                          fprintf(stderr, "[APU] ISR stalls: %u in 5 s, total %.1f ms, max %.1f ms, >40 ms %u\n",
                                  st_n, st_total / 1000.0, st_max / 1000.0, st_timeouts);
@@ -5635,7 +5651,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
                      st_n = st_timeouts = 0;
                      st_total = st_max = 0;
                      st_last_log = now_ms;
-@@ -561,6 +687,10 @@
+@@ -561,6 +703,10 @@
          }
 
          throttle(d);
@@ -5646,7 +5662,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
          int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
-@@ -571,7 +701,40 @@
+@@ -571,7 +717,40 @@
 
          if (apu_active && !g_test_tone.active) {
              /* Full pipeline: VP voices → DSP → monitor → waveOut */
@@ -5687,7 +5703,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
              /* As xemu's frame loop: a frame that raised a notifier or trapped
               * the front end updates the interrupt line. */
              if (d->set_irq) {
-@@ -621,7 +784,9 @@
+@@ -621,7 +800,9 @@
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
      memset(d->regs, 0, sizeof(d->regs));
@@ -5697,17 +5713,25 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      if (d->gp.dsp) {
          memset((void *)d->gp.dsp->core.pram_opcache, 0,
-@@ -648,6 +813,9 @@
+@@ -648,6 +829,17 @@
 
      g_apu_ram_ptr = ram_ptr;
      g_state = d;
 +    s_apu_lock_profile = getenv("RECOMP_APU_LOCK_PROFILE") != NULL;
++#ifdef __EMSCRIPTEN__
++    if(s_apu_lock_profile) {
++        atomic_store(&s_apu_trace.published,0);
++        MAIN_THREAD_EM_ASM({
++            Module['nfl2k5ApuTrace']=({memory:HEAPU8.buffer,offset:$0});
++        },&s_apu_trace);
++    }
++#endif
 +    memset(&s_apu_schedule,0,sizeof s_apu_schedule);
 +    d->profile.enabled = s_apu_lock_profile;
      d->ram_ptr = ram_ptr;
 
      d->set_irq = false;
-@@ -665,6 +833,19 @@
+@@ -665,6 +857,19 @@
 
      /* Init DSP (GP/EP - stubbed) */
      mcpx_apu_dsp_init(d);
@@ -5727,7 +5751,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      /* Init software mixer for DirectSound bridge */
      mixer_init();
-@@ -705,6 +886,8 @@
+@@ -705,6 +910,8 @@
      qemu_thread_join(&d->apu_thread);
      mcpx_apu_vp_finalize(d);
      mcpx_apu_monitor_finalize(d);
@@ -5736,7 +5760,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 
      free(d);
      g_state = NULL;
-@@ -737,8 +920,12 @@
+@@ -737,8 +944,12 @@
          if (is_write) {
              mcpx_apu_write(d, addr, val, size);
          }
@@ -5751,7 +5775,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -746,9 +933,31 @@
+@@ -746,9 +957,31 @@
   * addr is offset from APU base (0xFE800000)
   * ============================================================ */
 
@@ -5783,7 +5807,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      if (addr >= 0x20000 && addr < 0x30000) {
          return mcpx_apu_vp_read(d, addr - 0x20000, size);
      } else if (addr < 0x20000) {
-@@ -766,9 +975,32 @@
+@@ -766,9 +999,32 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -29696,6 +29720,57 @@ index 0000000..5579139
 +    }
 +    return 1;
 +}
++#endif
+diff --git a/src/apu/apu_schedule_trace.h b/src/apu/apu_schedule_trace.h
+new file mode 100644
+index 0000000..b60389a
+--- /dev/null
++++ b/src/apu/apu_schedule_trace.h
+@@ -0,0 +1,45 @@
++/* Bounded, single-writer APU diagnostic history. No PCM or scheduling state. */
++#pragma once
++#include <stdint.h>
++enum {
++    APU_TRACE_GAP=1, APU_TRACE_WAKE, APU_TRACE_MMIO, APU_TRACE_LATE,
++    APU_TRACE_REBASE, APU_TRACE_VP, APU_TRACE_DSP, APU_TRACE_OUTPUT
++};
++#if defined(__EMSCRIPTEN__) || defined(APU_SCHEDULE_TRACE_TEST)
++#include <stdatomic.h>
++#include <stddef.h>
++#ifdef __EMSCRIPTEN__
++#include <emscripten/em_asm.h>
++#endif
++#define APU_TRACE_CAPACITY 4096u
++typedef struct {
++    _Atomic uint64_t guard, start_us, end_us;
++    _Atomic uint32_t kind, detail;
++} ApuTraceEntry;
++typedef struct {
++    _Atomic uint64_t published;
++    uint32_t capacity, entry_bytes;
++    ApuTraceEntry entries[APU_TRACE_CAPACITY];
++} ApuScheduleTrace;
++_Static_assert(sizeof(ApuTraceEntry)==32 && offsetof(ApuScheduleTrace,entries)==16,
++               "APU trace shared layout changed");
++static ApuScheduleTrace s_apu_trace={.capacity=APU_TRACE_CAPACITY,.entry_bytes=32};
++
++/* Only the frame thread writes. Odd guards invalidate an overwritten slot
++ * before touching payload; readers check the exact even sequence twice.
++ * Atomic payloads avoid data races, including a reader racing a full lap. */
++static void apu_schedule_trace_record(unsigned kind,int64_t start,int64_t end,unsigned detail)
++{
++    uint64_t sequence=atomic_load(&s_apu_trace.published)+1;
++    ApuTraceEntry *entry=&s_apu_trace.entries[(sequence-1)&(APU_TRACE_CAPACITY-1)];
++    atomic_store(&entry->guard,sequence*2+1);
++    atomic_store(&entry->start_us,(uint64_t)start);
++    atomic_store(&entry->end_us,(uint64_t)end);
++    atomic_store(&entry->kind,kind);atomic_store(&entry->detail,detail);
++    atomic_store(&entry->guard,sequence*2);
++    atomic_store(&s_apu_trace.published,sequence);
++}
++#else
++static inline void apu_schedule_trace_record(unsigned kind,int64_t start,int64_t end,unsigned detail)
++{ (void)kind;(void)start;(void)end;(void)detail; }
 +#endif
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c

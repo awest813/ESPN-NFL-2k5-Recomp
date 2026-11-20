@@ -85,6 +85,7 @@ int main(int argc,char **argv) {
      * must not query the clock again. One start, two loop checks and one wake. */
     assert(clocks-clocks_before==4);
     assert(d.next_frame_time_us==before+5333 || d.next_frame_time_us==before+5334);
+    if(!s_apu_lock_profile)assert(!atomic_load(&s_apu_trace.published));
     /* The production frame-gap recorder retains the exact worst interval,
      * including an interval straddling the five-second report reset. */
     memset(&s_apu_schedule,0,sizeof s_apu_schedule);clocks_before=clocks;

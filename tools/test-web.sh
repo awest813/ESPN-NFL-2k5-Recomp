@@ -57,6 +57,7 @@ python3 -I "$ROOT/tests/web/test_apu_audio_wake.py" --build-dir "$OUT/apu-audio-
 python3 -I "$ROOT/tests/web/test_apu_lock_handoff.py"
 python3 -I "$ROOT/tests/web/test_apu_sample_counter.py"
 python3 -I "$ROOT/tests/web/test_apu_pacing.py"
+python3 -I "$ROOT/tests/web/test_apu_schedule_trace.py" --build-dir "$OUT/apu-schedule-trace"
 python3 -I "$ROOT/tests/web/test_dsp56300.py"
 python3 -I "$ROOT/tests/web/test_dsp_multiply.py"
 python3 -I "$ROOT/tests/web/test_dsp_dispatch.py"

@@ -9,6 +9,7 @@ const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
 const {isAuditFailure,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
 const {drainAuditRows}=require('./web-audit-audio.cjs');
+const {drainApuTraceRows}=require('./web-audit-apu-trace.cjs');
 const args=process.argv.slice(2);
 const option=(name,fallback)=>{const i=args.indexOf('--'+name);return i<0?fallback:args[i+1];};
 const origin=option('url','http://127.0.0.1:8080/');
@@ -38,6 +39,9 @@ function flush(){
   flushing=(async()=>{
     try{
       const rows=await page.evaluate(drainAuditRows);
+      // A closing page may reject this second read. Preserve audio rows
+      // already drained instead of losing their failures with the trace read.
+      try{rows.push(...await page.evaluate(drainApuTraceRows));}catch{}
       for(const row of rows){
         row.hostTime=new Date().toISOString();events.push(row);
         const offset=/offset ([+-]\d+) from Xbox base/.exec(row.line);

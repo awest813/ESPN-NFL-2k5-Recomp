@@ -13,6 +13,12 @@ const fixture=`<!doctype html><link rel="icon" href="/favicon.ico"><body data-re
 const state={running:false}; const nfl2k5Log=[]; function log(line){nfl2k5Log.push(line);}
 let playCount=0;
 document.getElementById('play').onclick=()=>{
+  if(new URLSearchParams(location.search).get('trace')==='1'){
+    const memory=new SharedArrayBuffer(16+4*32),u32=new Uint32Array(memory),u64=new BigUint64Array(memory);
+    u32[2]=4;u32[3]=32;u64[3]=1000000n;u64[4]=1009000n;u32[10]=6;u32[11]=0;
+    Atomics.store(u64,2,2n);Atomics.store(u64,0,1n);
+    window.nfl2k5Module={nfl2k5ApuTrace:{memory,offset:0}};log('[MODE] trace-ready','stderr');return;
+  }
   if(new URLSearchParams(location.search).get('audio')==='1'){
     const ctx=new AudioContext({sampleRate:48000});void ctx.resume();
     window.nfl2k5Module={nfl2k5AudioContext:ctx,nfl2k5Audio:{state:'running',underruns:1,underrunFrames:128,maxUnderrunFrames:128}};
@@ -55,6 +61,7 @@ document.getElementById('play').onclick=()=>{
 };</script>`;
 const server=http.createServer((req,res)=>{
   if(req.url==='/favicon.ico'){res.writeHead(404);res.end();return;}
+  res.setHeader('Cross-Origin-Opener-Policy','same-origin');res.setHeader('Cross-Origin-Embedder-Policy','require-corp');
   res.setHeader('Content-Type','text/html');res.end(fixture);
 });
 (async()=>{
@@ -105,8 +112,17 @@ const server=http.createServer((req,res)=>{
         // Leave stdin open: the CLI's close command must release its own handle.
         if(interactive)child.stdin.write(commands.map(c=>JSON.stringify(c)).join('\n')+'\n');
       });
-      return {...result,report:JSON.parse(fs.readFileSync(path.join(dir,'report.json'),'utf8'))};
+      return {...result,dir,report:JSON.parse(fs.readFileSync(path.join(dir,'report.json'),'utf8'))};
     }
+    const trace=await runWaitAudit('trace-history',[
+      {action:'begin',id:'trace-history'},{action:'play'},{action:'wait-log',pattern:'trace-ready',ms:5000},
+      {action:'end',result:'pass'},{action:'close'},
+    ],false,'trace=1');
+    assert.equal(trace.code,0,trace.output);
+    const history=fs.readFileSync(path.join(trace.dir,'runtime.ndjson'),'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.kind==='apu-trace');
+    assert.equal(history.length,1);const event=JSON.parse(history[0].line.slice('[APU-TRACE] '.length));
+    assert.deepEqual(event,{sequence:'1',event:'vp',startUs:'1000000',endUs:'1009000',detail:0});
+    console.log('PASS real audit CLI drains shared APU history once without inventing a game failure');
     const audio=await runWaitAudit('audio-clock',[
       {action:'begin',id:'audio-clock'},{action:'play'},{action:'wait',ms:1500},
       {action:'audio'},{action:'play'},{action:'wait',ms:1500},

@@ -166,10 +166,10 @@ if args.native:
     compiler=shutil.which('clang') or shutil.which('cc')
     if not compiler:parser.error('A native C compiler is required')
     output=out/'test'
-    subprocess.run([compiler,str(out/'test.c'),'-O2','-g','-pthread','-fsanitize=address,undefined',
+    subprocess.run([compiler,str(out/'test.c'),'-O2','-g','-pthread','-I',str(args.runtime/'src/apu'),'-fsanitize=address,undefined',
                     '-fno-omit-frame-pointer','-o',str(output)],check=True)
     subprocess.run([str(output)],check=True,timeout=60)
 else:
-    subprocess.run([shutil.which('emcc') or 'emcc',str(out/'test.c'),'-O2','-pthread',
+    subprocess.run([shutil.which('emcc') or 'emcc',str(out/'test.c'),'-O2','-pthread','-I',str(args.runtime/'src/apu'),
                     '-sPTHREAD_POOL_SIZE=3','-sENVIRONMENT=node','-o',str(out/'test.js')],check=True)
     subprocess.run([shutil.which('node') or 'node',str(out/'test.js')],check=True,timeout=60)
