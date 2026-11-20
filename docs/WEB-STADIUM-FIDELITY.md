@@ -2209,3 +2209,62 @@ for the guest lock during live play, with a last scheduling-site marker of
 `0x00016CEE`. That marker identifies the last observed scheduling point,
 not necessarily the host/guest code currently holding the lock; those waits
 remain a separate investigation.
+
+
+### Used-source vertex interpretation and input layouts
+
+An owned headless hardware-Chrome retail capture profiles the page and live
+runtime workers at 4 ms sampling over the 150–240 second window. Two temporary
+save workers detach before capture; their profiles are unavailable. The
+renderer stack repeatedly visits `vp_src` and `vp_run_prepared` through
+`vp_vertex`, transformed lines and push-buffer dispatch. Blocking waits also
+appear in these profiles, so sample durations are not CPU-utilization totals.
+A separate clock-heavy stack reaches `GetTickCount` and `Sleep` through a
+thread trampoline. Its pattern is consistent with the NV2A acknowledgement
+poller, but the callback name is absent and that attribution is an inference.
+
+A dedicated worker timing probe measures requested 0.05–1 ms `Atomics.wait`
+timeouts at roughly 16 ms median on this host. Adding such a timeout to the
+acknowledgement poller could delay a fence by a frame. No acknowledgement
+polling or guest-clock policy changes are made. The earlier guest-lock marker
+`0x00016CEE` follows object dereferencing; it remains a stale scheduling marker,
+not proof of the code responsible for a long lock hold.
+
+Prepared vertex instructions now record which of A, B and C their operations
+actually read. Interpretation skips unused operands, and packed GPU input
+layouts exclude attributes encoded only in unused operand fields. ARL still
+reads A without a vector destination, paired MAC/ILU reads happen before
+writes, and scalar/shared-C semantics are preserved. Detailed instruction
+tracing retains all encoded operands; its D3D11 caller initializes every input
+before enabling that trace. Normal rendering retains selective fetching.
+
+Regressions cover unused relative constants, unused vertex inputs, ILU-only
+instructions, unmasked ARL and paired operations. The interpreter passes
+40,000 byte-for-byte comparisons of outputs, temporaries, address registers,
+writable constants and cache invalidation. The actual production input-mask
+function drives a GPU fixture with a terminal NOP encoding unused v12: only
+v0/v3/v9 enter its 48-byte layout. Intel hardware WebGPU and SwiftShader pass
+2,752 differential GPU vertex executions, 864 production position checks and
+20,480 rendered edge pixels. Native sanitized SDL/Vulkan rendering, line
+coverage/order fixtures, browser game and Linux kernel/video builds pass.
+A fresh pinned runtime reproduces all 93 patched files.
+
+A local O2 mixed-instruction benchmark compares the published prepared
+interpreter with this change: three-run medians are 27.65 ms and 25.15 ms for
+100,000 vertices, with identical checksums. This synthetic result is not a
+retail frame-rate measurement or a controlled scene comparison.
+
+
+The approximately 246-second follow-up retail run uses hardware Intel gen-12hp
+Chrome with DSP and renderer/APU diagnostics, without CPU sampling. It reaches
+the rainy Miami at Chicago demo: the 130-second capture shows textured players,
+the referee, crowd/stadium lighting and coin-toss text; the 240-second capture
+shows a player feature overlay with readable statistics and an inset replay.
+No browser/GPU failure is reported. Five-second FPS averages after 150 seconds
+range from 17.3 to 20.9, below the requested floor. Output records 169 affected
+blocks and 21,632 missing output frames (450.7 ms at 48 kHz), with a longest
+continuous gap of 2,816 frames (58.7 ms). This differs in teams, rainy scene and
+workload from the preceding traces; it does not isolate an optimization's FPS
+impact. It demonstrates that substantial performance and audio-continuity work
+remain. Original-Xbox scene/audio parity, broader staff/stadium fidelity,
+all-mode accuracy and a sustained 30 FPS floor are still unverified.

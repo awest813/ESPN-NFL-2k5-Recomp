@@ -28,7 +28,9 @@ def main():
     fixtures = Path(__file__).parent / "fixtures"
     harness = (fixtures / "vp_interpreter_test.c").read_text(encoding="utf-8").split("/* LIVE_INTERPRETER */")[0]
     generator = (fixtures / "vp_wgsl_cases.c").read_text(encoding="utf-8")
-    live = runtime[begin:end] + native[text_begin:text_end]
+    mask_begin=runtime.index("static uint32_t vp_input_mask(",end)
+    mask_end=runtime.index("static uint32_t s_xf_input_mask",mask_begin)
+    live = runtime[begin:end] + runtime[mask_begin:mask_end] + native[text_begin:text_end]
     cache = (kernel / "sdlgpu/sdlgpu_vpcache.inc.c").read_text(encoding="utf-8")
     stride_start = cache.index("static uint32_t sg_vp_input_stride(")
     live += cache[stride_start:cache.index("static struct {", stride_start)]

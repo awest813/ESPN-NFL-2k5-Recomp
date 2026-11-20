@@ -9,7 +9,8 @@ typedef unsigned DWORD;
 static DWORD GetTickCount(void) { return 0; }
 static struct { unsigned start; uint32_t prog[136][4]; float c[192][4]; } s_vp;
 static unsigned char s_const_written[192];
-static void const_unwritten_note(int c, int a0) {}
+static unsigned unwritten_reads;
+static void const_unwritten_note(int c, int a0) {(void)c;(void)a0;unwritten_reads++;}
 static unsigned s_vp_cgen;
 static uint32_t vp_field(const uint32_t *t, int word, int bit, int len) {
     return (t[word] >> bit) & ((1u << len) - 1u);
@@ -153,7 +154,35 @@ static int comparison_check(void) {
     puts("PASS ordered SLT/SGE signed zero, NaN classes and operand negation");
     return 0;
 }
+static int source_usage_check(void) {
+    float input[16][4],output[16][4];
+    for(unsigned v=0;v<16;v++)for(unsigned c=0;c<4;c++)input[v][c]=NAN;
+    for(unsigned c=0;c<4;c++){input[5][c]=(float)(c+1);s_vp.c[2][c]=(float)(c+6);}
+    memset(s_vp.prog,0,sizeof s_vp.prog);memset(s_const_written,0,sizeof s_const_written);s_vp.start=0;
+    uint32_t *t=s_vp.prog[0];
+    t[1]=(1u<<21)|(5u<<9)|(2u<<13)|0x1bu;
+    t[2]=(2u<<26)|(3u<<11)|0x6cu;
+    t[3]=(3u<<28)|(15u<<12)|(1u<<11)|(3u<<3)|3u; // MOV v5; unused relative constants in B/C
+    unwritten_reads=0;vp_run(input,output);
+    if(vp_input_mask(0)!=(1u<<5) || unwritten_reads || memcmp(output[3],input[5],16)){puts("FAIL MOV reads an unused constant");return 1;}
+    t[2]=(3u<<26)|(2u<<11)|0x6cu;t[3]=(t[3]&~(3u<<28))|(2u<<28);
+    unwritten_reads=0;vp_run(input,output);
+    if(vp_input_mask(0) || unwritten_reads!=1 || memcmp(output[3],s_vp.c[2],16)){puts("FAIL unused vertex input included in MOV layout");return 1;}
+    t[1]=(1u<<25)|(5u<<9)|(2u<<13)|0x1bu;t[2]=(2u<<26)|(2u<<11)|0x6cu;
+    t[3]=(3u<<28)|(15u<<12)|(1u<<11)|(3u<<3)|7u; // ILU MOV C; A/B input encodings are unused
+    unwritten_reads=0;vp_run(input,output);
+    if(vp_input_mask(0) || unwritten_reads!=1 || memcmp(output[3],s_vp.c[2],16)){puts("FAIL scalar path reads unused vector operands");return 1;}
+    t[1]=(13u<<21)|(5u<<9)|(2u<<13)|0x1bu;t[2]=(2u<<26)|(3u<<11)|0x6cu;
+    t[3]=(3u<<28)|3u;unwritten_reads=0;vp_run(input,output);
+    if(vp_input_mask(0)!=(1u<<5) || unwritten_reads || s_vp_dbg_a0!=1){puts("FAIL ARL source without vector destination");return 1;}
+    t[1]=(1u<<21)|(1u<<25)|(5u<<9)|(2u<<13)|0x1bu;
+    t[3]=(3u<<28)|(15u<<16)|(15u<<12)|(1u<<11)|(3u<<3)|3u;
+    unwritten_reads=0;vp_run(input,output);
+    if(vp_input_mask(0)!=(1u<<5) || unwritten_reads!=1 || memcmp(output[3],input[5],16) || memcmp(s_vp_dbg_r[1],s_vp.c[2],16)){puts("FAIL paired MAC/ILU source usage");return 1;}
+    puts("PASS live source usage: unused input layouts and constants, unmasked ARL and paired MAC/ILU");return 0;
+}
 int main(void) {
+    if(source_usage_check()) return 1;
     if(comparison_check()) return 1;
     if(reciprocal_check()) return 1;
     if(zero_product_check()) return 1;

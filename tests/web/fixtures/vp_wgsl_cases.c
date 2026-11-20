@@ -20,10 +20,22 @@ static void compact_vertex_case(void) {
     typedef struct { unsigned location, buffer_slot, format, offset; } SDL_GPUVertexAttribute;
     typedef unsigned Uint32;
     enum { SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4 = 0 };
-    struct { unsigned inmask; } s_sg_vp[1] = {{(1u << 0) | (1u << 3) | (1u << 9)}};
+    struct { unsigned inmask; } s_sg_vp[1] = {{0}};
     struct Key { unsigned vs; } key_value = {1};
     const struct Key *key = &key_value;
     const int vp = 1;
+    s_vp.start = 0;
+    const unsigned inputs[3] = {0, 3, 9}, outputs[3] = {0, 3, 9};
+    for (unsigned i = 0; i < 3; i++) {
+        uint32_t *t = s_vp.prog[i];
+        t[0] = 0; t[1] = (1u << 21) | (inputs[i] << 9) | 0x1bu;
+        t[2] = 2u << 26;
+        t[3] = (15u << 12) | (1u << 11) | (outputs[i] << 3) | 0u;
+    }
+    // A terminal NOP encodes v12, which no operation actually reads.
+    s_vp.prog[3][0]=0;s_vp.prog[3][1]=12u<<9;s_vp.prog[3][2]=(2u<<26)|(2u<<11);s_vp.prog[3][3]=(2u<<28)|1u;
+    s_sg_vp[0].inmask=vp_input_mask(0);
+    if(s_sg_vp[0].inmask!=((1u<<0)|(1u<<3)|(1u<<9)))abort();
     /* LIVE_LAYOUT */
     FILE *f = fopen("compact.layout.json", "w");
     fprintf(f, "{\"stride\":%u,\"attributes\":[", sg_vp_input_stride(inmask));
@@ -31,14 +43,6 @@ static void compact_vertex_case(void) {
         fprintf(f, "%s{\"shaderLocation\":%u,\"offset\":%u,\"format\":\"float32x4\"}",
                 a ? "," : "", vp_attrs[a].location, vp_attrs[a].offset);
     fprintf(f, "]}"); fclose(f);
-    s_vp.start = 0;
-    const unsigned inputs[3] = {0, 3, 9}, outputs[3] = {0, 3, 9};
-    for (unsigned i = 0; i < 3; i++) {
-        uint32_t *t = s_vp.prog[i];
-        t[0] = 0; t[1] = (1u << 21) | (inputs[i] << 9) | 0x1bu;
-        t[2] = 2u << 26;
-        t[3] = (15u << 12) | (1u << 11) | (outputs[i] << 3) | (i == 2);
-    }
     char *source = sg_vp_translate_wgsl(0);
     if (!source) abort();
     save("compact.wgsl", source, strlen(source)); free(source);
