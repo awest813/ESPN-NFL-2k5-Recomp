@@ -6,7 +6,7 @@ import subprocess
 root = Path(__file__).resolve().parents[2]
 kernel = root / "external/xboxrecomp/src/kernel/sdlgpu"
 texture = (kernel / "sdlgpu_texture.inc.c").read_text(encoding="utf-8")
-lookup = texture[texture.index("#define SG_TEXTURE_HINTS"):texture.index("/* Hashing a texture")]
+lookup = texture[texture.index("#define SG_TEXTURE_HINTS"):texture.index("#define SG_HASH_MEMO")]
 present = (kernel / "sdlgpu_present.inc.c").read_text(encoding="utf-8")
 pacer = present[present.index("static void sg_frame_pace("):present.index("static struct {")]
 video = (kernel.parent / "nv2a_gpu_sdl3.inc.c").read_text(encoding="utf-8")
