@@ -4347,3 +4347,21 @@ change was needed for these additions. No new retail capture or performance
 measurement is claimed for this test-only extension. Vertical lines, arbitrary
 eye-plane boundary precision, polygon offsets, other depth formats and exact
 matched Xbox scene pixels remain outside this coverage.
+
+### Vertical and steep line depth (2026-11-20)
+
+The matrix now contains 25 cases. Ten additions exercise vertical maximum-W
+and varying-depth lines, reversed endpoints, viewport clipping, both eye-plane
+crossing orders, a near-Z crossing, and steep lines in both directions. The
+probe helper chooses pixels along the dominant axis, so vertical geometry
+does not divide by a zero X extent. Expected depth uses a separate double dot
+product to project each pixel center onto the original segment. The steep
+cases exercise off-center samples rather than assuming the major-axis
+parameter is the depth interpolation parameter.
+
+All 300 native GPU probes, 300 software probes, 600 single/indexed WebGPU
+pixels and 300 instanced WebGPU pixels pass. The complete native and browser
+renderer suites and the existing generated VP/module/position/edge checks
+also pass. These additions change tests only; they establish no additional
+retail scene, audio-continuity or frame-rate result. Arbitrary eye-boundary
+precision, other depth formats and polygon-offset combinations remain open.

@@ -30,7 +30,7 @@ static void compact_line_depth_case(unsigned mask) {
         const DepthLineCase *c=&depth_line_cases[n];int visible;
         unsigned integer=depth_line_reference(c,probes[p],w,clip,&visible);
         fprintf(f,"%s{\"x\":[%.9g,%.9g],\"y\":[%.9g,%.9g],\"depth\":[%.9g,%.9g],\"minimum\":%.9g,\"maximum\":%.9g,\"w\":%u,\"clip\":%u,\"probe\":%u,\"probeY\":%u,\"integer\":%u,\"visible\":%d}",
-                count++?",":"",c->x[0],c->x[1],c->y[0],c->y[1],c->depth[0],c->depth[1],c->minimum,c->maximum,w,clip,probes[p],depth_line_probe_y(c,probes[p]),integer,visible);
+                count++?",":"",c->x[0],c->x[1],c->y[0],c->y[1],c->depth[0],c->depth[1],c->minimum,c->maximum,w,clip,depth_line_probe_x(c,probes[p]),depth_line_probe_y(c,probes[p]),integer,visible);
     }
     fputs("]}\n",f);fclose(f);
 }

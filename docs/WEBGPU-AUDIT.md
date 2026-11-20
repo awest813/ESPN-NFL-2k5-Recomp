@@ -108,3 +108,7 @@ The [oblique/eye-plane extension](WEB-STADIUM-FIDELITY.md#oblique-lines-and-eye-
 adds diagonal and near/eye-plane crossing cases, including visible geometry
 outside the original projected endpoint interval. Independent double-precision
 references pass across software, native GPU and all three browser line paths.
+
+The [vertical/steep extension](WEB-STADIUM-FIDELITY.md#vertical-and-steep-line-depth-2026-11-20)
+raises the matrix to 25 cases and checks depth at off-center pixels through
+an independent double-precision projection. All five paths pass.

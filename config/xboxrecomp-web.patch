@@ -7482,7 +7482,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +            v[5]=v[7]=1;
 +        }
 +        for(unsigned p=0;p<3;p++) {
-+            unsigned x=probes[p],y=depth_line_probe_y(c,x);int visible;unsigned integer=depth_line_reference(c,x,w_buffer,clip,&visible);
++            unsigned x=depth_line_probe_x(c,probes[p]),y=depth_line_probe_y(c,probes[p]);int visible;unsigned integer=depth_line_reference(c,probes[p],w_buffer,clip,&visible);
 +            uint32_t expected=visible?0xFF00FF00u:0xFF000000u;
 +            s_gpu.clear_color=0xFF000000u;s_vp.zclear=integer<<8;
 +            CHECK(sg_clear(0xF3) && sg_draw_batch(0),"integer D24 line GPU draw rejected");download_frame();
@@ -29407,10 +29407,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.vert b/src/kernel/sdlgpu/shaders/xf.ve
 +}
 diff --git a/tests/sdlgpu_web/depth_quantization_reference.h b/tests/sdlgpu_web/depth_quantization_reference.h
 new file mode 100644
-index 0000000..3001b20
+index 0000000..001344f
 --- /dev/null
 +++ b/tests/sdlgpu_web/depth_quantization_reference.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,112 @@
 +/* Integer D24 depth truncates in native Xbox units before comparison.
 + * Expected integers are explicit, rather than calculated by the shader's
 + * conversion. Clear values use independent double-precision division and
@@ -29453,14 +29453,36 @@ index 0000000..3001b20
 +    {{8.5f,-56.5f},{20.5f,20.5f},{2,-2},0,16777215},
 +    {{8.5f,56.5f},{20.5f,20.5f},{-2,-2},0,16777215},
 +    {{8.5f,56.5f},{20.5f,20.5f},{-1.5f,2.25f},0,16777215},
++    {{20.5f,20.5f},{8.5f,56.5f},{16777215,16777215},0,16777215},
++    {{20.5f,20.5f},{8.5f,56.5f},{2.25f,8.75f},0,16777215},
++    {{20.5f,20.5f},{56.5f,8.5f},{8.75f,2.25f},0,16777215},
++    {{20.5f,20.5f},{-56.5f,8.5f},{-2,2},0,16777215},
++    {{20.5f,20.5f},{8.5f,-56.5f},{2,-2},0,16777215},
++    {{20.5f,20.5f},{8.5f,56.5f},{-1.5f,2.25f},0,16777215},
++    {{20.5f,20.5f},{-16.5f,80.5f},{2.25f,8.75f},0,16777215},
++    {{16.25f,40.75f},{8.5f,56.5f},{2.25f,8.75f},0,16777215},
++    {{40.75f,16.25f},{56.5f,8.5f},{8.75f,2.25f},0,16777215},
++    {{16.25f,40.75f},{8.5f,56.5f},{16777215,16777215},0,16777215},
 +};
-+static unsigned depth_line_probe_y(const DepthLineCase *c,unsigned x) {
-+    double t=((double)x+0.5-c->x[0])/(c->x[1]-c->x[0]);
++/* Probe index denotes a pixel on the dominant axis, including vertical lines. */
++static double depth_line_probe_t(const DepthLineCase *c,unsigned probe) {
++    const float *axis=fabs(c->x[1]-c->x[0])>=fabs(c->y[1]-c->y[0])?c->x:c->y;
++    return ((double)probe+0.5-axis[0])/(axis[1]-axis[0]);
++}
++static unsigned depth_line_probe_x(const DepthLineCase *c,unsigned probe) {
++    double t=depth_line_probe_t(c,probe);
++    return (unsigned)floor(c->x[0]+t*(c->x[1]-c->x[0]));
++}
++static unsigned depth_line_probe_y(const DepthLineCase *c,unsigned probe) {
++    double t=depth_line_probe_t(c,probe);
 +    return (unsigned)floor(c->y[0]+t*(c->y[1]-c->y[0]));
 +}
 +/* Separate double affine/harmonic oracle, including pre-conversion clipping. */
-+static unsigned depth_line_reference(const DepthLineCase *c,unsigned x,unsigned w_buffer,unsigned clip,int *visible) {
-+    double t=((double)x+0.5-c->x[0])/(c->x[1]-c->x[0]);
++static unsigned depth_line_reference(const DepthLineCase *c,unsigned probe,unsigned w_buffer,unsigned clip,int *visible) {
++    double dx=(double)c->x[1]-c->x[0],dy=(double)c->y[1]-c->y[0];
++    double px=(double)depth_line_probe_x(c,probe)+0.5-c->x[0];
++    double py=(double)depth_line_probe_y(c,probe)+0.5-c->y[0];
++    double t=(px*dx+py*dy)/(dx*dx+dy*dy);
 +    double wa=w_buffer?c->depth[0]:1,wb=w_buffer?c->depth[1]:1;
 +    double inverse=(1.0-t)/wa+t/wb;
 +    if(inverse==0 || !isfinite(inverse)){*visible=0;return 0;}
@@ -44084,7 +44106,7 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..94b7c84
+index 0000000..b484e41
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
 @@ -0,0 +1,2385 @@
@@ -45307,7 +45329,7 @@ index 0000000..94b7c84
 +                        if(geometry)CHECK(line_cover_quad(uniform.endpoint[0].value[0],uniform.endpoint[1].value[0],xy),"D24 conservative line geometry");
 +                        for(unsigned k=0;k<6;k++){vertices[k][0]=xy[corners[k]][0];vertices[k][1]=xy[corners[k]][1];}
 +                        for(unsigned p=0;p<3;p++) {
-+                            unsigned x=probes[p],y=depth_line_probe_y(c,x);int visible;unsigned integer=depth_line_reference(c,x,w_buffer,clip,&visible);
++                            unsigned x=depth_line_probe_x(c,probes[p]),y=depth_line_probe_y(c,probes[p]);int visible;unsigned integer=depth_line_reference(c,probes[p],w_buffer,clip,&visible);
 +                            Draw probe=d;probe.pipe=single;probe.clear_argb=0xFF000000u;probe.depth_value=depth_clear_reference(integer);
 +                            probe.scissor=(SDL_Rect){(int)x-1,(int)y-2,3,6};
 +                            if(!geometry){probe.n=0;probe.reuse_vertices=1;}
