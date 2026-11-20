@@ -2464,7 +2464,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +193,27 @@
+@@ -185,9 +193,29 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
@@ -2476,6 +2476,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    uint32_t merged_draws;
 +    uint32_t texture_decodes, texture_downloads, texture_gpu_copies;
 +    uint32_t vp_affine, vp_program_pending, vp_pipeline_failed;
++    uint32_t vp_flat, vp_lines, vp_points;
++    uint64_t vp_flat_indices, vp_line_indices;
 +    uint32_t stage_batches, texture_modes[4][32];
 +    uint32_t texture_kill[4], texture_key[4], texture_volume[4], texture_cube[4], texture_mips[4];
 +    uint32_t texture_bias_positive[4],texture_bias_negative[4];
@@ -2492,7 +2494,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -206,12 +232,41 @@
+@@ -206,12 +234,44 @@
          s_sg_stats.since_ms = now;
      if (now - s_sg_stats.since_ms < 5000)
          return;
@@ -2518,6 +2520,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +        fprintf(stderr, " | merged %.2f/frame", (double)s_sg_stats.merged_draws / s_sg_stats.frames);
 +        fprintf(stderr, " | VP fallback affine %u program %u pipeline %u",
 +                s_sg_stats.vp_affine, s_sg_stats.vp_program_pending, s_sg_stats.vp_pipeline_failed);
++        fprintf(stderr, " | CPU VP flat %u (%llu indices) lines %u (%llu indices) points %u",
++                s_sg_stats.vp_flat, (unsigned long long)s_sg_stats.vp_flat_indices,
++                s_sg_stats.vp_lines, (unsigned long long)s_sg_stats.vp_line_indices, s_sg_stats.vp_points);
 +    }
      fprintf(stderr, "\n");
 +    if(s_sg_stats.stage_batches) {
@@ -2535,7 +2540,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
  }
-@@ -246,7 +301,11 @@
+@@ -246,7 +306,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -2547,7 +2552,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +327,11 @@
+@@ -268,7 +332,11 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -2559,7 +2564,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +369,17 @@
+@@ -306,12 +374,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
@@ -27658,17 +27663,29 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
  static int sg_vp_worker_start(void)
  {
-@@ -126,7 +127,8 @@
+@@ -126,7 +127,20 @@
   * the cache is full. *slot_out receives the cache slot. */
  static SDL_GPUShader *sg_vp_program(uint32_t *slot_out)
  {
 -    uint32_t key = sg_vp_hash(s_vp.start), i;
++    /* Consecutive material draws often keep the same program. Compare its
++     * complete words through FINAL before hashing them again. A hash or a
++     * generation alone cannot prove identity (uploads may reuse a slot). */
++    static uint32_t last = SG_VP_CACHE;
++    if (last < SG_VP_CACHE) {
++        SgVpProg *p = &s_sg_vp[last];
++        if (SDL_GetAtomicInt(&p->state) == SG_VP_READY && p->start == s_vp.start &&
++            !memcmp(p->program, s_vp.prog + s_vp.start, p->length * sizeof p->program[0])) {
++            *slot_out = last;
++            return p->vs;
++        }
++    }
 +    uint32_t length, key = sg_vp_hash(s_vp.start, &length), i;
 +    if (!length) return NULL;
 
      for (i = 0; i < SG_VP_CACHE; i++) {
          uint32_t at = (key + i) & (SG_VP_CACHE - 1);
-@@ -134,13 +136,36 @@
+@@ -134,13 +148,37 @@
          int st = SDL_GetAtomicInt(&p->state);
 
          if (st == SG_VP_EMPTY) {
@@ -27694,6 +27711,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 +            if (!p->vs) return NULL;
 +            static int reported;
 +            if (!reported++) fprintf(stderr, "  [SDLGPU] runtime WGSL vertex programs enabled\n");
++            last = at;
 +            *slot_out = at;
 +            return p->vs;
 +#else
@@ -27708,7 +27726,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
              src = sg_vp_translate(s_vp.start, NULL);
              if (!src) {
                  SDL_SetAtomicInt(&p->state, SG_VP_FAILED);
-@@ -153,9 +178,17 @@
+@@ -153,9 +191,17 @@
              SDL_SignalCondition(s_sg_vpq.wake);
              SDL_UnlockMutex(s_sg_vpq.lock);
              return NULL;
@@ -27726,7 +27744,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
          if (st == SG_VP_SPIRV) {
              /* Compiled: make the SDL shader here, on the draw thread. */
-@@ -178,4 +211,4 @@
+@@ -174,8 +220,9 @@
+         }
+         if (st != SG_VP_READY)
+             return NULL;
++        last = at;
+         *slot_out = at;
          return p->vs;
      }
      return NULL;
@@ -28094,7 +28117,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -377,14 +528,21 @@
+@@ -377,15 +528,27 @@
  }
 
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
@@ -28109,23 +28132,30 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      SDL_GPUGraphicsPipeline *pipe;
 
      if (!sg_vp_wanted())
-+        return 0;
+         return 0;
 +    /* Host line primitives omit NV2A's angle-dependent width. CPU VP
 +     * preparation supplies explicit geometry on every SDL backend. */
-+    if(primitive_is_lines(s_gpu.prim))return 0;
++    if(primitive_is_lines(s_gpu.prim)) {
++        s_sg_stats.vp_lines++;s_sg_stats.vp_line_indices+=n;
++        return 0;
++    }
 +    /* Shared indexed VP outputs cannot carry a different primitive's flat
 +     * colour. The CPU VP/clip path duplicates the selected outputs instead. */
-+    if (s_gpu.shade_mode == 0x1D00)
-         return 0;
++    if (s_gpu.shade_mode == 0x1D00) {
++        s_sg_stats.vp_flat++;s_sg_stats.vp_flat_indices+=n;
++        return 0;
++    }
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
-@@ -395,20 +553,44 @@
+         case NV_PRIM_TRIANGLE_STRIP:
+@@ -395,20 +558,45 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
 -            return 0; /* points and lines: not on the GPU yet */
 -    }
 -    if (!sg_vp_program(&slot))
++            s_sg_stats.vp_points++;
 +            return 0; /* points: not on the GPU yet */
 +    }
 +    if (!sg_vp_program(&slot)) {
@@ -28172,7 +28202,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +603,15 @@
+@@ -421,7 +609,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -28189,7 +28219,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -469,10 +659,10 @@
+@@ -469,10 +665,10 @@
          float zmax = SG_DEPTH_MAX;
          SgDraw d = {
              .surface = s, .pipe = pipe,
@@ -28202,7 +28232,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vs_uniform = &u, .vs_uniform_size = sizeof u,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-@@ -494,7 +684,8 @@
+@@ -494,7 +690,8 @@
          u.fogp[3] = s_fog.p[1];
          u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
          u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
@@ -28212,7 +28242,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,13 +699,13 @@
+@@ -508,13 +705,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -28228,7 +28258,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +723,43 @@
+@@ -532,31 +729,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -28278,7 +28308,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -569,15 +772,35 @@
+@@ -569,15 +778,35 @@
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgXfVertex),
              .vertex_count = list.count,

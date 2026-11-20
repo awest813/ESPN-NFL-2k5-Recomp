@@ -66,10 +66,10 @@ node tests/web/test_audit_diagnostics.cjs
 node tests/web/test_audit_browser.cjs
 ```
 
-## Widescreen stopping point â€” November 15, 2026
+## Widescreen stopping point — November 15, 2026
 
 The SDL/WebGPU presenter now distinguishes display aspect from guest pixel
-aspect. Its default crop (640Ã—448 from 720Ã—480) fills a 16:9 GPU canvas;
+aspect. Its default crop (640×448 from 720×480) fills a 16:9 GPU canvas;
 fullscreen fits that canvas inside the window. The portable presentation
 callback identifies match views using checked guest reads, including pregame,
 and excludes pause/play-call states. The camera patch uses the visible source
@@ -87,7 +87,7 @@ Validation at this stopping point:
 - Native renderer suite: camera constants, menu/flat transitions, patch-header
   validation, and the existing GPU/reference and failure-recovery scenes.
 - Hardware Chrome 156 and CI Chromium 153/SwiftShader: exact rendered pixels,
-  no GPU validation errors, and canvas changes 640Ã—360 â†’ 640Ã—480 â†’ 640Ã—360.
+  no GPU validation errors, and canvas changes 640×360 → 640×480 → 640×360.
 - Full launcher browser suite: imports, OPFS mounting, disc reads and static-host
   isolation fallback. A fresh pinned checkout reproduces all 51 patched runtime
   files without changing the submodule revision.
@@ -173,7 +173,7 @@ The supplied files in Downloads now allow a local xemu reference boot. An
 isolated configuration and copied EEPROM/ROM files are under ignored
 `build-web-tests/xemu-reference`; the original HDD is used with `-snapshot`.
 The first reference run reached Arizona at New Orleans gameplay and produced
-`xemu-2026-11-15-19-42-36.png`, a raw 640Ã—480 game frame without desktop UI.
+`xemu-2026-11-15-19-42-36.png`, a raw 640×480 game frame without desktop UI.
 That run used 128 MB and surface scale 2; a later configuration explicitly
 selects 64 MB and scale 1 for repeatable checks. Desktop interaction stopped
 when the user pressed Escape. A controlled scene-matched comparison has not
@@ -870,8 +870,8 @@ and fresh 74-file runtime patch reproduction pass.
 The 132-second profiled capture (`dsp-dispatch-stall-profile/report.json`)
 reaches Tennessee player introductions with rendered uniforms and readable
 career graphics. It reports no browser/GPU/DSP faults but ends with 778
-worklet underrun blocks. Around 97â€“112 seconds, five-second windows process
-only 6,663â€“6,702 APU frames against the required 7,500, with 4.4â€“4.8 seconds
+worklet underrun blocks. Around 97–112 seconds, five-second windows process
+only 6,663–6,702 APU frames against the required 7,500, with 4.4–4.8 seconds
 spent processing frames. The recorded worst frame includes 29.1 ms in VP;
 other windows record DSP delays, and shorter IRQ waits also occur. Host
 scheduling and instrumentation remain uncontrolled. This narrows the next
@@ -911,7 +911,7 @@ sustained 30 FPS floor remain unfinished.
 ## PASSTHRU texture-stage bounds
 
 The GPU shaders previously forwarded texture `PASSTHRU` coordinates directly
-to the register combiners. NV2A clamps these values to 0â€“1 after interpolation;
+to the register combiners. NV2A clamps these values to 0–1 after interpolation;
 this behavior is documented by the hardware-tested correction in
 [xemu issue 2523](https://github.com/xemu-project/xemu/issues/2523).
 Out-of-range values can change later signed combiner mappings even when the
@@ -960,7 +960,7 @@ The software 3D rasterizer previously updated depth and stencil before
 evaluating final alpha. A discarded transparent foreground triangle could
 therefore hide opaque geometry behind it; stencil-fail, depth-fail and pass
 operations could also run for a fragment that alpha testing should reject.
-The corrected order follows the alpha â†’ stencil â†’ depth sequence described
+The corrected order follows the alpha → stencil → depth sequence described
 in [NVIDIA's stencil pipeline documentation](https://developer.download.nvidia.com/assets/gamedev/docs/stencil.pdf).
 
 Alpha-tested draws now finish texture/combiner shading and reject on the final
@@ -1206,7 +1206,7 @@ field, sideline figures and Miami/Houston intro graphics. Logs report zero GPU
 3D batches and thousands of software batches per interval. It records no
 browser/GPU/DSP fault and zero worklet underrun blocks in this run, but reaches
 only the stadium intro. Five-second frame averages after 90 seconds are
-0.7â€“1.1 FPS. This is an integrated fallback stability check, not a playable
+0.7–1.1 FPS. This is an integrated fallback stability check, not a playable
 software-performance result or proof of original-Xbox graphics/audio parity.
 Software filtering, presentation/widescreen behavior and complete texture-
 stage conformance remain unfinished. The final polish skips reflection-helper
@@ -1244,7 +1244,7 @@ The 245-second `software-shared-layout/report.json` browser run displays
 Seattle crowd models/clothing and stadium intro views with the corrected
 letterboxing in the 1280x900 viewport. It records no browser/GPU/DSP fault and
 11 worklet underrun blocks. Five-second averages after 90 seconds are
-0.7â€“1.3 FPS, and this slow run does not establish live-game performance,
+0.7–1.3 FPS, and this slow run does not establish live-game performance,
 full software texture filtering or original-Xbox scene/audio parity.
 
 The preceding commit's web CI failed at its fixed 120-second suite deadline
@@ -1360,7 +1360,7 @@ audio and the 30 FPS floor are not established.
 
 SDL GPU samplers now honor CONTROL0 minimum/maximum LOD as unsigned 4.8
 fixed point, including fractional limits. The units follow the primary
-[Envytools hardware reference, pages 277â€“278](https://envytools.readthedocs.io/_/downloads/en/latest/pdf/#page=281).
+[Envytools hardware reference, pages 277–278](https://envytools.readthedocs.io/_/downloads/en/latest/pdf/#page=281).
 The current xemu sampler extracts these fields as integer levels; that
 interpretation was rejected after the hardware-reference cross-check.
 Limits are bounded by the authored chain and an inverted range is normalized
@@ -1708,7 +1708,7 @@ Xbox captures and add position/clipping regressions before changing this;
 quantizing already-clipped vertices could introduce a different error.
 Broader stadium/staff-model fidelity, all-mode gameplay accuracy, continuous
 audio and a sustained 30 FPS floor remain unfinished. The last integrated
-retail result remains the preceding flat-shade run (26.0â€“30.1 FPS after
+retail result remains the preceding flat-shade run (26.0–30.1 FPS after
 150 seconds, 200 audio underrun blocks), with no controlled performance
 claim for these line changes. Full patched Windows runtime validation is
 also still outstanding, as described above.
@@ -1939,3 +1939,60 @@ retail gameplay or performance run is claimed for this sweep; the preceding
 246-second run remains the integration evidence and still falls below 30 FPS
 with audio underruns. Stadium/staff model parity, all-mode accuracy and full
 rendering/audio/gameplay parity remain open.
+
+
+### Warm vertex-program lookups and integrated line-path profiling
+
+Consecutive draws with an unchanged vertex program now reuse the last ready
+shader after comparing every executable word through FINAL and its start
+slot. This avoids repeating FNV hashing and cache probing. Changed executable
+words, a moved FINAL, another start slot, failed entries and hash collisions
+still take the ordinary exact-identity lookup. No program words or inputs are
+omitted from the identity check. The Wasm cache regression covers colliding
+programs with different interpreter outputs/input masks, 10,000 warm lookups,
+mutations after FINAL, relocating the program, extending/shortening FINAL,
+shader creation failure and invalid starts.
+
+A local synthetic Wasm microbenchmark of one million identical lookups took
+15.8 ms before and 8.5 ms after for three instructions, and 448.6 ms before
+and 119.4 ms after for 99 instructions. This isolates lookup overhead using
+stub shader creation; it is not a game-frame benchmark or a measured retail
+FPS gain. The baseline is the preceding published runtime, `af7d4b0`.
+
+Profile output now distinguishes CPU VP preparation for flat shading, line
+primitives and unsupported point/other primitives, including input index
+counts for flat shading and lines. These draws can still rasterize on the
+GPU: CPU VP preparation is separate from software rasterization fallback.
+Previously all three reasons were absent from the VP fallback breakdown.
+
+Two approximately 246-second hardware Chrome 157.0.8103.79 / Intel gen-12hp
+runs reached live demo gameplay with DSP enabled and a 30 FPS cap:
+
+| Local report | Observed scene | Five-second FPS after 150 s | Worklet underrun blocks |
+| --- | --- | --- | --- |
+| `line-width-profile-retail/report.json` | Rainy Green Bay/Denver, stadium tiers/crowd, bench player, rain/fog, uniforms and field overlays | 16.5 to 20.8 | 1,049 total; 485 additional after 150 s |
+| `vp-lookup-profile-retail/report.json` | Houston/St. Louis, player uniforms, sideline figures/markers, field overlays and live play | 27.1 to 30.1 | 263 total; 259 additional after 150 s |
+
+Neither report records a browser/GPU failure. These are different scenes and
+weather, with host load and profiling uncontrolled; the difference is not a
+controlled performance or audio comparison. The second trace records 28,539
+CPU-prepared line batches across its completed five-second intervals. In one
+interval, 708 line batches account exactly for the GPU-3D versus GPU-VP batch
+count difference, with zero software rasterization fallbacks and zero flat
+shading, affine, pending-program or failed-pipeline reasons. This provides
+positive integrated line-path evidence. It does not independently identify
+every line as rain, field art or another object, or prove pixel parity with
+original Xbox gameplay.
+
+Each line segment still requires its own endpoint-uniform draw. Grouping
+segments while preserving their individual analytic coverage, interpolation,
+alpha/depth/stencil behavior and primitive order is a concrete next rendering
+cost to investigate. Texture decode/submission costs also remain visible.
+Full scene/staff fidelity, uninterrupted audio and a sustained 30 FPS floor
+remain unfinished. Build and Pages workflows for `af7d4b0` passed.
+
+The final native rendering suite passes address/undefined sanitizers with
+GPU-driver leak detection disabled. The actual browser game and Linux
+kernel/video targets build. Fresh pinned-source and reverse-application
+checks reproduce all 91 runtime files. Documentation encoding introduced in
+the preceding width-sweep edit is corrected without changing its evidence.

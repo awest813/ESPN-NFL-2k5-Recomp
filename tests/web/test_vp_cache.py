@@ -66,6 +66,27 @@ int main(void) {
     s_vp.prog[3][1]=0xffffffffu; /* code after FINAL does not affect identity */
     assert(sg_vp_program(&slot_b)==first && slot_b==slot_a && compiled==2);
     puts("ok: colliding programs with different CPU outputs retain separate shaders and input layouts");
+    for(unsigned repeat=0;repeat<10000;repeat++) {
+        s_vp.prog[3][1]=repeat; /* unchanged executable, mutable words past FINAL */
+        assert(sg_vp_program(&slot_b)==first && slot_b==slot_a && compiled==2);
+    }
+    select_program(program_b); /* same hash, changed executable after a warm lookup */
+    assert(sg_vp_program(&slot_b)==second && compiled==2);
+    s_vp.start=7;memcpy(s_vp.prog+7,program_b,sizeof program_b);
+    SDL_GPUShader *relocated=sg_vp_program(&slot_b);
+    assert(relocated && relocated!=second && compiled==3);
+    assert(sg_vp_program(&slot_b)==relocated && compiled==3);
+    puts("ok: repeated lookups preserve exact identity, FINAL bounds and start-slot changes");
+    select_program(program_b);assert(sg_vp_program(&slot_b)==second);
+    s_vp.prog[2][3]&=~1u;s_vp.prog[3][3]=1; /* extend past the old FINAL */
+    SDL_GPUShader *extended=sg_vp_program(&slot_b);
+    assert(extended && extended!=second && compiled==4);
+    assert(sg_vp_program(&slot_b)==extended && compiled==4);
+    s_vp.prog[1][3]|=1u; /* an earlier FINAL also changes the executable */
+    SDL_GPUShader *shortened=sg_vp_program(&slot_b);
+    assert(shortened && shortened!=extended && compiled==5);
+    assert(sg_vp_program(&slot_b)==shortened && compiled==5);
+    puts("ok: moving FINAL in either direction invalidates a warm lookup");
     memset(s_sg_vp,0,sizeof s_sg_vp);
     select_program(program_a);reject_shader=1;assert(!sg_vp_program(&slot_a));
     select_program(program_b);reject_shader=0;assert(sg_vp_program(&slot_b));
