@@ -3020,3 +3020,68 @@ needs finer frame-work/MMIO/trap attribution before changing catch-up policy.
 This experiment remains opt-in, with full audio fidelity, all modes/stadiums
 and the 30 FPS floor still unfinished. Owned audit browsers and server were
 closed after the serial captures.
+
+
+### Web DSP link-time optimization
+
+The existing lock-profile option also enables per-frame pipeline profiling;
+`[APU-PERF]` and `[APU-STAGES]` were already present in the preceding captures.
+Their pipeline totals often measured 2.2–2.7 seconds per five-second window,
+with DSP dominating many worst-frame samples. These are elapsed wall times
+inside the pipeline, including descheduling, rather than exclusive CPU time.
+A separate `RECOMP_APU_PROFILE` flag is not implemented and is unnecessary.
+
+Web builds now compile only `dsp.c`, `dsp_cpu.c` and `dsp_dma.c` as LLVM bitcode
+and propagate `-flto` to their final link. This lets the linker optimize the
+instruction loop across the DSP translation units. The other APU objects keep
+their normal compilation, and the conditional leaves native builds unchanged.
+Actual game object headers confirm the three DSP files contain LLVM bitcode
+while `apu_core.c` remains a Wasm object. No fast-math flag, DSP instruction
+semantics, frame/cycle budget, catch-up limit or audio queue policy changes.
+The optional audio-clock wake experiment remains disabled by default.
+
+A local benchmark replays one captured GP and one captured EP firmware frame.
+Both variants use `-O3 -DNDEBUG -pthread -msimd128`; only the three DSP sources
+in the optimized variant use LTO. Seven paired rounds alternate execution
+order after warmup. Each round runs 1,000 frames, restoring the captured input
+before each frame and checking its resulting DSP core, DMA registers and all
+scratch/FIFO transfer data against the recorded result. Private decoded-handler
+and callback addresses are normalized for state comparison. The replay harness
+uses a checked 1 MiB stack for its full core snapshots; retail stack settings
+are unchanged. Captured title data remains local and is not published.
+
+| Captured frame | Baseline median, 1,000 frames | DSP LTO median | Reduction |
+| --- | ---: | ---: | ---: |
+| GP | 95.858 ms | 82.343 ms | 14.1% |
+| EP | 95.413 ms | 80.656 ms | 15.5% |
+
+The goldens come from earlier emulator runs; original-Xbox audio matching
+remains unverified. The paired data, exact input hashes and compiler flags are retained in
+`build-web-tests/dsp-lto/production-mode`. These results describe those replay
+workloads on this host; they do not establish the speedup in every game scene.
+The optimized `-O3 -flto` dispatcher passes 141,664 cold/warm full-state cases,
+including software interrupt retirement and cross-family instruction uploads.
+The optimized firmware/MMIO/PCM fixture also passes with undefined-behavior
+sanitization. Ordinary and LTO fixture variants are now both in the Web test
+script. The complete ordinary Python audit (including the new firmware LTO
+variant), the separately added optimized dispatcher fixture, the full Web game
+link and the native APU configure/build pass. Fresh patch application reproduces
+97 files. The preceding `3a4fc2e` Build and Pages workflows both passed.
+
+
+The approximately 246-second optimized retail capture reaches Green Bay/New
+Orleans, third-and-fifteen at 2:11 in the first quarter. Checked frames show
+players, sideline staff, stadium/crowd geometry and readable scoreboard/lineup
+text. No browser/GPU failures are reported. Its 20 five-second FPS averages
+after 150 seconds range from 19.7 to 30.1, so the requested floor is not met.
+Audio records 190 affected blocks and 24,320 missing frames (506.7 ms at 48 kHz),
+with a longest continuous gap of 3,200 frames (66.7 ms). Reported schedule
+windows contain seven rebases totaling 501.0 ms, maximum wake overshoot 21.0 ms
+and maximum trap delay 26.3 ms. Different matchups and timing prevent a
+controlled comparison with preceding gameplay captures; the paired replay
+benchmark is the evidence for the isolated DSP speedup. This does not prove
+continuous audio, all-mode/stadium fidelity or sustained 30 FPS. The next
+performance work still needs to attribute whole-frame and guest scheduling
+stalls. Exact served artifact/patch hashes, screenshots and reports are in
+`build-web-tests/dsp-lto/retail`; hashes match the frozen current artifacts.
+The owned audit browser and server were closed after capture.

@@ -1,7 +1,7 @@
 diff --git a/src/apu/CMakeLists.txt b/src/apu/CMakeLists.txt
 --- a/src/apu/CMakeLists.txt
 +++ b/src/apu/CMakeLists.txt
-@@ -2,15 +2,19 @@
+@@ -2,16 +2,28 @@
  # Extracted from xemu (https://github.com/xemu-project/xemu)
  #
  # Voice Processor (VP): ADPCM/PCM decode, sample mixing, envelopes, filters
@@ -21,8 +21,17 @@ diff --git a/src/apu/CMakeLists.txt b/src/apu/CMakeLists.txt
      apu_xaudio2.c
 +    apu_web_audio.c   # Emscripten only (empty elsewhere)
  )
++
++# Keep the instruction loop and retirement visible to the Web linker. Other
++# APU objects remain ordinary objects; native compiler settings are unchanged.
++if(EMSCRIPTEN)
++    set_property(SOURCE dsp/dsp.c dsp/dsp_cpu.c dsp/dsp_dma.c
++        APPEND PROPERTY COMPILE_OPTIONS -flto)
++    target_link_options(xbox_apu INTERFACE -flto)
++endif()
 
  target_include_directories(xbox_apu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 diff --git a/src/apu/apu_mmio_hook.c b/src/apu/apu_mmio_hook.c
 index 9a38a07..37e78bc 100644
 --- a/src/apu/apu_mmio_hook.c
