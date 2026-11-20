@@ -3997,7 +3997,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +233,195 @@
+@@ -112,75 +233,255 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4206,6 +4206,63 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +    return 1;
 +}
 +
++/* Walk Morton masks once per image instead of rebuilding them for every
++ * sampled texel. Each format keeps the software sampler's exact channel
++ * expansion and palette interpretation. Unsupported/NPOT images fall back. */
++static int sg_decode_swizzled_image(const uint8_t *src,size_t bytes,uint32_t fmt,
++                                    uint32_t w,uint32_t h,const uint32_t *palette,uint32_t *dst)
++{
++    uint32_t bpp;
++    switch(fmt) {
++    case 0x00:case 0x19:bpp=1;break;
++    case 0x0B:if(!palette)return 0;bpp=1;break;
++    case 0x02:case 0x03:case 0x04:case 0x05:bpp=2;break;
++    case 0x06:case 0x07:bpp=4;break;
++    default:return 0;
++    }
++    if(!src || !dst || !w || !h || w>4096 || h>4096 || (w&(w-1)) || (h&(h-1)) ||
++       (uint64_t)w*h*bpp>bytes)return 0;
++    uint32_t mask_x,mask_y;
++    xbox_swizzle_masks(w,h,&mask_x,&mask_y);
++    /* Constant pixel widths and conversion expressions let the compiler keep
++     * format dispatch outside the hot loop; memcpy permits unaligned input. */
++#define SG_MORTON_PIXELS(BYTES,RGBA) do { \
++    uint32_t oy=0; \
++    for(uint32_t y=0;y<h;y++) { \
++        uint32_t ox=0; \
++        for(uint32_t x=0;x<w;x++) { \
++            uint32_t v=0;memcpy(&v,src+(size_t)(ox|oy)*(BYTES),(BYTES)); \
++            dst[(size_t)y*w+x]=(RGBA);ox=(ox-mask_x)&mask_x; \
++        } \
++        oy=(oy-mask_y)&mask_y; \
++    } \
++} while(0)
++    switch(fmt) {
++    case 0x06:case 0x07: {
++        uint32_t alpha=fmt==0x07?0xFF000000u:0;
++        SG_MORTON_PIXELS(4,((v>>16)&255u)|(v&0xFF00FF00u)|((v&255u)<<16)|alpha);break;
++    }
++    case 0x02:case 0x03: {
++        uint32_t alpha=fmt==0x03?0xFF000000u:0;
++        SG_MORTON_PIXELS(2,d3d8_expand_channel((v>>10)&31u,5)|
++            (d3d8_expand_channel((v>>5)&31u,5)<<8)|(d3d8_expand_channel(v&31u,5)<<16)|
++            ((v&0x8000u)?0xFF000000u:alpha));break;
++    }
++    case 0x04:
++        SG_MORTON_PIXELS(2,((v>>8)&15u)*17u|(((v>>4)&15u)*17u<<8)|
++            ((v&15u)*17u<<16)|((v>>12)*17u<<24));break;
++    case 0x05:
++        SG_MORTON_PIXELS(2,d3d8_expand_channel((v>>11)&31u,5)|
++            (d3d8_expand_channel((v>>5)&63u,6)<<8)|(d3d8_expand_channel(v&31u,5)<<16)|0xFF000000u);break;
++    case 0x00:SG_MORTON_PIXELS(1,0xFF000000u|v*0x010101u);break;
++    case 0x19:SG_MORTON_PIXELS(1,(v<<24)|0x00FFFFFFu);break;
++    case 0x0B:
++        SG_MORTON_PIXELS(1,((palette[v]>>16)&255u)|(palette[v]&0xFF00FF00u)|((palette[v]&255u)<<16));break;
++    }
++#undef SG_MORTON_PIXELS
++    return 1;
++}
++
 +/* Decode all authored levels into level-major RGBA storage. Restore each
 + * temporary sampler/snapshot view on both successful and failed decodes. */
 +static int sg_texture_decode(int st,uint32_t w,uint32_t h,uint32_t layers,uint32_t levels)
@@ -4233,7 +4290,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +                ok=sg_decode_linear32(snapshot->pixels,snapshot->bytes,saved.color,lw,lh,saved.pitch,dst);
 +            else if(d3d8_format_dxt_block_bytes(saved.color))
 +                ok=sg_decode_dxt_image(snapshot->pixels,snapshot->bytes,saved.color,lw,lh,dst);
-+            else for(uint32_t y=0;y<lh && ok;y++)for(uint32_t x=0;x<lw;x++) {
++            else if(sg_decode_swizzled_image(snapshot->pixels,snapshot->bytes,saved.color,lw,lh,
++                       saved.palette?snapshot->palette:NULL,dst)) {
++                /* Full image decoded with the same sampler semantics. */
++            } else for(uint32_t y=0;y<lh && ok;y++)for(uint32_t x=0;x<lw;x++) {
 +                uint32_t argb;if(!sg_stage_sample(st,x,y,&argb)){ok=0;break;}
 +                dst[(size_t)y*lw+x]=((argb>>16)&255u)|(argb&0xFF00u)|((argb&255u)<<16)|(argb&0xFF000000u);
 +            }
@@ -4246,7 +4306,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +429,14 @@
+@@ -188,11 +489,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4263,7 +4323,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +452,36 @@
+@@ -208,23 +512,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4309,7 +4369,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,18 +502,23 @@
+@@ -245,18 +562,23 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4343,7 +4403,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +528,8 @@
+@@ -266,6 +588,8 @@
              return 0;
          slot->w = w;
          slot->h = h;
@@ -4352,7 +4412,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +537,7 @@
+@@ -273,7 +597,7 @@
      slot->key = 0;
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
@@ -4361,7 +4421,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -291,4 +555,4 @@
+@@ -291,4 +615,4 @@
      if (use->pending)
          use->pending->key = use->pending_key;
      use->pending = NULL;

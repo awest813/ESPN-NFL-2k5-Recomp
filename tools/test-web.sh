@@ -36,6 +36,7 @@ python3 -I "$ROOT/tests/web/test_texture_hash_algo.py" --scalar --build-dir "$OU
 python3 -I "$ROOT/tests/web/test_texture_hash.py" --build-dir "$OUT/texture-hash"
 python3 -I "$ROOT/tests/web/test_texture_hash.py" --scalar --build-dir "$OUT/texture-hash-scalar"
 python3 -I "$ROOT/tests/web/test_texture_decode.py"
+python3 -I "$ROOT/tests/web/test_texture_swizzled.py" --build-dir "$OUT/texture-swizzled"
 python3 -I "$ROOT/tests/web/test_texture_samplers.py"
 python3 -I "$ROOT/tests/web/test_widescreen.py"
 python3 -I "$ROOT/tests/web/test_handle_registry.py"

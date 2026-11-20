@@ -3085,3 +3085,77 @@ performance work still needs to attribute whole-frame and guest scheduling
 stalls. Exact served artifact/patch hashes, screenshots and reports are in
 `build-web-tests/dsp-lto/retail`; hashes match the frozen current artifacts.
 The owned audit browser and server were closed after capture.
+
+
+### Bulk Morton texture uploads
+
+A fresh worker sample of the DSP-LTO build saved profiles for 20 live workers
+and the page during approximately 150–240 seconds of retail execution. Two
+short-lived save workers had already detached before sampling. The symbol map
+and served Wasm/JS/patch hashes were retained with the capture in
+`build-web-tests/current-workers-lto`. The acknowledgement worker's clock and
+`Sleep(0)` stacks dominated its recorded samples. On the GPU command worker,
+`sg_texture_for_stage` and `sample_texture` accounted for about 20.052 and
+13.434 seconds of self sample weight respectively. Wait stacks were separated
+in analysis; these sample-weighted elapsed measurements include scheduling
+and profiler effects and are not exclusive CPU utilization. No acknowledgement
+cadence or frame-pacing change was made from this sample.
+
+Swizzled texture uploads now walk their Morton masks once per image, using
+masked coordinate increments instead of recalculating the masks/deposits for
+every sampled pixel. Format dispatch stays outside the hot pixel loop, with
+unaligned-safe input loads and the existing exact channel expansion. The fast
+path covers L8, A8, palette I8, A1R5G5B5, X1R5G5B5, A4R4G4B4, R5G6B5,
+A8R8G8B8 and X8R8G8B8. Other formats and non-power-of-two images retain the
+sampler fallback. Dimensions, byte bounds and palette availability are checked
+before writes. Mip/face iteration, frozen source snapshots, palette hashing,
+texture-cache keys and upload ordering remain in their existing paths.
+
+The new fixture executes the actual software sampler as its oracle. Wasm
+undefined-behavior checks and native ASAN/UBSAN pass 635 images across all four
+stages, power-of-two rectangles through 4096 x 4096, all 65,536
+possible words for each supported 16-bit format, random channels/palettes,
+unaligned sources, truncated inputs and output guards. Separate checks cover
+palette changes, index 255 and unchanged output on rejected input. These are
+optimization-equivalence checks against the current software renderer;
+original-Xbox fidelity remains a separate requirement.
+
+Five paired rounds each decode 24 images of 256 x 256 pixels, alternating the
+order after warmup. Every output pixel contributes to a checksum outside the
+timed decode region. Median Wasm results on this host are:
+
+| Format | Sampler, ms | Bulk, ms | Speedup |
+| --- | ---: | ---: | ---: |
+| L8 | 32.251 | 1.006 | 32.1x |
+| A1R5G5B5 | 37.017 | 4.241 | 8.7x |
+| X1R5G5B5 | 37.185 | 4.120 | 9.0x |
+| A4R4G4B4 | 35.119 | 1.865 | 18.8x |
+| R5G6B5 | 37.448 | 3.997 | 9.4x |
+| A8R8G8B8 | 32.063 | 1.432 | 22.4x |
+| X8R8G8B8 | 32.285 | 1.495 | 21.6x |
+| Palette I8 | 32.373 | 1.413 | 22.9x |
+| A8 | 32.120 | 1.035 | 31.0x |
+
+Reproduce with `python -I tests/web/test_texture_swizzled.py --benchmark`
+from an Emscripten environment. Results/input hashes are retained under
+`build-web-tests/texture-swizzled-bench*`. The complete ordinary Python audit,
+including existing DXT/linear decoders, passes. The native sanitized Vulkan
+renderer fixture passes, including same-frame rewrites, frozen-key/decode
+consistency, authored mips/cube faces and injected failure handling. Actual
+Chrome WebGPU integration also passes with no validation errors. The Web game
+link and fresh 97-file patch application/reverse check pass. CI now includes
+the new decoder fixture in Wasm and native sanitizer jobs.
+
+The approximately 246-second unprofiled DSP-enabled retail capture reaches
+Minnesota/Oakland, third-and-four at 2:33 in the first quarter. Checked frames
+show stadium tiers/crowds, sideline staff, players and readable text. No browser
+or GPU failures are reported. Its 20 five-second FPS averages after 150 seconds
+range from 28.7 to 30.1. Audio records 36 affected blocks and 4,608 missing
+frames (96.0 ms at 48 kHz), with a longest gap of 1,024 frames (21.3 ms). Different
+matchups and disabled profiling prevent controlled comparison with preceding
+runs; the paired decoder benchmark supports the isolated speedup. Exact served
+artifact/patch hashes match the current frozen build and are saved with the
+capture in `build-web-tests/texture-swizzled-retail`. Owned browsers/server were
+closed. All-mode/stadium/staff reference fidelity, continuous audio and a
+sustained 30 FPS floor remain unfinished. The preceding `c0e5c18` Build and Pages
+workflows passed.
