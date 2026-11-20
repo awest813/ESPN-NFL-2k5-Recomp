@@ -111,5 +111,44 @@
   "probe_selection": "Foreground pixels with exactly one segment within 0.6 px, projection t strictly between 0.05 and 0.95, perpendicular distance below 0.46 px and minor-axis distance above 0.52 px, using original positions truncated to 1/16 px. Independent of any replay output.",
   "expected_probes": 29,
   "reference_foreground_pixels": 1174,
-  "scope": "Projected-geometry line-loop replay, smooth diffuse colours and width register 8 only; not original Xbox VP execution or complete line width/endpoint/smoothing fidelity."
+  "scope": "Projected-geometry line-loop replay, smooth diffuse colours and width register 8 only; not original Xbox VP execution or complete line width/endpoint/smoothing fidelity.",
+  "width_validation_captures": [
+    {
+      "file": "Line_0000.0.png",
+      "width_register": 0,
+      "sha256": "72d122ba8f4df2a49029aba3e7d6bfc2458cbcebb2c617df6215a8164d183fa4",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.0.png"
+    },
+    {
+      "file": "Line_0000.7.png",
+      "width_register": 7,
+      "sha256": "dec571bd17822064a520009249539c211695d3eb8c0c143e0b1627482ab71d8f",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.7.png"
+    },
+    {
+      "file": "Line_0001.0.png",
+      "width_register": 8,
+      "sha256": "1362334c27d1b9d8ef7b6f6c7b54d8a5a27adbc1aa5a4e309be4d9161954a9f5",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.0.png"
+    },
+    {
+      "file": "Line_0001.1.png",
+      "width_register": 9,
+      "sha256": "86d5ef40dc2ae8e3b8b91554e4e059b7c8e1df27723f74c7b3fa4fc50e4ea880",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.1.png"
+    },
+    {
+      "file": "Line_0001.7.png",
+      "width_register": 15,
+      "sha256": "f0fec2de9f6629a27219bff9b485ebfdf630c7a9f7b3f70d7af2384ebbc6b72d",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.7.png"
+    },
+    {
+      "file": "Line_0003.0.png",
+      "width_register": 24,
+      "sha256": "10e94b69fc01794f49a5fd7fbdaa22771482baf010909a7d0715e7e44cbdc6aa",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0003.0.png"
+    }
+  ],
+  "angle_model": "Capture-derived cross-product bound: width*(max(abs(dx),abs(dy))+0.5*min(abs(dx),abs(dy)))/2, with perpendicular endpoint planes. This is an inference tested against captures, not a hardware specification. Wider endpoint behavior remains incomplete."
 }

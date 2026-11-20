@@ -69,7 +69,8 @@ int main(void) {
         float a[]={32,32},b[]={32+dx,32+dy},quad[4][2];
         assert(line_quad(a,b,quad));
         float nx=quad[3][0]-quad[0][0],ny=quad[3][1]-quad[0][1];
-        close_to(hypotf(nx,ny),1);close_to(nx*dx+ny*dy,0);
+        float extent=fmaxf(fabsf(dx),fabsf(dy))+.5f*fminf(fabsf(dx),fabsf(dy));
+        close_to(hypotf(nx,ny),extent/hypotf(dx,dy));close_to(nx*dx+ny*dy,0);
         close_to(quad[1][0]-quad[0][0],dx);close_to(quad[1][1]-quad[0][1],dy);
     }
     {float a[]={0,0},b[]={0,0},q[4][2];assert(!line_quad(a,b,q));

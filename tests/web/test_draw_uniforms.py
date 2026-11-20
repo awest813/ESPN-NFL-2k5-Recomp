@@ -48,7 +48,7 @@ int main(void) {
     s_sg_queue.draws=storage.draws; s_sg_queue.cap=2;
     SgSurface surface={0}; SgTextureUse textures[8]={{0}};
     float vertex[4]={0},uniform[4]={0};
-    SgXfShade first,second;
+    struct {SgXfShade base;uint8_t line[272];} first,second;
     memset(&first,0x39,sizeof first); memset(&second,0xC5,sizeof second);
     SgDraw d={.surface=&surface,.pipe=(void*)1,.vertices=vertex,
         .vertex_bytes=sizeof vertex,.vertex_count=1,.tex=textures,.tex_count=8,

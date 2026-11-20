@@ -1809,3 +1809,81 @@ and Linux kernel/video build; a fresh pinned runtime reproduces 91 files.
 Publication `f67a27e` passed both Build and Pages workflows. No additional
 retail gameplay run is claimed for this change; the preceding integration
 run still documents the unresolved frame-rate and audio continuity limits.
+
+### Analytic NV2A line coverage and interpolation
+
+The remaining width-register-8 gap was angle-dependent. The inferred
+cross-product bound for the sampled Xbox lines is
+`(max(abs(dx),abs(dy)) + 0.5*min(abs(dx),abs(dy)))/2`, rather than a
+Euclidean half-width. This is an inference from pinned captures, not a
+published NV2A hardware specification or proof for arbitrary lines.
+
+The manifest also pins neighboring captures at registers 0, 7, 9, 15 and 24.
+Run the audit with `--width-model` to compare the analytic prediction against
+all six images. It reproduces their isolated coverage masks at widths 0,
+0.875, 1, 1.125 and 1.875 pixels exactly. At width 3 it predicts two extra
+pixels, so wider caps/ties remain unresolved. These additional widths test
+the inference; runtime width-register decoding is still not implemented.
+The production line path continues to cover the default one-pixel case.
+
+A geometric strip alone still depended on host subpixel precision: it lost
+one reference pixel on hardware and 31 on SwiftShader, with two SwiftShader
+colour samples outside tolerance. SDL lines now draw conservative candidate
+triangles and apply the original strip/cap equations in dedicated fragment
+shader variants. They reconstruct diffuse/specular colours, texture
+coordinates, fog, depth and perspective W from the original endpoints.
+Sampling/derivatives precede rejection, so padding does not contribute colour,
+depth or stencil writes. Both 2D and 3D lines use CPU VP preparation; normal
+triangles retain their vertex layouts, GPU VP and fragment shaders. The line
+variants compile lazily, when a line pipeline is first needed.
+
+The generated header contains the complete 100x108 reference mask and all
+1,174 foreground RGB values. Native 2D/3D software and SDL GPU replays now
+match the whole mask, add zero pixels and match every foreground colour
+within two RGB steps. Hardware WebGPU and independent SwiftShader pass the
+same full-crop check. No missing-pixel allowance remains. These are projected
+geometry replays of one line-loop capture, not execution of its original
+Xbox VP or proof of all rasterization rules.
+
+Additional WebGPU checks exercise perspective colour with non-unit W,
+screen-linear texture coordinates, texture alpha-kill, single-hit blending
+on the conservative quad diagonal, alpha rejection followed by a rear line,
+and rear geometry visible through rejected padding. The native rendering
+suite and address/undefined sanitizers pass (driver leak checks disabled).
+The 228,246-case production line assembly/colour/clipping regression passes.
+
+The largest line fragment uniform is 784 bytes; flat lines use 320 bytes.
+Queued fragment storage is now 1,024 bytes, matching the WebGPU binding
+capacity, while normal draws still copy only their existing uniform size.
+The queue regression checks distinct 784-byte payloads on adjacent draws,
+guards against overwriting neighboring storage, and rejects oversized data
+before mutation. Each line currently needs its own endpoint-uniform draw;
+instancing/GPU line preparation and their performance remain future work.
+
+The expanded fixture also exposed missing WebGPU shader/pipeline release
+mappings: cleanup previously fell through to SDL's native driver and crashed
+the worker. Both APIs are now mapped. Shader modules release on the GPU
+server; recorded pipeline operations retain an atomic reference until command
+cleanup. A regression releases shader handles after pipeline creation and
+releases the pipeline handle after recording but before submission, then
+checks the submitted pixels. It passes on hardware and SwiftShader.
+
+The actual browser game and native Linux kernel/video build. A fresh pinned
+runtime reproduces all 91 patched files. Native D3D11's host line path is
+outside this SDL change and still needs equivalent fidelity work and direct
+driver validation; Windows CI does not validate the full patched runtime.
+Arbitrary widths, smoothing, endpoint rules beyond these captures, wider
+stadium/staff fidelity, continuous audio and a sustained 30 FPS floor remain
+unfinished.
+
+The 246-second `line-analytic-retail/report.json` run reaches Atlanta at
+Philadelphia live play in hardware Chrome 157.0.8103.79 (Intel gen-12hp).
+Stadium structure/crowd, uniforms, referee, field markings and intro/HUD
+text remain visible. No browser/GPU/DSP fatal fault is recorded. Five-second
+averages after 150 seconds range from 24.1 to 30.1 FPS. Audio records 158
+underrun blocks overall, including 145 additional blocks after 150 seconds.
+The scene/teams differ from the preceding run, so these are not controlled
+performance comparisons. The trace does not distinguish CPU line batches
+from other CPU VP fallbacks; the capture fixtures provide positive line-path
+evidence. This is integrated stability evidence, not full scene fidelity,
+continuous audio, all-mode accuracy or a sustained 30 FPS floor.
