@@ -1,9 +1,9 @@
 # Stadium and staff rendering checks
 
 Original-Xbox scene/audio matching, complete game-mode fidelity and a sustained
-30 FPS floor remain unfinished. Default audio still bypasses DSP programs.
-An opt-in GP/EP path now executes uploaded programs, but its continuity and
-original-Xbox output matching remain unfinished. The chronological checks
+30 FPS floor remain unfinished. The web launcher now selects executable GP/EP
+audio by default; native launches still default to the legacy bypass. DSP
+continuity and original-Xbox output matching remain unfinished. The chronological checks
 below document specific behavior and limitations.
 
 November 8, 2026. Retail USA disc in Chrome 156 on Windows, hardware WebGPU
@@ -3972,3 +3972,51 @@ Wasm UBSAN, native ASAN/UBSAN and generated-patch check pass; replacement hook
 regeneration is idempotent. Artifact/source hashes and captures remain in the
 private run directory. Its browser and owned server are closed. The pinned
 runtime revision and runtime patch are unchanged by this camera fix.
+
+### Executable GP/EP audio as the web default (2026-11-20)
+
+The launcher now supplies `RECOMP_APU_DSP=1` before URL environment overrides.
+Normal browser launches therefore execute the guest's uploaded GP/EP programs
+instead of summing mixbins through the legacy DSP bypass. An explicit
+`?env=RECOMP_APU_DSP=0` retains the fallback for diagnosis. Native defaults,
+the DSP interpreter, IRQ servicing, catch-up cap, output buffering and optional
+audio-clock wake are unchanged. This removes a known skipped processing stage;
+it does not prove full hardware instruction/effects or original-Xbox parity.
+
+The full launcher browser suite passes against the packaged candidate. New
+checks use the actual launch helper and its `preRun` environment initialization
+with a minimal module factory: a plain URL initializes DSP to one, and the
+explicit zero override reaches initialization unchanged. Existing real-module
+OPFS/hash checks and static-host isolation checks also pass.
+
+`default-dsp-retail` exercises the ordinary launcher URL in owned hardware
+Chrome with the imported retail disc and default 30 FPS cap. Its log confirms
+executable GP/EP initialization without an opt-in URL. There is no CPU/APU/IRQ/
+per-draw profiling or concurrent build. Menu checkpoints, coach selection,
+tailgate/stadium/player intro, coin toss and kickoff return to CIN24 at Q1
+4:57 all have zero missing audio frames. Checked images show models, uniforms,
+referee, crowd, stadium/props and readable UI; they are not matched Xbox frames.
+
+Two subsequent scripted possession intervals contain no inspection pauses:
+
+| Interval | Duration | Additional missing audio | Reported five-second FPS range |
+| --- | --- | --- | --- |
+| Opening possession to first-and-ten at Q1 4:24 | 60.381 s | 1 block / 128 frames (2.667 ms) | 29.8–30.0 |
+| Follow-up possession to third-and-three at Q1 3:31 | 60.389 s | 0 blocks / 0 frames | 24.8–30.1 |
+
+Each range uses the 11 complete reporting windows between its audio
+checkpoints, not instantaneous frame minima. A pause separates the intervals.
+The final sampled audio counter totals one block / 128 frames.
+These data support retaining the functional executable path as the web default,
+but establish neither uninterrupted whole-game audio nor a 30 FPS floor. They
+also do not measure a causal performance change versus the bypass. Original
+output matching and broader mode/effects coverage remain open.
+
+The first navigation case is retained as failed: inspection let Main Menu idle
+back to Press Start before the Quick Game input, so the team-selection wait
+expired. The same live session continued; subsequent intro and possession cases
+have no audit/runtime/GPU/DSP failures. Expected startup TODO sites remain. The
+browser's nonzero exit reflects that retained navigation timeout, not a clean
+whole-run audit pass. Raw report/log, artifact hashes, images and interval
+calculations remain private under the run directory. Its browser and owned
+server are closed. No runtime patch or submodule pin changes are included.

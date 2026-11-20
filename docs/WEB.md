@@ -212,6 +212,11 @@ The game's own SDL code runs unchanged; on the web it runs on workers
   `?autoplay=1`, a "Sound is off" prompt shows over the game and the next
   click or key press anywhere turns sound on. The context runs at 48 kHz,
   the APU's own rate.
+- **Guest audio processing.** The web launcher enables the executable GP/EP
+  DSP path (`RECOMP_APU_DSP=1`) so the game's uploaded programs process its
+  effects and final output. `?env=RECOMP_APU_DSP=0` explicitly selects the
+  legacy mixdown fallback for diagnosis. This web default does not change
+  native launches or establish complete original-Xbox audio parity.
 - **Sound output: an AudioWorklet.** SDL's Emscripten audio pulls samples
   through a `ScriptProcessorNode` on the page's main thread, which is
   deprecated and stalls whenever that thread is busy. So the APU output

@@ -282,7 +282,9 @@ async function play() {
   NFL2K5Launch.start({
     script: 'NFL2K5.js', factory: 'createNFL2K5', canvas, audioContext: audio,
     // Use the game's skip path for the unsupported startup movie.
-    env: ['NFL2K5_SKIP_INTRO=1', `NFL2K5_FPS_LIMIT=${$('fps-limit').value}`, ...params.getAll('env')],
+    // Execute the guest's uploaded GP/EP effects programs. URL env overrides
+    // remain last so RECOMP_APU_DSP=0 can select the legacy fallback.
+    env: ['NFL2K5_SKIP_INTRO=1', 'RECOMP_APU_DSP=1', `NFL2K5_FPS_LIMIT=${$('fps-limit').value}`, ...params.getAll('env')],
     print: (t) => log(t),
     printErr: (t) => log(t, 'stderr'),
     onProgress: (text) => { if (text && !state.launchError) $('game-status').textContent = text; },

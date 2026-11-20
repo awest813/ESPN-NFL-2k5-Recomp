@@ -284,6 +284,26 @@ async function playAndCheckXbe(page, want, label) {
       await page.click('#diagnostics summary');
       const [download] = await Promise.all([page.waitForEvent('download'), page.click('#download-log')]);
       check(download.suggestedFilename() === 'nfl2k5-web-log.txt', 'diagnostic log can be downloaded');
+      // Use the real launch helper and its preRun ENV initialization, with a
+      // minimal module factory so the synthetic disc does not need to boot.
+      for (const override of [null, '0']) {
+        await page.goto('http://127.0.0.1:18765/' + (override === null ? '' : '?env=RECOMP_APU_DSP=' + override));
+        await page.waitForSelector('body[data-ready="1"]');
+        await page.evaluate(hash => {
+          KNOWN_XBE[hash] = 'synthetic test fixture'; renderDisc();
+          window.createNFL2K5 = async options => {
+            const module = {ENV: {}};
+            for (const run of options.preRun) run(module);
+            window.testInitializedEnv = module.ENV;
+            return module;
+          };
+        }, want.xbe_sha256);
+        await page.click('#play');
+        await page.waitForFunction(() => window.testInitializedEnv);
+        check(await page.evaluate(() => testInitializedEnv.RECOMP_APU_DSP) === (override ?? '1'),
+          override === null ? 'normal launch initializes executable GP/EP audio' :
+            'explicit URL override initializes legacy DSP fallback');
+      }
       await context.close();
     }
     {
