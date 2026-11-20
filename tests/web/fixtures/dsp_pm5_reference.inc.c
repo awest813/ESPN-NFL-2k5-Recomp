@@ -93,4 +93,3 @@ static void reference_pm_5(dsp_core_t* dsp)
         dsp56k_write_memory(dsp, memspace, xy_addr, value);
     }
 }
-
