@@ -139,13 +139,13 @@ int main(void) {
     if args.native:
         compiler=shutil.which('clang') or shutil.which('cc')
         if not compiler:parser.error('A native C compiler is required')
-        subprocess.run([compiler,str(source),'-O2','-g','-fsanitize=address,undefined',
+        subprocess.run([compiler,str(source),'-I',str(args.runtime.resolve()/'src/kernel/sdlgpu'),'-O2','-g','-fsanitize=address,undefined',
                         '-fno-omit-frame-pointer','-o',str(output)],check=True)
         subprocess.run([str(output)],check=True)
     else:
         emcc,node=shutil.which('emcc'),shutil.which('node')
         if not emcc or not node:parser.error('Emscripten emcc and Node must be on PATH')
-        subprocess.run([emcc,str(source),'-O3',*([] if args.scalar else ['-msimd128']),'-sALLOW_MEMORY_GROWTH=1','-sENVIRONMENT=node','-o',str(output)],check=True)
+        subprocess.run([emcc,str(source),'-I',str(args.runtime.resolve()/'src/kernel/sdlgpu'),'-O3',*([] if args.scalar else ['-msimd128']),'-sALLOW_MEMORY_GROWTH=1','-sENVIRONMENT=node','-o',str(output)],check=True)
         subprocess.run([node,str(output)],check=True)
 
 

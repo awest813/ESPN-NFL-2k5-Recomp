@@ -76,7 +76,9 @@ jobs:
         run: python3 -I tests/web/test_nv2a_ack_clock.py --native --build-dir build-nv2a-clock
 
       - name: Check same-frame texture content and bounded memo storage (sanitizers)
-        run: python3 -I tests/web/test_texture_hash.py --native --build-dir build-texture-hash
+        run: |
+          python3 -I tests/web/test_texture_hash.py --native --build-dir build-texture-hash
+          python3 -I tests/web/test_texture_hash_algo.py --native --build-dir build-texture-hash-algo
 
       - name: Check real AC97 faults and guest-memory copy boundaries
         run: |

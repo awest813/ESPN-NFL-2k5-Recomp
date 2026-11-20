@@ -8,7 +8,7 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const build=resolve(process.argv[2]||resolve(root,'build-web'));
 const output=resolve(root,'dist-pages');
 const launcher=['index.html','style.css','app.js','launch.js','storage.js','save-worker.js',
-  'save-format.js','import-worker.js','audio-worklet.js','coi-sw.js'];
+  'save-format.js','import-worker.js','audio-worklet.js','coi-sw.js','third-party-notices.txt'];
 const runtime=['NFL2K5.js','NFL2K5.wasm'];
 const allowed=new Set([...launcher,...runtime,'.nojekyll','runtime.json']);
 await mkdir(output,{recursive:true});

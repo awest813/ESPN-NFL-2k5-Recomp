@@ -3938,10 +3938,25 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -114,6 +217,24 @@
+@@ -112,75 +215,198 @@
+     return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
+ }
 
- /* Word-at-a-time multiply/xorshift hash: tens of microseconds for a 256 KB
-  * font page, against milliseconds to decode it. */
+-/* Word-at-a-time multiply/xorshift hash: tens of microseconds for a 256 KB
+- * font page, against milliseconds to decode it. */
+-static uint64_t sg_hash(const uint8_t *p, size_t n, uint64_t h)
+-{
+-    const uint64_t k = 0x9E3779B97F4A7C15ull;
+-    uint64_t w;
+-    for (; n >= 8; p += 8, n -= 8) {
+-        memcpy(&w, p, 8);
+-        h = (h ^ w) * k;
+-        h ^= h >> 29;
+-    }
+-    for (; n; p++, n--)
+-        h = (h ^ *p) * k;
+-    return h ^ (h >> 31);
+-}
 +/* Equality needs no first-differing-byte result. On Wasm, compare complete
 + * vectors instead of the SDK libc's four-byte-at-a-time memcmp loop. All
 + * loads stay inside the requested span, including unaligned guest images. */
@@ -3960,10 +3975,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +    return memcmp(a,b,n)==0;
 +}
 +
- static uint64_t sg_hash(const uint8_t *p, size_t n, uint64_t h)
- {
-     const uint64_t k = 0x9E3779B97F4A7C15ull;
-@@ -130,57 +251,173 @@
++/* Keys are private to the process. XXH64's independent word lanes avoid
++ * the old serial multiply/xorshift dependency while retaining full-byte input. */
++#include "sg_xxhash64.h"
++static uint64_t sg_hash(const uint8_t *p,size_t n,uint64_t h) {return sg_xxh64(p,n,h);}
 
  /* Everything that decides the decoded texels: raw bytes, palette, format,
   * size, row pitch. Wrap and clamp are shader state, not part of the key. */
@@ -4170,7 +4185,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +425,14 @@
+@@ -188,11 +414,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4187,7 +4202,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +448,35 @@
+@@ -208,23 +437,35 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4232,7 +4247,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,18 +497,18 @@
+@@ -245,18 +486,18 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4260,7 +4275,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +518,8 @@
+@@ -266,6 +507,8 @@
              return 0;
          slot->w = w;
          slot->h = h;
@@ -4269,7 +4284,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +527,7 @@
+@@ -273,7 +516,7 @@
      slot->key = 0;
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
@@ -4278,7 +4293,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -291,4 +545,4 @@
+@@ -291,4 +534,4 @@
      if (use->pending)
          use->pending->key = use->pending_key;
      use->pending = NULL;
@@ -28165,6 +28180,98 @@ index 0000000..14b03b7
 +    }
 +    return LineOutputs(position,a.position,a.color,a.specular,a.t0,a.t1,a.t2,a.t3,
 +        b.position,b.color,b.specular,b.t0,b.t1,b.t2,b.t3,vec2f(a.fog,b.fog));
++}
+diff --git a/src/kernel/sdlgpu/sg_xxhash64.h b/src/kernel/sdlgpu/sg_xxhash64.h
+new file mode 100644
+index 0000000..18e9bf7
+--- /dev/null
++++ b/src/kernel/sdlgpu/sg_xxhash64.h
+@@ -0,0 +1,86 @@
++/*
++ * xxHash - Extremely Fast Hash algorithm
++ * Header File
++ * Copyright (C) 2012-2023 Yann Collet
++ *
++ * BSD 2-Clause License (https://www.opensource.org/licenses/bsd-license.php)
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *    * Redistributions of source code must retain the above copyright
++ *      notice, this list of conditions and the following disclaimer.
++ *    * Redistributions in binary form must reproduce the above
++ *      copyright notice, this list of conditions and the following disclaimer
++ *      in the documentation and/or other materials provided with the
++ *      distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * You can contact the author at:
++ *   - xxHash homepage: https://www.xxhash.com
++ *   - xxHash source repository: https://github.com/Cyan4973/xxHash
++ */
++
++/* Compact, one-shot XXH64 adapted from xxHash v0.8.3. Streaming, SIMD
++ * dispatch and the other hash families are intentionally omitted.
++ * Reference: https://github.com/Cyan4973/xxHash/blob/v0.8.3/xxhash.h
++ * Reference SHA256: 17973c0dc49d9854ca26caa191f0e12f7a424b68858d9a78de3860d959d85e4b
++ */
++#pragma once
++#include <stddef.h>
++#include <stdint.h>
++
++#define SG_XXH_P1 UINT64_C(11400714785074694791)
++#define SG_XXH_P2 UINT64_C(14029467366897019727)
++#define SG_XXH_P3 UINT64_C(1609587929392839161)
++#define SG_XXH_P4 UINT64_C(9650029242287828579)
++#define SG_XXH_P5 UINT64_C(2870177450012600261)
++
++static inline uint32_t sg_xxh_read32(const uint8_t *p) {
++    return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24;
++}
++static inline uint64_t sg_xxh_read64(const uint8_t *p) {
++    return (uint64_t)sg_xxh_read32(p) | (uint64_t)sg_xxh_read32(p+4)<<32;
++}
++static inline uint64_t sg_xxh_rot(uint64_t v,unsigned bits) {return (v<<bits)|(v>>(64-bits));}
++static inline uint64_t sg_xxh_round(uint64_t a,uint64_t value) {
++    return sg_xxh_rot(a+value*SG_XXH_P2,31)*SG_XXH_P1;
++}
++static inline uint64_t sg_xxh_merge(uint64_t hash,uint64_t value) {
++    return (hash^sg_xxh_round(0,value))*SG_XXH_P1+SG_XXH_P4;
++}
++static uint64_t sg_xxh64(const uint8_t *p,size_t bytes,uint64_t seed) {
++    size_t remaining=bytes;uint64_t hash;
++    if(remaining>=32) {
++        uint64_t a=seed+SG_XXH_P1+SG_XXH_P2,b=seed+SG_XXH_P2,c=seed,d=seed-SG_XXH_P1;
++        do {
++            a=sg_xxh_round(a,sg_xxh_read64(p));b=sg_xxh_round(b,sg_xxh_read64(p+8));
++            c=sg_xxh_round(c,sg_xxh_read64(p+16));d=sg_xxh_round(d,sg_xxh_read64(p+24));
++            p+=32;remaining-=32;
++        }while(remaining>=32);
++        hash=sg_xxh_rot(a,1)+sg_xxh_rot(b,7)+sg_xxh_rot(c,12)+sg_xxh_rot(d,18);
++        hash=sg_xxh_merge(hash,a);hash=sg_xxh_merge(hash,b);
++        hash=sg_xxh_merge(hash,c);hash=sg_xxh_merge(hash,d);
++    }else hash=seed+SG_XXH_P5;
++    hash+=(uint64_t)bytes;
++    for(;remaining>=8;p+=8,remaining-=8)
++        hash=sg_xxh_rot(hash^sg_xxh_round(0,sg_xxh_read64(p)),27)*SG_XXH_P1+SG_XXH_P4;
++    if(remaining>=4) {
++        hash=sg_xxh_rot(hash^((uint64_t)sg_xxh_read32(p)*SG_XXH_P1),23)*SG_XXH_P2+SG_XXH_P3;
++        p+=4;remaining-=4;
++    }
++    for(;remaining;p++,remaining--)hash=sg_xxh_rot(hash^((uint64_t)*p*SG_XXH_P5),11)*SG_XXH_P1;
++    hash^=hash>>33;hash*=SG_XXH_P2;hash^=hash>>29;hash*=SG_XXH_P3;return hash^(hash>>32);
 +}
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c

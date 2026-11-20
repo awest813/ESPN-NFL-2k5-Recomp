@@ -14,6 +14,10 @@ const base=process.argv[2] || 'https://awest813.github.io/ESPN-NFL-2k5-Recomp/';
     assert.ok(await page.evaluate(()=>crossOriginIsolated && !!navigator.storage?.getDirectory));
     console.log('ok: published project URL is isolated and OPFS is available');
     assert.equal(await page.locator('#chk-build').getAttribute('data-ok'),'yes');
+    assert.equal(await page.locator('footer a[href="third-party-notices.txt"]').count(),1);
+    const notices=await page.request.get(new URL('third-party-notices.txt',base).href);
+    assert.ok(notices.ok() && (await notices.text()).includes('Copyright (C) 2012-2023 Yann Collet'));
+    console.log('ok: published runtime includes its linked XXH64 license notice');
     const result=await page.evaluate(async()=>{
       const manifest=await (await fetch('runtime.json',{cache:'no-cache'})).json();
       const response=await fetch('NFL2K5.wasm',{cache:'no-cache'});

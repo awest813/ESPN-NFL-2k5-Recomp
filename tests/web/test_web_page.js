@@ -39,6 +39,10 @@ async function newPage(browser, url) {
   page.on('pageerror', (e) => console.log('  [pageerror]', e.message));
   await page.goto(url);
   await page.waitForSelector('body[data-ready="1"]', { timeout: 30000 });
+  const notice=await page.request.get(new URL('third-party-notices.txt',url).href);
+  check(await page.locator('footer a[href="third-party-notices.txt"]').count()===1 &&
+    notice.ok() && (await notice.text()).includes('Copyright (C) 2012-2023 Yann Collet'),
+    'launcher links to the distributed XXH64 copyright and license');
   return { context, page };
 }
 

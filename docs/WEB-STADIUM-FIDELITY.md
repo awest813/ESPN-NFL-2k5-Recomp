@@ -2639,3 +2639,55 @@ remain unresolved. Local evidence and Wasm/JS/patch hashes are saved under
 `build-web-tests/texture-coherence-simd-retail`. The 30 FPS floor,
 uninterrupted/reference-matched audio, complete stadium/staff and game-mode
 fidelity remain unfinished.
+
+
+### Full-content texture hashing throughput
+
+The previous Web CI run exposed a stale fixture boundary: frame pacing's
+texture-hint extraction ended at a comment that the coherence fix had changed.
+Commit `cd6d4f8` anchors the fixture to `SG_HASH_MEMO` instead; its Build workflow
+passes all three platform jobs. The local ordinary Web Python unit sequence
+also passes every test. This was a fixture extraction failure, not a reported
+browser runtime failure.
+
+Texture keys now use a compact one-shot XXH64 implementation adapted from
+upstream xxHash v0.8.3. Four independent 64-bit lanes replace the old serial
+multiply/xorshift chain for long images. The process-local keys are rebuilt
+at startup; full-byte equality checks, shape/mip/palette inputs, same-frame
+rewrite visibility and CPU fallback behavior are retained. The helper reads
+unaligned little-endian words without aliasing or alignment assumptions.
+Source attribution and the BSD two-clause license accompany the implementation
+and the allowlisted Pages artifact; the launcher links the notice.
+
+Pinned golden outputs are generated with the unmodified upstream header
+(SHA256 `17973c0dc49d9854ca26caa191f0e12f7a424b68858d9a78de3860d959d85e4b`).
+The production helper matches 19,584 cases in SIMD Wasm, scalar Wasm and native
+ASAN/UBSAN: every short length through 131, larger word/block/power-of-two tails,
+32 alignments, four seeds, exact allocation ends and null/empty input. The
+full-content memo fixture and sanitized native GPU renderer remain passing,
+including queued old/new images across a same-frame rewrite. Linux kernel/video
+and browser game builds pass. A fresh pinned checkout reproduces all 95 patched
+runtime files and passes the reverse check.
+
+A local Wasm/Node benchmark hashes 1,000 1 MiB buffers with changing seeds and
+leading bytes. Across three passes, the old serial hash takes 159.34–161.06 ms
+and XXH64 takes 53.36–54.44 ms. This establishes helper throughput on that host,
+not a whole-game FPS improvement. The complete browser page suite passes,
+including image/folder import, saved data and static-host isolation. A packaged
+Pages smoke test passes isolation/OPFS, linked license availability, Wasm MIME,
+byte count, SHA256 and compilation, save-worker loading and mobile layout.
+
+
+The roughly 246-second retail integration runs the exact allowlisted Pages
+artifact from a server without COOP/COEP headers, exercising service-worker
+isolation with the installed disc. Tampa Bay/Arizona reaches first-and-ten
+at 1:57 in the first quarter. The checked views show players, shadow geometry,
+stadium seating/crowd, sideline staff/equipment and readable roster/scoreboard
+overlays. No browser/GPU failure is reported. The 19 five-second FPS averages
+after 150 seconds range from 24.6 to 30.1. Audio records 218 affected blocks
+and 27,904 missing output frames (581.3 ms at 48 kHz), with a longest continuous
+gap of 2,432 frames (50.7 ms). Different matchups/camera states prevent a
+controlled FPS or audio comparison with preceding runs. Evidence and exact
+Wasm/JS/patch hashes are retained in `build-web-tests/xxh64-retail`. Original-Xbox
+scene/audio parity, all modes/stadium/staff variants and a sustained 30 FPS
+floor remain unfinished.
