@@ -3453,3 +3453,21 @@ establish a whole-game FPS gain. Run `python -I tests/web/test_texture_lookup.py
 --benchmark` to reproduce them. Logs and medians are retained in
 `build-web-tests/texture-lookup-bench*`. The preceding `20fb932` Build/Pages
 and `b0c1e44` Build workflows passed.
+
+The approximately 246-second unprofiled retail capture reaches Minnesota/
+Arizona, first-and-ten at 1:47 in the first quarter. Checked frames show
+stadium crowds/staff, player models and readable intro/HUD text. No browser
+or GPU failures are reported. Its 20 five-second FPS averages after 150
+seconds range from 28.4 to 30.2. Audio records 417 affected blocks and 53,376
+missing frames (1,112.0 ms at 48 kHz), with a longest gap of 2,304 frames
+(48.0 ms). Different matchups/play sequences prevent treating the FPS or audio
+values as a controlled comparison. The isolated lookup speedup is established;
+an overall gameplay gain or audio regression is not established by this run.
+
+Exact served Wasm/JS/worklet, runtime/SDL patches, game configuration and
+symbol-map hashes still match the frozen manifest. Screenshots, telemetry,
+console logs and summary remain in `build-web-tests/texture-lookup-retail`.
+Owned browser and HTTP server were closed. The `7722d12` Build and Pages jobs
+were still running when the capture completed. A sustained 30 FPS floor,
+continuous audio and all-mode/stadium/staff reference fidelity remain
+unfinished.
