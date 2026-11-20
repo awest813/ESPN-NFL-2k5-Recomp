@@ -3236,3 +3236,37 @@ copy, and has SHA-256
 The previous missing-ROM note is stale. Existing reference stills and the
 isolated BIOS/HDD/DVD configuration are available; this check did not launch
 or change xemu and does not establish matched-scene fidelity.
+
+### Real host frame-pacing waits
+
+`tools/benchmark-web-frame-pacing.py` now extracts the production pacer and
+links the installed SDL Wasm archive. An owned isolated headless browser runs
+90 completed frames for each of six synthetic workloads: 0, 10, 20, 28 and
+40 ms, plus repeating 10/14/18/22 ms work. It uses the real SDL sleep and
+production deadline logic. Stub guest-lock functions verify balanced
+release/reacquire pairs and assert that the lock is released during sleep;
+they do not measure real guest contention. An independent
+`emscripten_get_now` clock measures work, waits and completed intervals.
+Logging is deferred until each scenario finishes to avoid stdout proxying
+inside the measured loop. Source/library/generated-code hashes, browser
+identity, per-frame samples and summary statistics are retained locally.
+
+On this Windows 11 / headless Chrome 157 host, the final 540-frame run completes
+without browser errors. Its under-budget scenarios average 29.918-29.981 FPS,
+but their 95th-percentile frame intervals are 47.805-48.190 ms. Median real
+wait overshoot ranges from 5.452 to 9.183 ms; the largest observed overshoot is
+16.433 ms. The 40 ms workload averages 24.999 FPS and performs no pacer waits,
+as expected when work alone exceeds the budget. Results are diagnostic and
+host-specific, not a CI timing gate or a retail-game performance claim.
+They demonstrate that the existing absolute deadline compensates average
+host oversleep while still allowing substantial interval jitter. They do not
+prove the cause of every gameplay stall. Runtime sleep policy is unchanged;
+a precision-wait replacement must also account for CPU use, audio and guest
+lock contention before adoption.
+
+Run `python -I tools/benchmark-web-frame-pacing.py --executable <Chrome-path>`
+with Emscripten and Node on PATH and Playwright available to Node. Artifacts
+are in `build-web-tests/frame-pacing-host`. The owned browser and HTTP server
+were closed after measurement. The preceding `b0927c3` Pages deployment
+succeeded; the SDK compatibility fix's workflows were still running when
+this benchmark was recorded.
