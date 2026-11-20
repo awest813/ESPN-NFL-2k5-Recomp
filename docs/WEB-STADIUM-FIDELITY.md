@@ -4468,3 +4468,40 @@ retail run still fails audio continuity. Its comparison with the earlier
 one-gap run is not a controlled A/B test. Producer/guest scheduling around
 team selection remains an investigation target; this does not establish
 full audio fidelity, complete gameplay or a sustained 30 FPS floor.
+
+### Profiled audio starvation follow-up (2026-11-20)
+
+The frozen `audio-selection-profile` run uses the published `448e3af` candidate
+with `RECOMP_APU_LOCK_PROFILE=1` and `RECOMP_IRQ_PROFILE=1`. It selects Titans
+at 49ers, inspects team/coach/loading presentation and paused kickoff, then
+accepts the VIP quit warning and verifies the neutral main menu. The case and
+browser exit fail on audio: seven snapshots end at 35 affected blocks / 4,480
+missing frames, with a longest continuous gap of 896 frames. Eight inspected
+screenshots, five automatic underrun records and nineteen unchanged artifact
+hashes are retained privately. The owned browser and server are closed.
+
+The first missing frame is at AudioContext second 187.98933333333332. Its
+128-frame gap is observed at page time 208.634 seconds. The following profile
+window, ending at page time 211.161 seconds, reports a 19.4 ms maximum frame
+gap, 16.0 ms wake overshoot, 2.1 ms maximum MMIO handoff and no rebases or
+front-end traps. The adjacent pipeline window reports a 1.9 ms maximum frame.
+The wake measure includes condition waiting and mutex reacquisition; these
+wall-time measurements do not isolate exclusive CPU execution or prove which
+specific wait caused the gap. They do establish that an underrun can occur
+without hitting the 64 ms rebase threshold.
+
+Later underrun records increase the cumulative missing count from 128 to
+4,480 between page times 385.371 and 390.392 seconds. The following schedule
+window reports one 64.2 ms rebase, 18.1 ms wake overshoot, a 7.1 ms maximum MMIO
+handoff and no traps. The last missing output frame is at AudioContext second
+369.50131250000004; counters remain stable through the final snapshot at second
+466.56. The entire capture reports one rebase. The earlier 506-block
+main/team-selection failure is not reproduced here.
+
+This separates two observed timing cases: a small gap without a rebase and
+a later cluster near a rebase. Changing only the rebase threshold is therefore
+insufficient evidence of an audio fix. The profile flags, matchup and input
+timing differ from the preceding unprofiled capture; the lower missing count
+is not an A/B improvement claim. No runtime timing policy changed in this
+follow-up. Host-wait and frame-delivery timing still need investigation, and
+the rendering/gameplay/audio fidelity and sustained 30 FPS goals remain open.
