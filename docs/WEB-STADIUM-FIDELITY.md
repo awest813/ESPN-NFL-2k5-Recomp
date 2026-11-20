@@ -2394,3 +2394,71 @@ host scheduling prevent treating this as a controlled retail performance or
 audio improvement. Rain-scene throughput, uninterrupted audio, original-Xbox
 scene matching and full stadium/staff/game-mode fidelity remain unfinished.
 The preceding `53e66a6` Build and Pages workflows both passed.
+
+
+### Shared acknowledgement maintenance clock
+
+The acknowledgement poller previously read the host clock separately for
+frame-counter maintenance, framebuffer tracing, KeTickCount publication and
+the Wasm unrouted-write scan. The framebuffer trace read occurred even when
+tracing was disabled. The earlier clock-heavy worker profile motivated this
+change; its trampoline-only callback attribution remains an inference.
+
+Each acknowledgement iteration now obtains one fresh millisecond timestamp,
+publishes KeTickCount before diagnostic scans and supplies that timestamp to
+all three maintenance functions. Register acknowledgements, fence/counter
+mirrors and the zero-duration yield still run every iteration. No timed wait,
+clock rate, frame period, audio catch-up limit or guest interrupt policy is
+added or changed. Sharing clock reads removes redundant work per iteration;
+the worker still busy-polls, so lower total CPU utilization is not established.
+
+The new regression extracts the actual maintenance and live-flip functions.
+Actual Wasm checks and native ASAN/UBSAN maintenance checks pass: exactly one
+host-clock read per entry, fresh guest-tick visibility during diagnostics,
+16 ms fallback counters, suppression during live flips, resumption after the
+two-second grace period, invalid device pointers, unsigned millisecond wrap,
+50 ms unrouted-write scan cadence, exempt DSP windows, one-shot warnings,
+1 MiB tile slices and a short final slice, trace suppression and framebuffer
+bounds. Native sanitizer compilation exercises the Wasm scan branch as C;
+the Linux kernel/video build separately compiles the native host branch.
+GPU fence notified-wait/spurious-wake/wrap/stale-publication/guest-lock checks
+and QEMU device-clock overflow/frequency checks also pass. The full browser
+game builds, and a fresh pinned checkout reproduces all 93 runtime files.
+
+The acknowledgement fixture is included in the web test script and Linux
+sanitizer CI. The portable scalar vertex-operand regression from the preceding
+SIMD change also joins the web test script. Shell syntax validation passes.
+
+
+The approximately 246-second owned hardware-Chrome integration run reaches
+rainy Tampa Bay at Cincinnati. The 130-second view renders the referee and
+players over midfield; the 240-second view shows rain/fog, the quarterback,
+score/clock/down overlay and readable defensive-player names. It reaches
+third-and-19, first quarter 2:20. No browser/GPU failure is reported. FPS
+averages after 150 seconds range from 17.3 to 24.7. Audio records 99 affected
+blocks and 12,672 missing output frames (264 ms at 48 kHz); its longest
+continuous gap is 7,680 frames (160 ms). The 30 FPS floor and uninterrupted
+audio remain unmet. CPU sampling and different teams/scenes prohibit a
+controlled comparison with the preceding retail runs.
+
+The 4 ms, approximately 150–240 second owned-worker capture saves 20 live
+worker profiles plus the page. Two temporary save workers detach before
+profiling and have no profile. The exact Wasm hash and symbol map are retained
+with the local capture. In the clock-heavy worker, sampled inclusive time
+beneath GetTickCount is 45.45 s of 89.90 s, compared with 71.40 s of 89.96 s
+in the earlier `2bfd8e8` capture. Total self time in `_emscripten_get_now` and
+its `now` child stays high (about 67.73 versus 66.49 s). The callback remains
+hidden by a trampoline, so acknowledgement-worker identity is still inferred.
+These profiles include waits and are not CPU-utilization accounting or a
+controlled before/after FPS test.
+
+Inspection of the installed SDK's `sched_yield.c` explains a remaining hot
+path: Wasm `Sleep(0)` calls `_emscripten_yield(emscripten_get_now())`. Thus the
+Wasm poll loop still has a separate yield-clock read in addition to its one
+maintenance-clock read. This change reduces the four maintenance queries to
+one; it does not remove busy polling or establish lower total CPU use. The
+renderer profile still spends substantial sampled time in prepared vertex
+interpretation and source fetches, while rainy line indices remain numerous.
+Further throughput work needs structural polling/line-transformation changes,
+with original-Xbox fidelity and full stadium/staff/mode coverage still open.
+The preceding `deed844` Build and Pages workflows both passed.

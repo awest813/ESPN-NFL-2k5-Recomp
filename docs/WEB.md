@@ -388,6 +388,12 @@ Tests, in headless Chromium with WebGPU on SwiftShader (flags in the tests):
   against the original interpreter in Node. It checks output registers,
   constant writes, program-cache invalidation and diagnostic registers,
   and reports an informational throughput benchmark.
+- `python tests/web/test_nv2a_ack_clock.py` checks the production shared
+  acknowledgement clock: guest tick publication, frame-counter pacing/live
+  flips, tracing and unrouted-write scan cadence, slice bounds and rollover.
+  `--native` runs the same maintenance cases with ASAN/UBSAN.
+- `python tests/web/test_vp_interpreter.py --scalar` exercises the portable
+  operand path. Both SIMD and scalar variants run in the web test script.
 - `python tests/web/test_vp_wgsl.py` generates cases from the live WGSL
   translator and CPU interpreter. Then `node tests/web/test_vp_wgsl.js`
   checks 2,048 GPU executions and renders a triangle using the production

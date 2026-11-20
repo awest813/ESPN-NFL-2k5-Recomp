@@ -38205,7 +38205,19 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
  /* The snapshot published for one mirror, or 0 when nothing is published
   * yet (the tick then leaves the guest value alone). */
  static int pb_async_done(PbSnap *out)
-@@ -827,7 +877,11 @@
+@@ -776,9 +826,8 @@
+     }
+ }
+
+-static void frame_counters_tick(void)
+-{
+-    DWORD now = GetTickCount();
++static void frame_counters_tick(DWORD now)
++{
+     int i;
+
+     if (!g_frame_counter_count)
+@@ -827,7 +876,11 @@
              get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
              if (!fence_readable(get_ptr, 4))
                  continue;
@@ -38217,7 +38229,20 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
              continue;
          }
 
-@@ -1185,8 +1239,13 @@
+@@ -886,11 +939,10 @@
+     return s_fb_va;
+ }
+
+-static void framebuffer_probe_tick(void)
++static void framebuffer_probe_tick(DWORD now)
+ {
+     static DWORD last_ms;
+     static uint32_t last_sum;
+-    DWORD now = GetTickCount();
+     uint32_t sum = 0, nonzero = 0, i, n;
+     const uint32_t *p;
+
+@@ -1185,8 +1237,13 @@
          if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4))
              continue;
          sem = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
@@ -38232,7 +38257,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      }
  }
 
-@@ -1275,6 +1334,68 @@
+@@ -1275,6 +1332,81 @@
      }
  }
 
@@ -38251,12 +38276,11 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 + * Each is reported once. The scan runs in 1 MB slices every 50 ms on this
 + * already-polling thread, so a full pass over the tiled aperture takes about
 + * three seconds and no single call is long. */
-+static void wasm_unrouted_check(void)
++static void wasm_unrouted_check(DWORD now)
 +{
 +    static DWORD next_tick;
 +    static size_t tiled_cursor;
 +    static int apu_said, tiled_said;
-+    DWORD now = GetTickCount();
 +
 +    if ((LONG)(now - next_tick) < 0)
 +        return;
@@ -38298,20 +38322,51 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 +}
 +#endif
 +
++/* Every maintenance task observes the same fresh millisecond clock. Publish
++ * KeTickCount before diagnostic scans; acknowledgements still run every loop. */
++static void nv2a_ack_clock_tick(void)
++{
++    DWORD now = GetTickCount();
++    *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
++                           + g_memory_offset) = now;
++    frame_counters_tick(now);
++    framebuffer_probe_tick(now);
++#if defined(__EMSCRIPTEN__)
++    wasm_unrouted_check(now);
++#endif
++}
++
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -1366,6 +1487,9 @@
-         *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
-                                + g_memory_offset) = GetTickCount();
+@@ -1323,8 +1455,6 @@
+         }
+         fence_mirrors_tick();
+         counter_mirrors_tick();
+-        frame_counters_tick();
+-        framebuffer_probe_tick();
 
-+#if defined(__EMSCRIPTEN__)
-+        wasm_unrouted_check();
-+#endif
+         /* Which framebuffer the display would be scanning out.
+          *
+@@ -1357,15 +1487,8 @@
+             }
+         }
+
+-        /* Advance KeTickCount. It was written once at init and left frozen,
+-         * which silently breaks every timeout that polls it: Halo's DHCP setup
+-         * waits on a tick deadline that never arrives and spins forever bringing
+-         * up XNet. A live clock is also just the truth -- KeTickCount ticks on
+-         * hardware whether or not anyone is asleep. GetTickCount() shares the
+-         * millisecond unit, so the rate matches. */
+-        *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
+-                               + g_memory_offset) = GetTickCount();
+-
++        /* KeTickCount remains live even when no frame is presented. */
++        nv2a_ack_clock_tick();
          Sleep(0);  /* yield; the waiter is spinning on another core */
      }
      return 0;
-@@ -1863,8 +1987,12 @@
+@@ -1863,8 +1986,12 @@
          /* Reserve base + mirrors as one range, and map the base at its head.
           * VirtualFree releases just the slice about to be used, so each view
           * replaces our own reservation rather than racing for free space. */
@@ -38326,7 +38381,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
           * Windows MEM_RELEASE requires size zero and releases the whole
           * reservation; use the fixed-base views below on Windows. */
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
-@@ -2521,9 +2649,20 @@
+@@ -2521,9 +2648,20 @@
                      VirtualProtect((char *)g_mcpx_memory + 0x50000u, 0xF000u,
                                     PAGE_READWRITE, &old_protect);
                  }
@@ -38347,7 +38402,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
                  *(volatile uint32_t *)((char *)g_mcpx_memory
                                         + MCPX_AC97_CODEC_STATUS)
                      |= MCPX_AC97_CODEC_READY;
-@@ -2628,6 +2767,15 @@
+@@ -2628,6 +2766,15 @@
       * intervals. All views alias the same physical pages, so reads and
       * writes at any mirror address correctly access the base data.
       */
@@ -38363,7 +38418,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      {
          int mirrors_ok = 0;
          /* The tiled aperture is a specific architectural alias -- physical RAM
-@@ -2679,6 +2827,7 @@
+@@ -2679,6 +2826,7 @@
                  mirrors_ok, XBOX_NUM_MIRRORS,
                  (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
      }
@@ -38371,7 +38426,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 
      /*
       * Tiled / write-combined aperture at 0xF0000000.
-@@ -2725,11 +2874,25 @@
+@@ -2725,11 +2873,25 @@
                  tiled_size,
                  (LPVOID)tiled_native)
              : NULL;
