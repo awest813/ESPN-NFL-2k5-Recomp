@@ -5103,10 +5103,10 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
   * APU frame thread (background processing)
   * ============================================================ */
 
-+/* Hand already-queued register writes the lock at a frame boundary, even
-+ * when the mixer is catching up. New arrivals must not extend this handoff
-+ * indefinitely: voices still need their next frame. Writes remain excluded
-+ * from se_frame(), and the next boundary services another pending cohort. */
++/* Hand queued register accesses the lock at a frame boundary, even when
++ * the mixer is catching up. New arrivals must not extend this handoff
++ * indefinitely: voices still need their next frame. Accesses remain excluded
++ * from se_frame(), and the next boundary services another pending group. */
 +static void mcpx_apu_service_mmio_waiters(MCPXAPUState *d)
 +{
 +    unsigned pending=(unsigned)qatomic_fetch_add(&d->mmio_waiters,0);
@@ -5278,7 +5278,19 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
  }
 
  /* ============================================================
-@@ -749,6 +904,20 @@
+@@ -746,9 +901,31 @@
+  * addr is offset from APU base (0xFE800000)
+  * ============================================================ */
+
++/* Caller owns d->lock. Both protected DSP reads and writes register as
++ * waiters, so both must advance the frame-boundary completion sequence. */
++static void mcpx_apu_mmio_complete(MCPXAPUState *d)
++{
++    d->mmio_completed++;
++    qatomic_fetch_add(&d->mmio_waiters,-1);
++    qemu_cond_signal(&d->cond);
++}
++
  uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size)
  {
      if (!d) return 0;
@@ -5291,15 +5303,14 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 +        bool gp = addr < 0x40000;
 +        uint64_t result = mcpx_apu_dsp_read(d, gp,
 +                            (uint32_t)addr - (gp ? 0x30000 : 0x50000), size);
-+        if (qatomic_fetch_add(&d->mmio_waiters, -1) == 1)
-+            qemu_cond_signal(&d->cond);
++        mcpx_apu_mmio_complete(d);
 +        qemu_mutex_unlock(&d->lock);
 +        return result;
 +    }
      if (addr >= 0x20000 && addr < 0x30000) {
          return mcpx_apu_vp_read(d, addr - 0x20000, size);
      } else if (addr < 0x20000) {
-@@ -766,9 +935,36 @@
+@@ -766,9 +943,32 @@
       * were overwritten by the voice processor: NFL 2K5's music streamer saw
       * its positions jump and restarted the song every 1-5 s, and announcer
       * lines were cut (2026-10-01). The lock is a recursive critical section. */
@@ -5308,11 +5319,7 @@ diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
      qemu_mutex_lock(&d->lock);
 +    int64_t acquired = s_apu_lock_profile ? qemu_clock_get_us(QEMU_CLOCK_REALTIME) : 0;
      mcpx_apu_dispatch_mmio(d, (hwaddr)addr, val, size, true);
-+    d->mmio_completed++;
-+    qatomic_fetch_add(&d->mmio_waiters,-1);
-+    /* Wake a bounded frame-boundary handoff after every completed write,
-+     * including when other writers are still arriving. */
-+    qemu_cond_signal(&d->cond);
++    mcpx_apu_mmio_complete(d);
      qemu_mutex_unlock(&d->lock);
 +    if (s_apu_lock_profile) {
 +        static XBOX_THREAD_LOCAL int64_t since, wait_total, wait_max, dispatch_max;
@@ -5464,8 +5471,8 @@ diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
 
      QemuThread apu_thread;
      QemuMutex lock;
-+    volatile int mmio_waiters; /* writers announced before taking lock */
-+    uint32_t mmio_completed; /* completed writes, protected by lock */
++    volatile int mmio_waiters; /* protected accesses announced before lock */
++    uint32_t mmio_completed; /* completed protected accesses, under lock */
      QemuCond cond;
      QemuCond idle_cond;
      bool pause_requested;

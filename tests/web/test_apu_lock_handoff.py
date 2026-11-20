@@ -44,11 +44,11 @@ typedef struct {
     pthread_cond_t cond;
     volatile int mmio_waiters;
     uint32_t mmio_completed;
-    bool exiting;
+    bool exiting,dsp_enabled;
 } MCPXAPUState;
 static bool s_apu_lock_profile=true;
 /* PROFILE */
-static int in_frame, writes, frames, started, waits, signals;
+static int in_frame, writes, reads, read_only, frames, started, waits, signals;
 static MCPXAPUState *simulated_flood;
 static unsigned simulated_waits;
 static void qemu_mutex_lock(pthread_mutex_t *m) { assert(!pthread_mutex_lock(m)); }
@@ -72,7 +72,14 @@ static void mcpx_apu_dispatch_mmio(MCPXAPUState *d,hwaddr a,uint64_t v,unsigned 
     assert(write && !in_frame);
     writes++;
 }
+static uint64_t mcpx_apu_dsp_read(MCPXAPUState *d,bool gp,uint32_t addr,unsigned size) {
+    (void)d;assert(!in_frame);reads++;return (addr+(gp?0x30000u:0x50000u))^size;
+}
+static uint64_t mcpx_apu_vp_read(MCPXAPUState*d,uint32_t addr,unsigned size){(void)d;return addr^size;}
+static uint64_t mcpx_apu_read(MCPXAPUState*d,hwaddr addr,unsigned size){(void)d;return addr^size;}
 /* HANDOFF */
+/* COMPLETE */
+/* READ */
 /* WRITE */
 static void *mixer(void *arg) {
     MCPXAPUState *d=arg;
@@ -97,7 +104,10 @@ static void *mixer(void *arg) {
 static void *writer(void *arg) {
     MCPXAPUState *d=arg;
     for(unsigned i=0;i<5000;i++) {
-        mcpx_apu_mmio_write(d,0x20000,i,4);
+        if(read_only==1 || (read_only==2 && (i&1))) {
+            uint64_t addr=i&2?0x30008u:0x50010u;
+            assert(mcpx_apu_mmio_read(d,addr,4)==(addr^4u));
+        }else mcpx_apu_mmio_write(d,0x20000,i,4);
         if(i==2500) emscripten_thread_sleep(5);
     }
     return NULL;
@@ -115,24 +125,38 @@ int main(void) {
     simulated_flood=NULL;d.mmio_waiters=1;d.mmio_completed=0;
     int old_signals=signals;mcpx_apu_mmio_write(&d,0x20000,0,4);
     assert(d.mmio_waiters==1 && d.mmio_completed==1 && signals==old_signals+1);
-    d.mmio_waiters=0;d.mmio_completed=0;writes=0;
-    pthread_t mix,a,b;
-    assert(!pthread_create(&mix,NULL,mixer,&d));
-    while(!__atomic_load_n(&started,__ATOMIC_ACQUIRE)) emscripten_thread_sleep(0.1);
-    assert(!pthread_create(&a,NULL,writer,&d));assert(!pthread_create(&b,NULL,writer,&d));
-    assert(!pthread_join(a,NULL));assert(!pthread_join(b,NULL));
-    while(__atomic_load_n(&frames,__ATOMIC_ACQUIRE)<2) emscripten_thread_sleep(0.1);
-    __atomic_store_n(&d.exiting,true,__ATOMIC_RELEASE);qemu_cond_signal(&d.cond);
-    assert(!pthread_join(mix,NULL));
-    assert(writes==10000 && d.mmio_completed==10000 && !d.mmio_waiters && waits>2 && !in_frame);
+    d.dsp_enabled=true;old_signals=signals;
+    assert(mcpx_apu_mmio_read(&d,0x30008,4)==(0x30008u^4u));
+    assert(d.mmio_waiters==1 && d.mmio_completed==2 && signals==old_signals+1);
+    d.dsp_enabled=false;old_signals=signals;int old_reads=reads;
+    assert(mcpx_apu_mmio_read(&d,0x30008,4)==0);
+    assert(mcpx_apu_mmio_read(&d,0x20,4)==(0x20u^4u));
+    assert(mcpx_apu_mmio_read(&d,0x20020,4)==(0x20u^4u));
+    assert(d.mmio_waiters==1 && d.mmio_completed==2 && signals==old_signals && reads==old_reads);
+    d.dsp_enabled=true;
+    /* Exercise real write-only, read-only and mixed producers against the mixer. */
+    for(unsigned phase=0;phase<3;phase++) {
+        d.mmio_waiters=0;d.mmio_completed=0;writes=reads=frames=started=0;
+        d.exiting=false;read_only=(int)phase;
+        pthread_t mix,a,b;
+        assert(!pthread_create(&mix,NULL,mixer,&d));
+        while(!__atomic_load_n(&started,__ATOMIC_ACQUIRE)) emscripten_thread_sleep(0.1);
+        assert(!pthread_create(&a,NULL,writer,&d));assert(!pthread_create(&b,NULL,writer,&d));
+        assert(!pthread_join(a,NULL));assert(!pthread_join(b,NULL));
+        while(__atomic_load_n(&frames,__ATOMIC_ACQUIRE)<2) emscripten_thread_sleep(0.1);
+        __atomic_store_n(&d.exiting,true,__ATOMIC_RELEASE);qemu_cond_signal(&d.cond);
+        assert(!pthread_join(mix,NULL));
+        assert(writes==(phase==2?5000:phase?0:10000) && reads==(phase==2?5000:phase?10000:0));
+        assert(d.mmio_completed==10000 && !d.mmio_waiters && waits>2 && !in_frame);
+    }
     /* Shutdown does not park behind a pending writer. */
     int previous=waits;d.mmio_waiters=1;
     qemu_mutex_lock(&d.lock);mcpx_apu_service_mmio_waiters(&d);qemu_mutex_unlock(&d.lock);
     assert(waits==previous);
     pthread_cond_destroy(&d.cond);pthread_mutex_destroy(&d.lock);pthread_mutexattr_destroy(&attr);
-    puts("PASS APU handoff: bounded continuous arrivals, spurious wakes, per-write notifications, completion wrap, 10000 contended writes, frame-boundary exclusion, continued mixing and shutdown");
+    puts("PASS APU handoff: bounded continuous arrivals, spurious wakes, per-write notifications, completion wrap, 10000 contended writes, 10000 DSP reads and 10000 mixed accesses, frame-boundary exclusion, continued mixing and shutdown");
 }
-'''.replace('/* PROFILE */',source[source.index('/* APU schedule profile:'):source.index('/* Forward declarations')]).replace('/* HANDOFF */', function('static void mcpx_apu_service_mmio_waiters(')).replace('/* WRITE */', function('void mcpx_apu_mmio_write('))
+'''.replace('/* PROFILE */',source[source.index('/* APU schedule profile:'):source.index('/* Forward declarations')]).replace('/* HANDOFF */', function('static void mcpx_apu_service_mmio_waiters(')).replace('/* COMPLETE */',function('static void mcpx_apu_mmio_complete(') if 'static void mcpx_apu_mmio_complete(' in source else '').replace('/* READ */',function('uint64_t mcpx_apu_mmio_read(')).replace('/* WRITE */', function('void mcpx_apu_mmio_write('))
 out=args.build_dir.resolve()
 out.mkdir(parents=True,exist_ok=True)
 (out/'test.c').write_text(harness,encoding='utf-8')

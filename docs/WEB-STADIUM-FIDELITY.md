@@ -2805,3 +2805,24 @@ audio is not established. Evidence and exact served Wasm/JS/patch hashes are
 retained in `build-web-tests/apu-cohort-retail`. Original-Xbox fidelity,
 complete mode/stadium/staff coverage, default DSP output matching and a 30 FPS
 floor remain unfinished.
+
+
+### DSP-read completion accounting follow-up
+
+The next audit found an omitted path in `49d2558`: protected GP/EP memory reads
+incremented the same waiter count as writes but did not increment the newly
+added completion sequence. A read-only group could leave the mixer waiting
+for a subsequent write. A shared completion helper now handles both protected
+reads and writes under the APU lock, advances the sequence, decrements the
+waiter count and signals progress. Ordinary register/voice reads and disabled
+DSP reads keep their prior routing and do not join this handoff.
+
+The published predecessor fails the new DSP-read completion assertion. The
+expanded production-function fixture passes Wasm and native ASAN/UBSAN with
+10,000 write-only, 10,000 GP/EP read-only and 10,000 mixed accesses, plus
+continuous arrivals, spurious wakes, wrap and shutdown checks. Read return
+values and frame-boundary exclusion are checked. The GP/EP firmware fixture
+now includes the production completion helper and passes. The other ordinary
+Web Python checks pass, and browser/native APU/kernel/video builds pass.
+The correction addresses this accounting defect; it does not establish audio
+continuity or original-Xbox output matching.
