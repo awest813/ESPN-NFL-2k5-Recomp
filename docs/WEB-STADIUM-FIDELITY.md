@@ -1996,3 +1996,81 @@ GPU-driver leak detection disabled. The actual browser game and Linux
 kernel/video targets build. Fresh pinned-source and reverse-application
 checks reproduce all 91 runtime files. Documentation encoding introduced in
 the preceding width-sweep edit is corrected without changing its evidence.
+
+
+### Batched analytic lines and compact queued uniforms
+
+SDL lines now group up to 12 consecutive segments into one triangle draw.
+Each segment retains its own two original endpoints and a flat vertex-carried
+index into the endpoint array. The candidate geometry, inferred NV2A coverage
+rule, cap/tie handling and fragment interpolation remain the same. The new
+vertex format is 12 bytes (screen XY and segment index); 3D line candidates
+previously occupied the ordinary 116-byte transformed-vertex format. Ordinary
+triangles retain their existing formats and shaders.
+
+The 3D fragment payload is 3,600 bytes; flat lines use 3,136 bytes. Twelve was
+chosen to fit the pinned native SDL Vulkan backend's 4,096-byte descriptor
+range (`MAX_UBO_SECTION_SIZE` in
+[SDL 3.2.20](https://github.com/libsdl-org/SDL/blob/release-3.2.20/src/gpu/vulkan/SDL_gpu_vulkan.c)).
+A preliminary 32-segment implementation passed WebGPU masks but rendered no
+native line pixels because its 8,720-byte payload exceeded that range. It
+was replaced before publication. WebGPU's fragment binding now spans 4,096
+bytes, and the existing oversized-uniform failure regressions reject 4,097
+bytes before reading caller data. The uniform allocation reserves sufficient
+trailing space for either binding size.
+
+Queued fragment data now lives in the same growing uniform slab as vertex
+uniforms, with separate offsets and complete sizes. It no longer reserves a
+fixed fragment array in every queued draw. Vertex-uniform deduplication and
+fragment-state comparisons for adjacent-draw merging use the stored offsets;
+the queue tests retain distinct 3,600-byte payloads across adjacent draws,
+check guard bytes, reject oversized data before mutation, and verify merge
+boundaries and index order. Each line batch uploads a pending texture once;
+later chunks reuse that upload instead of copying it for every segment.
+
+Native 2D/3D SDL GPU and software paths still pass all 34 capture-derived
+width masks with zero missing or extra pixels. Hardware WebGPU and independent
+SwiftShader pass both the earlier single-line sweep and the new batched
+2D/3D sweep, including the reference loop crossing a batch boundary. Colour
+coverage retains the previously stated limits: full foreground RGB for width
+8, deterministic probes for other widths, and the smaller isolated maximum-
+width crop. These checks do not prove arbitrary line or full scene fidelity.
+
+A native half-alpha regression draws 65 overlapping alternating-colour lines
+in exactly six queued draws and checks the final blended colour in 2D and 3D.
+It passes across all five 12-segment boundaries. New browser probes explicitly
+select the final endpoint slot and check texture coordinates, texture alpha-
+kill, single-hit diagonal blending, non-unit W colour, conservative padding,
+final alpha discard and a visible rear line after that discard. Both browser
+backends report zero GPU validation errors. Native address/undefined sanitizers
+pass with driver leak detection disabled. The 232,822-case Wasm line regression,
+8,192-state pipeline cache checks, actual browser game and Linux kernel/video
+builds pass. A fresh pinned source reproduces all 92 runtime files, including
+the new candidate vertex shader. Native D3D11 remains outside this SDL path.
+
+The profile's line-draw counter counts queued groups before adjacent merging
+and scissor expansion. It is separate from the high-level CPU VP line-batch
+counter and from the final number of clipped GPU API draw calls.
+
+The approximately 246-second `line-batch12-retail/report.json` run reaches
+Miami at Dallas live play in hardware Chrome 157.0.8103.79 / Intel gen-12hp.
+The 130-second frame shows the referee, uniforms, stadium roof/crowd and
+readable coin-toss text; the 240-second frame shows live play, sideline
+staff/players, equipment, markers and field art. The report records no
+browser/GPU failure. DSP, renderer/stage profiling and APU lock/stage profiling
+were enabled with the 30 FPS cap. Completed intervals record 1,142,312 line
+segments in 110,129 queued groups, averaging 10.37 segments per group. This
+is a measured reduction in line draw requests versus one request per segment,
+not a count of final post-merge/scissor GPU API calls.
+
+Five-second averages after 150 seconds range from 29.1 to 30.1 FPS. Audio
+records 143 worklet underrun blocks overall, including 129 additional blocks
+after 150 seconds. The teams/scenes and instrumentation differ from preceding
+runs, so FPS/audio differences cannot be attributed to batching. Late APU
+profile windows process 7,494, 7,495 and 7,501 32-sample frames over roughly
+five seconds, with 2.29 to 2.48 seconds of measured processing time and worst
+frames of 2.2 to 3.9 ms. These samples do not establish a specific underrun
+cause; front-end trap waits and scheduling still need separate correlation.
+Broader rendering/audio/gameplay accuracy, all stadium/staff variants and a
+sustained 30 FPS floor remain unfinished. The preceding `a87c62d` publication
+passed both Build and Pages workflows.

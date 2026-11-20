@@ -23,7 +23,8 @@ typedef struct {uint32_t x[8],y[8],exclusive;} SgWindowClip;
 int main(void) {
     SgQueuedDraw draws[2]={{0}};
     uint32_t indices[9]={0,1,2,2,0,1,0,2,1};
-    SgQueue q={.draws=draws,.count=1,.idata=(uint8_t*)indices};
+    uint8_t uniforms[128]={0};uniforms[48]=1;
+    SgQueue q={.draws=draws,.count=1,.idata=(uint8_t*)indices,.udata=uniforms};
     SgQueuedDraw a={.pipe=(void*)1,.vertex_count=3,.vertex_stride=16,.index_count=3,.vs_size=16,.fs_size=24};
     SgQueuedDraw b=a; b.vertex_offset=48;b.index_offset=12;
     draws[0]=a;
@@ -31,7 +32,7 @@ int main(void) {
     REJECT(x.pipe=(void*)2); REJECT(x.vertex_stride=32); REJECT(x.vertex_offset++);
     REJECT(x.index_count=0); REJECT(x.index_offset++);
     REJECT(x.tex_count=1); REJECT(x.vs_offset=16); REJECT(x.vs_size++);
-    REJECT(x.fs_size++); REJECT(x.fs[0]=1); REJECT(x.stencil_ref=1);
+    REJECT(x.fs_size++); REJECT(x.fs_offset=48); REJECT(x.stencil_ref=1);
     REJECT(x.scissor.x=1); REJECT(x.window_clip.x[3]=1); REJECT(x.window_clip.exclusive=1);
     REJECT(x.blend_constant.r=1);
     draws[0].tex_count=b.tex_count=1;

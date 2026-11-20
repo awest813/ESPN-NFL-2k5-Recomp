@@ -28,7 +28,7 @@ typedef struct { int x,y,w,h; } SDL_Rect;
 typedef struct { float r,g,b,a; } SDL_FColor;
 typedef struct { uint32_t x[8],y[8],exclusive; } SgWindowClip;
 typedef struct { int owner; } SgSurface;
-enum { SG_OWNER_GUEST, SG_OWNER_GPU, SG_QUEUE_MAX_DRAWS=8192 };
+enum { SG_OWNER_GUEST, SG_OWNER_GPU, SG_QUEUE_MAX_DRAWS=8192, SG_MAX_FRAGMENT_UNIFORM=4096 };
 typedef struct { SDL_GPUTexture *tex; SDL_GPUSampler *sampler;
     void *upload; uint32_t w,h,layers,levels; } SgTextureUse;
 /* TYPES */
@@ -48,7 +48,7 @@ int main(void) {
     s_sg_queue.draws=storage.draws; s_sg_queue.cap=2;
     SgSurface surface={0}; SgTextureUse textures[8]={{0}};
     float vertex[4]={0},uniform[4]={0};
-    struct {SgXfShade base;uint8_t line[272];} first,second;
+    struct {SgXfShade base;uint8_t line[3088];} first,second;
     memset(&first,0x39,sizeof first); memset(&second,0xC5,sizeof second);
     SgDraw d={.surface=&surface,.pipe=(void*)1,.vertices=vertex,
         .vertex_bytes=sizeof vertex,.vertex_count=1,.tex=textures,.tex_count=8,
@@ -58,12 +58,12 @@ int main(void) {
     d.pipe=(void*)2; d.fs_uniform=&second;
     assert(sg_queue_draw(&d));
     assert(s_sg_queue.count==2);
-    assert(!memcmp(storage.draws[0].fs,&first,sizeof first));
-    assert(!memcmp(storage.draws[1].fs,&second,sizeof second));
+    assert(!memcmp(s_sg_queue.udata+storage.draws[0].fs_offset,&first,sizeof first));
+    assert(!memcmp(s_sg_queue.udata+storage.draws[1].fs_offset,&second,sizeof second));
     for(unsigned i=0;i<sizeof storage.guard;i++) assert(storage.guard[i]==0xA7);
     printf("ok: %zu-byte 3D uniforms survive adjacent draws without overwriting the queue\n",sizeof first);
     uint32_t old_count=s_sg_queue.count,old_bytes=s_sg_queue.vbytes;
-    d.fs_uniform_size=sizeof storage.draws[0].fs+1;
+    d.fs_uniform_size=SG_MAX_FRAGMENT_UNIFORM+1;
     assert(!sg_queue_draw(&d));
     assert(s_sg_queue.count==old_count && s_sg_queue.vbytes==old_bytes);
     puts("ok: oversized fragment uniforms are rejected before queue mutation");
