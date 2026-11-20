@@ -64,15 +64,26 @@ static void check_edge(void *ctx,unsigned a,unsigned b,unsigned provoking) {
 static void capture(void *ctx,const XfVert *a,const XfVert *b) {clipped[0]=*a;clipped[1]=*b;emitted++;}
 static void close_to(float a,float b) {assert(fabsf(a-b)<0.0001f);checks++;}
 int main(void) {
-    for(unsigned angle=0;angle<360;angle+=15) {
-        float theta=angle*.0174532925199433f,dx=40*cosf(theta),dy=40*sinf(theta);
-        float a[]={32,32},b[]={32+dx,32+dy},quad[4][2];
-        assert(line_quad(a,b,quad));
+    const unsigned initial[]={0,7,8,511};
+    for(unsigned old=0;old<4;old++)for(unsigned raw=0;raw<1024;raw++) {
+        uint32_t state=initial[old];nv_line_width_write(&state,raw);
+        assert(state==(raw<512?raw:initial[old]));checks++;
+    }
+    const float widths[]={.125f,.5f,1,1.125f,16,63.875f};
+    for(unsigned angle=0;angle<360;angle+=15)for(unsigned w=0;w<sizeof widths/sizeof *widths;w++) {
+        float theta=angle*.0174532925199433f,dx=40*cosf(theta),dy=40*sinf(theta),width=widths[w];
+        float a[]={0,0},b[]={dx,dy},quad[4][2];
+        assert(line_quad_width(a,b,width,quad));
         float nx=quad[3][0]-quad[0][0],ny=quad[3][1]-quad[0][1];
         float extent=fmaxf(fabsf(dx),fabsf(dy))+.5f*fminf(fabsf(dx),fabsf(dy));
-        close_to(hypotf(nx,ny),extent/hypotf(dx,dy));close_to(nx*dx+ny*dy,0);
+        close_to(hypotf(nx,ny),width*extent/hypotf(dx,dy));close_to((nx*dx+ny*dy)/width,0);
         close_to(quad[1][0]-quad[0][0],dx);close_to(quad[1][1]-quad[0][1],dy);
     }
+    {uint32_t state=15;nv_line_width_write(&state,0xFFFFFFFFu);assert(state==15);
+     nv_line_width_write(&state,0x80000000u);assert(state==15);}
+    {float a[]={0,0},b[]={40,40},q[4][2],t;
+     assert(!line_quad_width(a,b,0,q) && !line_quad_width(a,b,-1,q) && !line_quad_width(a,b,INFINITY,q));
+     assert(!line_sample(a,b,INFINITY,20.5f,20.5f,&t));}
     {float a[]={0,0},b[]={0,0},q[4][2];assert(!line_quad(a,b,q));
      b[0]=INFINITY;assert(!line_quad(a,b,q));b[0]=NAN;assert(!line_quad(a,b,q));
      b[0]=1000001;assert(!line_quad(a,b,q));}

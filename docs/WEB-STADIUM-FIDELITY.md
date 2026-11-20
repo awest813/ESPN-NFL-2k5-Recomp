@@ -66,10 +66,10 @@ node tests/web/test_audit_diagnostics.cjs
 node tests/web/test_audit_browser.cjs
 ```
 
-## Widescreen stopping point — November 15, 2026
+## Widescreen stopping point â€” November 15, 2026
 
 The SDL/WebGPU presenter now distinguishes display aspect from guest pixel
-aspect. Its default crop (640×448 from 720×480) fills a 16:9 GPU canvas;
+aspect. Its default crop (640Ã—448 from 720Ã—480) fills a 16:9 GPU canvas;
 fullscreen fits that canvas inside the window. The portable presentation
 callback identifies match views using checked guest reads, including pregame,
 and excludes pause/play-call states. The camera patch uses the visible source
@@ -87,7 +87,7 @@ Validation at this stopping point:
 - Native renderer suite: camera constants, menu/flat transitions, patch-header
   validation, and the existing GPU/reference and failure-recovery scenes.
 - Hardware Chrome 156 and CI Chromium 153/SwiftShader: exact rendered pixels,
-  no GPU validation errors, and canvas changes 640×360 → 640×480 → 640×360.
+  no GPU validation errors, and canvas changes 640Ã—360 â†’ 640Ã—480 â†’ 640Ã—360.
 - Full launcher browser suite: imports, OPFS mounting, disc reads and static-host
   isolation fallback. A fresh pinned checkout reproduces all 51 patched runtime
   files without changing the submodule revision.
@@ -173,7 +173,7 @@ The supplied files in Downloads now allow a local xemu reference boot. An
 isolated configuration and copied EEPROM/ROM files are under ignored
 `build-web-tests/xemu-reference`; the original HDD is used with `-snapshot`.
 The first reference run reached Arizona at New Orleans gameplay and produced
-`xemu-2026-11-15-19-42-36.png`, a raw 640×480 game frame without desktop UI.
+`xemu-2026-11-15-19-42-36.png`, a raw 640Ã—480 game frame without desktop UI.
 That run used 128 MB and surface scale 2; a later configuration explicitly
 selects 64 MB and scale 1 for repeatable checks. Desktop interaction stopped
 when the user pressed Escape. A controlled scene-matched comparison has not
@@ -870,8 +870,8 @@ and fresh 74-file runtime patch reproduction pass.
 The 132-second profiled capture (`dsp-dispatch-stall-profile/report.json`)
 reaches Tennessee player introductions with rendered uniforms and readable
 career graphics. It reports no browser/GPU/DSP faults but ends with 778
-worklet underrun blocks. Around 97–112 seconds, five-second windows process
-only 6,663–6,702 APU frames against the required 7,500, with 4.4–4.8 seconds
+worklet underrun blocks. Around 97â€“112 seconds, five-second windows process
+only 6,663â€“6,702 APU frames against the required 7,500, with 4.4â€“4.8 seconds
 spent processing frames. The recorded worst frame includes 29.1 ms in VP;
 other windows record DSP delays, and shorter IRQ waits also occur. Host
 scheduling and instrumentation remain uncontrolled. This narrows the next
@@ -911,7 +911,7 @@ sustained 30 FPS floor remain unfinished.
 ## PASSTHRU texture-stage bounds
 
 The GPU shaders previously forwarded texture `PASSTHRU` coordinates directly
-to the register combiners. NV2A clamps these values to 0–1 after interpolation;
+to the register combiners. NV2A clamps these values to 0â€“1 after interpolation;
 this behavior is documented by the hardware-tested correction in
 [xemu issue 2523](https://github.com/xemu-project/xemu/issues/2523).
 Out-of-range values can change later signed combiner mappings even when the
@@ -960,7 +960,7 @@ The software 3D rasterizer previously updated depth and stencil before
 evaluating final alpha. A discarded transparent foreground triangle could
 therefore hide opaque geometry behind it; stencil-fail, depth-fail and pass
 operations could also run for a fragment that alpha testing should reject.
-The corrected order follows the alpha → stencil → depth sequence described
+The corrected order follows the alpha â†’ stencil â†’ depth sequence described
 in [NVIDIA's stencil pipeline documentation](https://developer.download.nvidia.com/assets/gamedev/docs/stencil.pdf).
 
 Alpha-tested draws now finish texture/combiner shading and reject on the final
@@ -1206,7 +1206,7 @@ field, sideline figures and Miami/Houston intro graphics. Logs report zero GPU
 3D batches and thousands of software batches per interval. It records no
 browser/GPU/DSP fault and zero worklet underrun blocks in this run, but reaches
 only the stadium intro. Five-second frame averages after 90 seconds are
-0.7–1.1 FPS. This is an integrated fallback stability check, not a playable
+0.7â€“1.1 FPS. This is an integrated fallback stability check, not a playable
 software-performance result or proof of original-Xbox graphics/audio parity.
 Software filtering, presentation/widescreen behavior and complete texture-
 stage conformance remain unfinished. The final polish skips reflection-helper
@@ -1244,7 +1244,7 @@ The 245-second `software-shared-layout/report.json` browser run displays
 Seattle crowd models/clothing and stadium intro views with the corrected
 letterboxing in the 1280x900 viewport. It records no browser/GPU/DSP fault and
 11 worklet underrun blocks. Five-second averages after 90 seconds are
-0.7–1.3 FPS, and this slow run does not establish live-game performance,
+0.7â€“1.3 FPS, and this slow run does not establish live-game performance,
 full software texture filtering or original-Xbox scene/audio parity.
 
 The preceding commit's web CI failed at its fixed 120-second suite deadline
@@ -1360,7 +1360,7 @@ audio and the 30 FPS floor are not established.
 
 SDL GPU samplers now honor CONTROL0 minimum/maximum LOD as unsigned 4.8
 fixed point, including fractional limits. The units follow the primary
-[Envytools hardware reference, pages 277–278](https://envytools.readthedocs.io/_/downloads/en/latest/pdf/#page=281).
+[Envytools hardware reference, pages 277â€“278](https://envytools.readthedocs.io/_/downloads/en/latest/pdf/#page=281).
 The current xemu sampler extracts these fields as integer levels; that
 interpretation was rejected after the hardware-reference cross-check.
 Limits are bounded by the authored chain and an inverted range is normalized
@@ -1708,7 +1708,7 @@ Xbox captures and add position/clipping regressions before changing this;
 quantizing already-clipped vertices could introduce a different error.
 Broader stadium/staff-model fidelity, all-mode gameplay accuracy, continuous
 audio and a sustained 30 FPS floor remain unfinished. The last integrated
-retail result remains the preceding flat-shade run (26.0–30.1 FPS after
+retail result remains the preceding flat-shade run (26.0â€“30.1 FPS after
 150 seconds, 200 audio underrun blocks), with no controlled performance
 claim for these line changes. Full patched Windows runtime validation is
 also still outstanding, as described above.
@@ -1818,13 +1818,13 @@ cross-product bound for the sampled Xbox lines is
 Euclidean half-width. This is an inference from pinned captures, not a
 published NV2A hardware specification or proof for arbitrary lines.
 
-The manifest also pins neighboring captures at registers 0, 7, 9, 15 and 24.
+The initial manifest also pinned neighboring captures at registers 0, 7, 9, 15 and 24.
 Run the audit with `--width-model` to compare the analytic prediction against
 all six images. It reproduces their isolated coverage masks at widths 0,
 0.875, 1, 1.125 and 1.875 pixels exactly. At width 3 it predicts two extra
 pixels, so wider caps/ties remain unresolved. These additional widths test
-the inference; runtime width-register decoding is still not implemented.
-The production line path continues to cover the default one-pixel case.
+the inference; runtime width-register decoding was not implemented in that revision.
+The width sweep below supersedes that limitation and its two-pixel gap.
 
 A geometric strip alone still depended on host subpixel precision: it lost
 one reference pixel on hardware and 31 on SwiftShader, with two SwiftShader
@@ -1887,3 +1887,55 @@ performance comparisons. The trace does not distinguish CPU line batches
 from other CPU VP fallbacks; the capture fixtures provide positive line-path
 evidence. This is integrated stability evidence, not full scene fidelity,
 continuous audio, all-mode accuracy or a sustained 30 FPS floor.
+
+
+### Fractional and wide lines: register state and boundary sweep
+
+The SDL and software renderers now decode `NV097_SET_LINE_WIDTH` at `0x0380`
+as unsigned 6.3 fixed-point state, initially 8 (one pixel). Legal writes are
+0 through 511; larger values preserve the preceding state. Method `0x03B8`
+remains specular enable. The pinned nxdk register definitions and captured
+invalid-write cases are recorded in `docs/references/nv2a-line-width.json`.
+Invalid writes after nondefault state are also tested; that preservation
+behavior is inferred from the related hardware-test implementation, whereas
+the available NV2A captures reset to width 8 before each invalid write.
+No new PGRAPH warning or interrupt emulation is claimed.
+
+The reference sweep now includes 34 captures: all eighth-pixel steps from
+0 through 1.875 pixels, integer widths 3 through 16, maximum raw width 511
+(63.875 pixels), and invalid values 512, 513 and `0xFFFFFFFF`. The inferred
+strip bound scales by width. Projection caps use strict `0 < t < 1`; at an
+exact strip boundary, the signed cross product times the signed major-axis
+delta must be negative. These directional ties eliminate the prior wider-line
+extras. Pure axial lines retain the earlier minor-axis bias and still need
+independent hardware coverage. Smoothing and arbitrary endpoint conventions
+remain unproven.
+
+All 34 cases pass exact isolated coverage masks with zero missing and zero
+extra pixels in native 2D/3D SDL GPU and software rendering, and in 2D/3D
+hardware WebGPU and independent SwiftShader. The ordinary crop is 100x108.
+Maximum width uses a documented 40x50 isolated crop because neighboring
+wide primitives overlap the larger region; this does not validate the full
+maximum-width frame. Width-8 cases compare every one of 1,174 foreground
+RGB values within two steps; other widths compare up to 64 deterministic
+capture-derived colour probes. Separately, the mathematical model matches
+all foreground colours within that tolerance across the 34 isolated captures.
+Model prediction is separate from actual-renderer probe coverage.
+
+Software lines now execute the shared material path once per covered pixel,
+using analytic segment weights and a perpendicular helper vertex for texture
+derivatives. This removes overlapping triangle shading within one line.
+A half-alpha diagonal regression checks a single blend on native GPU and
+software, in both 2D and 3D. Existing browser perspective, texture, depth,
+alpha rejection, padding and resource-lifetime checks continue to pass.
+Address/undefined sanitizers pass with driver leak detection disabled.
+The production Wasm line regression passes 232,822 checks, including exhaustive
+validity checks for raw values 0 through 1023 from four preceding states.
+The browser game and Linux kernel/video targets build successfully.
+
+This extends SDL/software line fidelity. Native D3D11 still needs equivalent
+width and analytic coverage work and direct driver validation. No additional
+retail gameplay or performance run is claimed for this sweep; the preceding
+246-second run remains the integration evidence and still falls below 30 FPS
+with audio underruns. Stadium/staff model parity, all-mode accuracy and full
+rendering/audio/gameplay parity remain open.

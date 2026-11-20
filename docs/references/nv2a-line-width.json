@@ -116,39 +116,505 @@
     {
       "file": "Line_0000.0.png",
       "width_register": 0,
+      "expected_width_register": 0,
       "sha256": "72d122ba8f4df2a49029aba3e7d6bfc2458cbcebb2c617df6215a8164d183fa4",
       "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.0.png"
     },
     {
+      "file": "Line_0000.1.png",
+      "width_register": 1,
+      "expected_width_register": 1,
+      "sha256": "4115ee22d6b27de69803f782767f0bd5bad5fe8605c44bac191670a4dc3b4d82",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.1.png"
+    },
+    {
+      "file": "Line_0000.2.png",
+      "width_register": 2,
+      "expected_width_register": 2,
+      "sha256": "2506f42ecd0f3ec8c99828961e57dfccb42dbcb37a1d42cc63e7f8e7b5d5ac03",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.2.png"
+    },
+    {
+      "file": "Line_0000.3.png",
+      "width_register": 3,
+      "expected_width_register": 3,
+      "sha256": "826b9b162056a86f7821f1178d3a858f261ca64a9f8af105c5a8502056188072",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.3.png"
+    },
+    {
+      "file": "Line_0000.4.png",
+      "width_register": 4,
+      "expected_width_register": 4,
+      "sha256": "59d654e92ac868ad7c5a5bed1f924923e0fd2cbf3fa4539a2b26279a1d1245bf",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.4.png"
+    },
+    {
+      "file": "Line_0000.5.png",
+      "width_register": 5,
+      "expected_width_register": 5,
+      "sha256": "9ff1e9e21bd4301102a48b22934e7c60d13c6822d348af4c32cac923d591b897",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.5.png"
+    },
+    {
+      "file": "Line_0000.6.png",
+      "width_register": 6,
+      "expected_width_register": 6,
+      "sha256": "9408a4702e2f8f6beb51a2274ccd52038fcbbca79b97dc531c0d84097ba3e8bc",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.6.png"
+    },
+    {
       "file": "Line_0000.7.png",
       "width_register": 7,
+      "expected_width_register": 7,
       "sha256": "dec571bd17822064a520009249539c211695d3eb8c0c143e0b1627482ab71d8f",
       "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.7.png"
     },
     {
       "file": "Line_0001.0.png",
       "width_register": 8,
+      "expected_width_register": 8,
       "sha256": "1362334c27d1b9d8ef7b6f6c7b54d8a5a27adbc1aa5a4e309be4d9161954a9f5",
       "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.0.png"
     },
     {
       "file": "Line_0001.1.png",
       "width_register": 9,
+      "expected_width_register": 9,
       "sha256": "86d5ef40dc2ae8e3b8b91554e4e059b7c8e1df27723f74c7b3fa4fc50e4ea880",
       "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.1.png"
     },
     {
+      "file": "Line_0001.2.png",
+      "width_register": 10,
+      "expected_width_register": 10,
+      "sha256": "3be48eeaff5946e3b29f58704eb44ed7dd12cb7c542b4475b13e835041700d11",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.2.png"
+    },
+    {
+      "file": "Line_0001.3.png",
+      "width_register": 11,
+      "expected_width_register": 11,
+      "sha256": "31bf83c54bd6c5d8af69084716b5e0cd3300e547b84f880416deb2c0dcd365b6",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.3.png"
+    },
+    {
+      "file": "Line_0001.4.png",
+      "width_register": 12,
+      "expected_width_register": 12,
+      "sha256": "9661eac8cc8320c49a6507c38be01f282815b9f8a74e9df4d7841f733b4db5c6",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.4.png"
+    },
+    {
+      "file": "Line_0001.5.png",
+      "width_register": 13,
+      "expected_width_register": 13,
+      "sha256": "33c3cbd2dd470caca1418d9e7a157f77db485458e598203406f78d57c7f0ca98",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.5.png"
+    },
+    {
+      "file": "Line_0001.6.png",
+      "width_register": 14,
+      "expected_width_register": 14,
+      "sha256": "c82c9da8cf7f93be906d70d686aa8efe14a4562c8a586c1a6083761b2becaa8b",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.6.png"
+    },
+    {
       "file": "Line_0001.7.png",
       "width_register": 15,
+      "expected_width_register": 15,
       "sha256": "f0fec2de9f6629a27219bff9b485ebfdf630c7a9f7b3f70d7af2384ebbc6b72d",
       "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.7.png"
     },
     {
       "file": "Line_0003.0.png",
       "width_register": 24,
+      "expected_width_register": 24,
       "sha256": "10e94b69fc01794f49a5fd7fbdaa22771482baf010909a7d0715e7e44cbdc6aa",
       "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0003.0.png"
+    },
+    {
+      "file": "Line_0004.0.png",
+      "width_register": 32,
+      "expected_width_register": 32,
+      "sha256": "6d7f8267570732e858223993baa03bc1310239500bca47aaa1f399a36bc7712f",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0004.0.png"
+    },
+    {
+      "file": "Line_0005.0.png",
+      "width_register": 40,
+      "expected_width_register": 40,
+      "sha256": "9275c9ee27afe08d6341928ec1b902a27e16760162e28ccd81e168672ae2172d",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0005.0.png"
+    },
+    {
+      "file": "Line_0006.0.png",
+      "width_register": 48,
+      "expected_width_register": 48,
+      "sha256": "de7d6c99e612ee7ac608bfef4959586d59ee4695f1351b07ac40daa160d4d3f3",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0006.0.png"
+    },
+    {
+      "file": "Line_0007.0.png",
+      "width_register": 56,
+      "expected_width_register": 56,
+      "sha256": "27c7a1ed4958d5f6cb7754e6a7c85f5fe573532350be03d40bb16b6befc18e3c",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0007.0.png"
+    },
+    {
+      "file": "Line_0008.0.png",
+      "width_register": 64,
+      "expected_width_register": 64,
+      "sha256": "8fa01381e011892d12ad7de183ae16a66644410416b33f386e4831bb9481eafb",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0008.0.png"
+    },
+    {
+      "file": "Line_0009.0.png",
+      "width_register": 72,
+      "expected_width_register": 72,
+      "sha256": "e73aa502bc46fc22cfba9ad1c5f9a5991e31aa7dd517f31727f70272e4bb8d24",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0009.0.png"
+    },
+    {
+      "file": "Line_0010.0.png",
+      "width_register": 80,
+      "expected_width_register": 80,
+      "sha256": "f8d7a27276093e25a29a01e92ce8f8dc1e582d978916991aac09787cb94e35fa",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0010.0.png"
+    },
+    {
+      "file": "Line_0011.0.png",
+      "width_register": 88,
+      "expected_width_register": 88,
+      "sha256": "c2bd2ba81211528f125ce657f816158b722bdef75d6d7db783a17d35911bb99b",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0011.0.png"
+    },
+    {
+      "file": "Line_0012.0.png",
+      "width_register": 96,
+      "expected_width_register": 96,
+      "sha256": "137d2a1cd513519e48023d3249103cd7ff2ab3e57761643142ff8c203cf8058f",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0012.0.png"
+    },
+    {
+      "file": "Line_0013.0.png",
+      "width_register": 104,
+      "expected_width_register": 104,
+      "sha256": "b28ab106b507cad1a4a463c873eb3bfcddfffc533f57f98fea94cf78eae52242",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0013.0.png"
+    },
+    {
+      "file": "Line_0014.0.png",
+      "width_register": 112,
+      "expected_width_register": 112,
+      "sha256": "33b8b5dc0f1f890f0c83a04ab624cf99932dc0f2a2cd6aad722a920659147438",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0014.0.png"
+    },
+    {
+      "file": "Line_0015.0.png",
+      "width_register": 120,
+      "expected_width_register": 120,
+      "sha256": "6e4e179553381e918e699a3b051a57d1c3e5f7680f60f14354a15d85e4ccbd1d",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0015.0.png"
+    },
+    {
+      "file": "Line_0016.0.png",
+      "width_register": 128,
+      "expected_width_register": 128,
+      "sha256": "d71de13dbb516e8193408b74e45ce044ee925159b4d0485d130a0603b4ab4e69",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0016.0.png"
+    },
+    {
+      "file": "Line_0063.7.png",
+      "width_register": 511,
+      "expected_width_register": 511,
+      "sha256": "96b358b970d6cdf7e3ad61627246eb10de359b8285bdfa01adb7fb48d37640f9",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0063.7.png",
+      "crop": [
+        300,
+        50,
+        40,
+        50
+      ],
+      "crop_reason": "Isolate the loop from neighboring wide polygon edges; full broad crop is not isolated at this width."
+    },
+    {
+      "file": "Line_0064.0.png",
+      "width_register": 512,
+      "expected_width_register": 8,
+      "sha256": "7c9ea13d2bc75c293447a1354238af7651a9d9a16e2051ff0ed36ca0cd8b1016",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0064.0.png"
+    },
+    {
+      "file": "Line_0064.1.png",
+      "width_register": 513,
+      "expected_width_register": 8,
+      "sha256": "b326dbd80b680c923b30ce83b0f7f1e1220ae7c16b77c7c82c09219c0d91d443",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0064.1.png"
+    },
+    {
+      "file": "Line_FFFFFFFF.png",
+      "width_register": 4294967295,
+      "expected_width_register": 8,
+      "sha256": "68a204583a8cabb2efeb22cbe61fd0890a4ac82b84a298d5d2a6810359a8b981",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_FFFFFFFF.png"
     }
   ],
-  "angle_model": "Capture-derived cross-product bound: width*(max(abs(dx),abs(dy))+0.5*min(abs(dx),abs(dy)))/2, with perpendicular endpoint planes. This is an inference tested against captures, not a hardware specification. Wider endpoint behavior remains incomplete."
+  "angle_model": "Capture-derived cross-product bound: width*(max(abs(dx),abs(dy))+0.5*min(abs(dx),abs(dy)))/2. Strict endpoint planes; boundary equality follows the major direction sign. Axial tie convention remains separately unverified against these oblique captures.",
+  "render_validation_captures": [
+    {
+      "file": "Line_0000.0.png",
+      "width_register": 0,
+      "expected_width_register": 0,
+      "sha256": "72d122ba8f4df2a49029aba3e7d6bfc2458cbcebb2c617df6215a8164d183fa4",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.0.png"
+    },
+    {
+      "file": "Line_0000.1.png",
+      "width_register": 1,
+      "expected_width_register": 1,
+      "sha256": "4115ee22d6b27de69803f782767f0bd5bad5fe8605c44bac191670a4dc3b4d82",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.1.png"
+    },
+    {
+      "file": "Line_0000.2.png",
+      "width_register": 2,
+      "expected_width_register": 2,
+      "sha256": "2506f42ecd0f3ec8c99828961e57dfccb42dbcb37a1d42cc63e7f8e7b5d5ac03",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.2.png"
+    },
+    {
+      "file": "Line_0000.3.png",
+      "width_register": 3,
+      "expected_width_register": 3,
+      "sha256": "826b9b162056a86f7821f1178d3a858f261ca64a9f8af105c5a8502056188072",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.3.png"
+    },
+    {
+      "file": "Line_0000.4.png",
+      "width_register": 4,
+      "expected_width_register": 4,
+      "sha256": "59d654e92ac868ad7c5a5bed1f924923e0fd2cbf3fa4539a2b26279a1d1245bf",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.4.png"
+    },
+    {
+      "file": "Line_0000.5.png",
+      "width_register": 5,
+      "expected_width_register": 5,
+      "sha256": "9ff1e9e21bd4301102a48b22934e7c60d13c6822d348af4c32cac923d591b897",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.5.png"
+    },
+    {
+      "file": "Line_0000.6.png",
+      "width_register": 6,
+      "expected_width_register": 6,
+      "sha256": "9408a4702e2f8f6beb51a2274ccd52038fcbbca79b97dc531c0d84097ba3e8bc",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.6.png"
+    },
+    {
+      "file": "Line_0000.7.png",
+      "width_register": 7,
+      "expected_width_register": 7,
+      "sha256": "dec571bd17822064a520009249539c211695d3eb8c0c143e0b1627482ab71d8f",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0000.7.png"
+    },
+    {
+      "file": "Line_0001.0.png",
+      "width_register": 8,
+      "expected_width_register": 8,
+      "sha256": "1362334c27d1b9d8ef7b6f6c7b54d8a5a27adbc1aa5a4e309be4d9161954a9f5",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.0.png"
+    },
+    {
+      "file": "Line_0001.1.png",
+      "width_register": 9,
+      "expected_width_register": 9,
+      "sha256": "86d5ef40dc2ae8e3b8b91554e4e059b7c8e1df27723f74c7b3fa4fc50e4ea880",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.1.png"
+    },
+    {
+      "file": "Line_0001.2.png",
+      "width_register": 10,
+      "expected_width_register": 10,
+      "sha256": "3be48eeaff5946e3b29f58704eb44ed7dd12cb7c542b4475b13e835041700d11",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.2.png"
+    },
+    {
+      "file": "Line_0001.3.png",
+      "width_register": 11,
+      "expected_width_register": 11,
+      "sha256": "31bf83c54bd6c5d8af69084716b5e0cd3300e547b84f880416deb2c0dcd365b6",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.3.png"
+    },
+    {
+      "file": "Line_0001.4.png",
+      "width_register": 12,
+      "expected_width_register": 12,
+      "sha256": "9661eac8cc8320c49a6507c38be01f282815b9f8a74e9df4d7841f733b4db5c6",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.4.png"
+    },
+    {
+      "file": "Line_0001.5.png",
+      "width_register": 13,
+      "expected_width_register": 13,
+      "sha256": "33c3cbd2dd470caca1418d9e7a157f77db485458e598203406f78d57c7f0ca98",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.5.png"
+    },
+    {
+      "file": "Line_0001.6.png",
+      "width_register": 14,
+      "expected_width_register": 14,
+      "sha256": "c82c9da8cf7f93be906d70d686aa8efe14a4562c8a586c1a6083761b2becaa8b",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.6.png"
+    },
+    {
+      "file": "Line_0001.7.png",
+      "width_register": 15,
+      "expected_width_register": 15,
+      "sha256": "f0fec2de9f6629a27219bff9b485ebfdf630c7a9f7b3f70d7af2384ebbc6b72d",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0001.7.png"
+    },
+    {
+      "file": "Line_0003.0.png",
+      "width_register": 24,
+      "expected_width_register": 24,
+      "sha256": "10e94b69fc01794f49a5fd7fbdaa22771482baf010909a7d0715e7e44cbdc6aa",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0003.0.png"
+    },
+    {
+      "file": "Line_0004.0.png",
+      "width_register": 32,
+      "expected_width_register": 32,
+      "sha256": "6d7f8267570732e858223993baa03bc1310239500bca47aaa1f399a36bc7712f",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0004.0.png"
+    },
+    {
+      "file": "Line_0005.0.png",
+      "width_register": 40,
+      "expected_width_register": 40,
+      "sha256": "9275c9ee27afe08d6341928ec1b902a27e16760162e28ccd81e168672ae2172d",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0005.0.png"
+    },
+    {
+      "file": "Line_0006.0.png",
+      "width_register": 48,
+      "expected_width_register": 48,
+      "sha256": "de7d6c99e612ee7ac608bfef4959586d59ee4695f1351b07ac40daa160d4d3f3",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0006.0.png"
+    },
+    {
+      "file": "Line_0007.0.png",
+      "width_register": 56,
+      "expected_width_register": 56,
+      "sha256": "27c7a1ed4958d5f6cb7754e6a7c85f5fe573532350be03d40bb16b6befc18e3c",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0007.0.png"
+    },
+    {
+      "file": "Line_0008.0.png",
+      "width_register": 64,
+      "expected_width_register": 64,
+      "sha256": "8fa01381e011892d12ad7de183ae16a66644410416b33f386e4831bb9481eafb",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0008.0.png"
+    },
+    {
+      "file": "Line_0009.0.png",
+      "width_register": 72,
+      "expected_width_register": 72,
+      "sha256": "e73aa502bc46fc22cfba9ad1c5f9a5991e31aa7dd517f31727f70272e4bb8d24",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0009.0.png"
+    },
+    {
+      "file": "Line_0010.0.png",
+      "width_register": 80,
+      "expected_width_register": 80,
+      "sha256": "f8d7a27276093e25a29a01e92ce8f8dc1e582d978916991aac09787cb94e35fa",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0010.0.png"
+    },
+    {
+      "file": "Line_0011.0.png",
+      "width_register": 88,
+      "expected_width_register": 88,
+      "sha256": "c2bd2ba81211528f125ce657f816158b722bdef75d6d7db783a17d35911bb99b",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0011.0.png"
+    },
+    {
+      "file": "Line_0012.0.png",
+      "width_register": 96,
+      "expected_width_register": 96,
+      "sha256": "137d2a1cd513519e48023d3249103cd7ff2ab3e57761643142ff8c203cf8058f",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0012.0.png"
+    },
+    {
+      "file": "Line_0013.0.png",
+      "width_register": 104,
+      "expected_width_register": 104,
+      "sha256": "b28ab106b507cad1a4a463c873eb3bfcddfffc533f57f98fea94cf78eae52242",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0013.0.png"
+    },
+    {
+      "file": "Line_0014.0.png",
+      "width_register": 112,
+      "expected_width_register": 112,
+      "sha256": "33b8b5dc0f1f890f0c83a04ab624cf99932dc0f2a2cd6aad722a920659147438",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0014.0.png"
+    },
+    {
+      "file": "Line_0015.0.png",
+      "width_register": 120,
+      "expected_width_register": 120,
+      "sha256": "6e4e179553381e918e699a3b051a57d1c3e5f7680f60f14354a15d85e4ccbd1d",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0015.0.png"
+    },
+    {
+      "file": "Line_0016.0.png",
+      "width_register": 128,
+      "expected_width_register": 128,
+      "sha256": "d71de13dbb516e8193408b74e45ce044ee925159b4d0485d130a0603b4ab4e69",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0016.0.png"
+    },
+    {
+      "file": "Line_0063.7.png",
+      "width_register": 511,
+      "expected_width_register": 511,
+      "sha256": "96b358b970d6cdf7e3ad61627246eb10de359b8285bdfa01adb7fb48d37640f9",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0063.7.png",
+      "crop": [
+        300,
+        50,
+        40,
+        50
+      ],
+      "crop_reason": "Isolate the loop from neighboring wide polygon edges; full broad crop is not isolated at this width."
+    },
+    {
+      "file": "Line_0064.0.png",
+      "width_register": 512,
+      "expected_width_register": 8,
+      "sha256": "7c9ea13d2bc75c293447a1354238af7651a9d9a16e2051ff0ed36ca0cd8b1016",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0064.0.png"
+    },
+    {
+      "file": "Line_0064.1.png",
+      "width_register": 513,
+      "expected_width_register": 8,
+      "sha256": "b326dbd80b680c923b30ce83b0f7f1e1220ae7c16b77c7c82c09219c0d91d443",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_0064.1.png"
+    },
+    {
+      "file": "Line_FFFFFFFF.png",
+      "width_register": 4294967295,
+      "expected_width_register": 8,
+      "sha256": "68a204583a8cabb2efeb22cbe61fd0890a4ac82b84a298d5d2a6810359a8b981",
+      "url": "https://raw.githubusercontent.com/abaire/nxdk_pgraph_tests_golden_results/a822689507cce8e8de54d9e170c9369c1a0c7566/results/Line_width/Line_FFFFFFFF.png"
+    }
+  ],
+  "method_reference": {
+    "url": "https://github.com/abaire/nxdk/blob/7e8d4fc3d00ca59e88298e912438ac215cf93392/lib/pbkit/nv_regs.h",
+    "method": "0x0380",
+    "valid_raw_range": [
+      0,
+      511
+    ],
+    "fractional_bits": 3,
+    "invalid_write": "Preserve existing state; invalid boundary captures start from width register 8."
+  }
 }

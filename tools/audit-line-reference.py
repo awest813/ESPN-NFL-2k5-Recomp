@@ -19,6 +19,7 @@ def main():
     parser.add_argument('directory', type=Path)
     parser.add_argument('--write-header', action='store_true')
     parser.add_argument('--replay-prefix', help='Raw 640x480 BGRA dump prefix, relative to directory')
+    parser.add_argument('--width-register', type=lambda x: int(x, 0), default=8, help='Capture register for raw replay comparison')
     parser.add_argument('--width-model', action='store_true', help='Compare the inferred rule against neighboring pinned widths')
     args = parser.parse_args()
     manifest = json.loads((ROOT / 'docs/references/nv2a-line-width.json').read_text(encoding='utf-8'))
@@ -92,37 +93,88 @@ def main():
                         for i in range(0, len(mask_bytes), 24))
               + '};\nstatic const uint8_t line_reference_rgb[][3]={\n'
               + ''.join('    {'+','.join(map(str, rgb))+'},\n' for rgb in reference_rgb)
-              + '};\n#endif\n')
+              + '};\n')
+    sweep = manifest['render_validation_captures']
+    for index, item in enumerate(sweep):
+        capture = args.directory / item['file']
+        if hashlib.sha256(capture.read_bytes()).hexdigest() != item['sha256']:
+            raise ValueError(f'Width capture hash mismatch: {capture}')
+        image = Image.open(capture).convert('RGB')
+        ix, iy, iw, ih = item.get('crop', manifest['crop'])
+        bits = bytearray((iw*ih+7)//8)
+        foreground = []
+        for y in range(iy, iy+ih):
+            for x in range(ix, ix+iw):
+                rgb = image.getpixel((x, y))
+                if rgb == background:
+                    continue
+                bit = (y-iy)*iw+x-ix
+                bits[bit//8] |= 1 << (bit%8)
+                foreground.append((x, y, *rgb))
+        selected = [foreground[k*len(foreground)//min(64, len(foreground))]
+                    for k in range(min(64, len(foreground)))]
+        item['_probe_count'] = len(selected)
+        item['_probes'] = selected
+        header += f'static const uint8_t line_width_mask_{index}[]={{\n'
+        header += ''.join('    '+','.join(f'0x{v:02X}' for v in bits[i:i+24])+',\n'
+                          for i in range(0, len(bits), 24)) + '};\n'
+        header += f'static const LineReferenceProbe line_width_rgb_{index}[]={{\n'
+        header += ''.join('    {'+','.join(map(str, probe))+'},\n' for probe in selected or [(0,0,0,0,0)]) + '};\n'
+    header += ('typedef struct {uint32_t raw,expected_width;uint16_t x,y,w,h;'
+               'const uint8_t *mask;const LineReferenceProbe *probes;unsigned count;} LineWidthReference;\n'
+               'static const LineWidthReference line_width_references[]={\n')
+    for index, item in enumerate(sweep):
+        rect = ','.join(map(str, item.get('crop', manifest['crop'])))
+        header += ('    {'+f"0x{item['width_register']:08X}u,{item['expected_width_register']},{rect},"
+                   +f"line_width_mask_{index},line_width_rgb_{index},{item['_probe_count']}"+'},\n')
+    header += '};\n#endif\n'
     path = ROOT / 'external/xboxrecomp/tests/sdlgpu_web/line_width_reference.h'
     if args.write_header:
         path.write_bytes(header.encode('utf-8'))
     assert path.read_text(encoding='utf-8') == header, 'Reference header is stale'
     print(f'PASS pinned Xbox capture: {len(mask)} foreground pixels, {len(probes)} independent diagonal probes')
     if args.width_model:
+        palette = [tuple((int(word, 16) >> (c*8)) & 255 for c in range(3))
+                   for word in manifest['diffuse_low_byte_r']]
         for item in manifest['width_validation_captures']:
             path = args.directory / item['file']
             if hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']:
                 raise ValueError(f'Width capture hash mismatch: {path}')
             image = Image.open(path).convert('RGB')
             assert image.size == reference.size
-            width = item['width_register']/8
-            expected = {(x, y) for y in range(cy, cy+ch) for x in range(cx, cx+cw)
+            width = item['expected_width_register']/8
+            ix, iy, iw, ih = item.get('crop', manifest['crop'])
+            expected = {(x, y) for y in range(iy, iy+ih) for x in range(ix, ix+iw)
                         if image.getpixel((x, y)) != background}
-            predicted = set()
+            predicted = {}
             if width > 0:
-                for a, b in zip(positions, positions[1:]+positions[:1]):
+                for edge, (a, b) in enumerate(zip(positions, positions[1:]+positions[:1])):
                     dx, dy = b[0]-a[0], b[1]-a[1]
                     length_squared = dx*dx+dy*dy
                     extent = max(abs(dx), abs(dy))+.5*min(abs(dx), abs(dy))
-                    for y in range(cy, cy+ch):
-                        for x in range(cx, cx+cw):
+                    bound = width*extent*.5
+                    major = dx if abs(dx) >= abs(dy) else dy
+                    ca, cb = palette[edge % 8], palette[(edge+1) % 8]
+                    for y in range(iy, iy+ih):
+                        for x in range(ix, ix+iw):
                             px, py = x+.5-a[0], y+.5-a[1]
                             t = (px*dx+py*dy)/length_squared
-                            if 0 <= t < 1 and abs(dx*py-dy*px) <= width*extent*.5:
-                                predicted.add((x, y))
-            print(f'Inferred model width {width:g}: reference={len(expected)} '
-                  f'extra={len(predicted-expected)} missing={len(expected-predicted)}')
+                            cross = dx*py-dy*px
+                            if 0 < t < 1 and (abs(cross) < bound or abs(cross) == bound and cross*major < 0):
+                                predicted[x, y] = tuple(int(v+(cb[k]-v)*t+.5) for k, v in enumerate(ca))
+            actual = set(predicted)
+            bad_rgb = sum(max(abs(a-b) for a, b in zip(predicted[point], image.getpixel(point))) > 2
+                          for point in actual & expected)
+            print(f"Inferred model raw {item['width_register']:#x}, width {width:g}: reference={len(expected)} "
+                  f'extra={len(actual-expected)} missing={len(expected-actual)} RGB-outside-2={bad_rgb}')
     if args.replay_prefix:
+        selected = next(item for item in sweep if item['width_register'] == args.width_register)
+        if args.width_register != 8:
+            reference = Image.open(args.directory / selected['file']).convert('RGB')
+            cx, cy, cw, ch = selected.get('crop', manifest['crop'])
+            mask = {(x, y) for y in range(cy, cy+ch) for x in range(cx, cx+cw)
+                    if reference.getpixel((x, y)) != background}
+            probes = selected['_probes']
         for mode in ('gpu', 'software', '2d', '2d-software'):
             path = args.directory / f'{args.replay_prefix}-{mode}.argb'
             if not path.exists():
