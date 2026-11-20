@@ -4146,3 +4146,12 @@ servers are closed. Challenge victory/completion, uninterrupted audio,
 original-Xbox parity, broader mode/model coverage and the 30 FPS floor remain
 unfinished. This retail replay does not prove it uses RGB565 targets; the
 focused fixtures establish the new packed-color behavior.
+
+### Packed-format audit checkpoint (2026-11-20)
+
+The [packed render-target follow-up](WEB-PACKED-SURFACES.md) records the
+remaining 5:5:5 and G8B8 conversion gaps and the inspected original-Xbox
+hardware-test evidence. Destination blend alpha and sampled stored alpha
+need separate treatment for the X1 variants. Partial write-mask behavior
+remains unresolved; no speculative packed-format change is included in this
+checkpoint. The published RGB565 and kickoff fixes remain the code baseline.
