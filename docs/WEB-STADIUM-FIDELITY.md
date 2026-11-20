@@ -3556,3 +3556,80 @@ buffer uploads. It does not isolate the cause of the later drive's correlated
 audio/FPS collapse. A later gameplay-only interval and APU stage/scheduling
 measurements remain necessary before changing synchronization or DSP behavior.
 The `cac411d` Build workflow passed; its Pages deployment remains in progress.
+
+### Later-drive timing and DSP no-op specialization (2026-11-20)
+
+A longer explicitly selected Arizona/New Orleans run reaches actual passing
+and tackling during the 300–390 second CPU capture. APU stage/scheduling and
+SDL GPU timing are enabled. Twenty worker profiles plus the page, checked
+frames, logs, artifact hashes and window summaries are retained under
+`build-web-tests/superdome-drive-profile`. No browser/GPU failure is reported.
+The owned browser and server close normally. Earlier intervals include local
+candidate compilation/benchmarks; do not treat them as uncontended baselines.
+CPU profiler activation itself coincides with a 212.7 ms scheduling gap.
+
+Excluding the first five seconds after profiler activation, the 305–390 second
+window has 16 renderer samples, ranging from 17.3 to 30.1 FPS. Median recorded
+per-frame costs are 9.70 ms texture preparation, 5.15 ms vertex preparation
+and 6.87 ms submission. Texture verification reads a median 91.77 MiB/frame,
+peaking at 291 MiB/frame. The GPU executor's profile attributes 18.7 seconds
+of self sample weight to texture preparation; these are wall-stack samples,
+not exclusive CPU time.
+
+The corresponding 17 APU windows have a median 1,499.9 frames/second against
+the expected 1,500, with three deadline resynchronizations totaling 205.8 ms
+and no front-end trap timeouts. Median recorded busy time is 56.1% of elapsed
+time; busy intervals include scheduling and lock effects. `dsp_run` and its
+callees account for 25.0 seconds of filtered sample weight, including 6.4
+seconds in the general parallel-move handler itself. These measurements show
+both renderer and DSP costs; they do not establish a single cause for all
+audio/FPS drops or prove baseline performance with profiling disabled.
+
+Two isolated candidates are rejected: splitting the parallel move only by
+direction/address mode shows no consistent gain, and wider 128/256/512-byte
+texture comparison loops show no consistent benefit over the existing 64-byte
+loop. Full-byte content verification remains intact.
+
+The retained DSP candidate selects a standalone handler for parallel moves
+whose ALU byte is zero. That ALU operation is the empty `emu_move` function;
+skipping its indirect call also avoids preserving live transfer values across
+the call. Effective-address updates, memory access, transfer ordering and
+instruction/interrupt retirement are unchanged. The general handler remains
+unchanged: a shared-helper implementation was rejected after it slowed the
+captured EP frame. The specialized transfer is deliberately standalone and
+checked against an independent pre-specialization reference.
+
+Seven warmed paired rounds alternate old/new execution of 1,000 private
+captured frames per round. Every iteration checks complete DSP state, DMA/
+scratch interactions and PCM against the original capture, outside the timed
+execution interval. The final repeated comparison gives GP medians of
+86.9275 to 79.5691 ms (8.46% lower) and EP medians of 83.2141 to 79.4915 ms
+(4.47% lower). Another final-version round gives 9.72%/5.53% reductions.
+These establish captured-frame DSP execution gains, not a whole-game FPS or
+audio-continuity gain. Logs are under `build-web-tests/pm5-move-candidate`.
+
+The independent dispatch test passes 141,664 cold/warm full-state cases,
+software interrupt retirement and program uploads, with explicit ALU-byte
+changes into and out of the no-op specialization. Wasm O3/LTO undefined-
+behavior checks and the real GP/EP MMIO/firmware/PCM fixture pass. Fresh
+application to the pinned runtime reproduces all 97 patch files. DSP remains
+opt-in; full fidelity, continuous audio and a sustained 30 FPS floor remain
+unfinished. The preceding `cac411d` Pages and `7972113` Build workflows passed.
+
+Native address/undefined-behavior dispatch checks pass with the same independent
+reference. The complete native APU library and final Release O3 Web game build
+also pass. The final allowlisted package contains no disc/save data and its
+exact served hashes are retained in `build-web-tests/pm5-move-retail`.
+
+The final unprofiled retail smoke test reaches NFC all-stars at New Orleans,
+with J. Fox/J. Haslett coaches. Arizona was overshot because the selector has
+additional teams beyond the 32 current NFL teams; the screenshots and report
+identify the actual selection. Treat this as stability coverage, not a matched
+Arizona performance comparison. Checked frames show Superdome stands, staff,
+cheerleaders, players, and readable stadium/intro/HUD text without reported
+browser/GPU/DSP failures. The final approximately 60.3-second active-play
+window has 12 five-second averages ranging from 21.6 to 30.1 FPS, and 86
+affected audio blocks totaling 11,008 missing frames (229.3 ms at 48 kHz).
+The complete run remains partial. Both owned browser and server were closed.
+This verifies integrated stability of the faster DSP handler; it does not
+establish continuous audio, a 30 FPS floor or full reference fidelity.

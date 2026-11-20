@@ -85,6 +85,8 @@ This waits for the main menu; after Quick Game A, descriptor 0052728C identifies
 team selection and 00585474 identifies coach matchup. Select the controller
 side with A/D before changing its team with LT/RT. Initial away teams can vary
 between boots; verify both teams and coaches before recording gameplay.
+The selector also contains additional teams, including NFC/AFC all-star
+teams; do not assume it wraps after 32 entries.
 Allow title/VIP-load transitions to finish; idle title starts the attract demo.
 Optional --capture-memory enables read-only guest-memory peek for diagnosis.
 Reports include browser/adapter metadata and separate fatal failures from known

@@ -27,6 +27,7 @@
  * Reference dispatcher adapted from xemu, GPL-2.0-or-later;
  * Copyright (c) 2015 espes, 2020-2025 Matt Borgerson. */
 #include "dsp_cpu.c"
+#include "fixtures/dsp_pm5_reference.inc.c"
 #include <stddef.h>
 #include <time.h>
 #ifdef __EMSCRIPTEN__
@@ -41,7 +42,9 @@ static void reference_step(dsp_core_t *dsp) {
         const OpcodeEntry *op=reference_cache[dsp->pc];
         if(!op)op=reference_cache[dsp->pc]=lookup_opcode(dsp->cur_inst);
         if(op->emu_func)op->emu_func(dsp);else emu_undefined(dsp);
-    } else opcodes_parmove[(dsp->cur_inst>>20)&15](dsp);
+    } else if(dsp->cur_inst>=0x400000 && dsp->cur_inst<0x800000 &&
+              (dsp->cur_inst&0xf40000)!=0x400000) reference_pm_5(dsp);
+    else opcodes_parmove[(dsp->cur_inst>>20)&15](dsp);
     dsp_postexecute_update_pc(dsp);dsp_postexecute_interrupts(dsp);
     dsp->num_inst+=dsp->instr_cycle;
 }
@@ -148,6 +151,13 @@ int main(int argc,char **argv) {
     actual.pc=0;dsp56k_execute_instruction(&actual);assert(actual.registers[DSP_REG_X0]==0x123456 && actual.pc==2);
     dsp56k_write_memory(&actual,DSP_SPACE_P,1,0x654321);
     actual.pc=0;dsp56k_execute_instruction(&actual);assert(actual.registers[DSP_REG_X0]==0x654321);
+    /* Uploading only the ALU byte must invalidate the no-op specialization. */
+    dsp56k_write_memory(&actual,DSP_SPACE_P,0,0x44f413);
+    actual.registers[DSP_REG_A1]=0x123456;actual.pc=0;dsp56k_execute_instruction(&actual);
+    assert(actual.registers[DSP_REG_X0]==0x654321 && actual.registers[DSP_REG_A1]==0);
+    dsp56k_write_memory(&actual,DSP_SPACE_P,0,0x44f400);
+    actual.registers[DSP_REG_A1]=0x123456;actual.pc=0;dsp56k_execute_instruction(&actual);
+    assert(actual.registers[DSP_REG_X0]==0x654321 && actual.registers[DSP_REG_A1]==0x123456);
     dsp56k_write_memory(&actual,DSP_SPACE_P,0,0x0c0000);actual.pc=0;dsp56k_execute_instruction(&actual);assert(actual.pc==0);
     dsp56k_write_memory(&actual,DSP_SPACE_P,0,0x200013);actual.pc=0;dsp56k_execute_instruction(&actual);
     assert(actual.pc==1 && actual.registers[DSP_REG_A1]==0);
