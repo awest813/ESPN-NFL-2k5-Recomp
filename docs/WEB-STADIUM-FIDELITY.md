@@ -2900,3 +2900,53 @@ Evidence and served artifact/patch hashes are retained in
 `build-web-tests/irq-phase-retail`. The preceding correction's Build and Pages
 workflows passed. Uninterrupted/reference-matched audio, complete scene/mode
 fidelity and a sustained 30 FPS floor remain unfinished.
+
+
+### Host condition-wait precision baseline
+
+`tools/benchmark-web-waits.py` now builds an isolated Wasm pthread probe
+against the production `win32_compat.c`. It measures 200 samples for each
+1, 2 and 5 ms production critical-section condition timeout, alongside raw
+pthread conditions using realtime and monotonic deadlines. A separate
+producer measures signal-to-return latency with the predicate protected by
+the same critical section. The harness checks timeout status and the signal
+handshake, and reports distributions without a machine-specific performance
+pass/fail threshold. It does not run the game or change runtime scheduling.
+
+Run from an Emscripten environment with Playwright available to Node:
+
+```powershell
+python -I tools/benchmark-web-waits.py --executable "C:/Program Files/Google/Chrome/Application/chrome.exe"
+python -I tools/benchmark-web-waits.py --target node --build-dir build-web-tests/condition-waits-node
+```
+
+The browser runner owns its HTTP server and headless browser, enables the
+required isolation headers, saves browser metadata and completion/errors in
+`browser-report.json`, and closes its handles. Build evidence records source,
+platform/header/patch hashes and tool versions. Node output is saved separately
+in `node.log`. These measurements are diagnostics, not part of ordinary CI
+because host scheduling and clock precision vary.
+
+On this Windows host with isolated headless Chrome 157, the verified browser
+run's production timeout medians were 15.885, 15.995 and 15.870 ms for requested
+1, 2 and 5 ms waits respectively. The corresponding raw-monotonic medians were
+15.940, 15.925 and 15.925 ms: changing the deadline clock alone did not remove
+the delay. Explicit signal-to-return latency had a 0.145 ms median, 0.380 ms
+95th percentile and 0.665 ms maximum. A separate initial Node probe also
+showed roughly 16 ms timeout medians and prompt explicit notifications.
+The reproducible browser report is in `build-web-tests/condition-waits`.
+
+This establishes coarse short-timeout behavior without the game's workload;
+it does not prove which retail gaps it causes. The APU currently uses these
+relative waits for throttle, front-end traps and locked voices, so a requested
+1 ms retry is not a reliable 1 ms bound on this host. A separate exploratory
+audio-thread notification probe reduced the maximum observed 5 ms requested
+wait to 10.700 ms, but audio callbacks were still batched (8.625 ms median).
+It did not exercise the production condition predicate, MMIO handoff or
+shutdown paths and is not a validated runtime replacement. Any implementation
+must preserve those wakes, avoid lost notifications, handle suspended or
+failed audio contexts and be checked under actual gameplay load. No IRQ
+priority/order or APU catch-up limit changed in this measurement checkpoint.
+Build and Pages workflows for the preceding `b9cd175` diagnostic commit both
+passed. Sustained 30 FPS, continuous reference-matched audio and the broader
+rendering/mode fidelity requirements remain unproven.
