@@ -9117,10 +9117,10 @@ index 0000000..56c5da2
 +}
 diff --git a/src/apu/dsp/dsp_cpu.c b/src/apu/dsp/dsp_cpu.c
 new file mode 100644
-index 0000000..33e3cc7
+index 0000000..43733d5
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1441 @@
+@@ -0,0 +1,1454 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -9650,6 +9650,17 @@ index 0000000..33e3cc7
 +    }
 +}
 +
++/* MOVE X:(Rn)+,D with no ALU operation and D in X0..Y1. */
++static void execute_pm5_read_x_postinc(dsp_core_t *dsp)
++{
++    unsigned rn = (dsp->cur_inst >> 8) & 7u;
++    unsigned destination = (dsp->cur_inst >> 16) & 7u;
++    uint32_t address = dsp->registers[DSP_REG_R0 + rn];
++    emu_update_rn(dsp, rn, 1);
++    dsp->registers[destination] =
++        dsp56k_read_memory(dsp, DSP_SPACE_X, address) & 0xffffffu;
++}
++
 +static dsp_exec_func_t decode_executor(uint32_t instruction)
 +{
 +    if (instruction < 0x100000) {
@@ -9669,6 +9680,8 @@ index 0000000..33e3cc7
 +    }
 +    if ((instruction >> 20) >= 4 && (instruction >> 20) < 8) {
 +        if ((instruction & 0xf40000) == 0x400000) return emu_pm_4x;
++        if ((instruction & 0xfcf8ffu) == 0x44d800u)
++            return execute_pm5_read_x_postinc;
 +        return (instruction & 255u) ? emu_pm_5 : execute_pm5_move;
 +    }
 +    return opcodes_parmove[(instruction >> 20) & 15u];

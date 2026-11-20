@@ -34,6 +34,30 @@ gain. It supplies a native correctness and measurement baseline for further
 profiling. Raw logs remain local under `build-web-tests/native-msvc-build.log`
 and `build-web-tests/native-dsp-msvc-final.log`.
 
+The next DSP change caches a dedicated handler for moves from X memory into
+X0, X1, Y0 or Y1 using post-increment and no parallel ALU operation. These
+loads accounted for 15.5% and 7.2% of instructions in two captured GP
+and EP frames, respectively. The handler uses the existing address update and
+memory read, including modulo and bit-reversed addressing and mix-buffer aliases.
+Full-state dispatch checks now cover all eight address registers and four
+destinations across four address modifier settings and three memory ranges.
+
+Two runs of seven paired rounds, each with 1,000 frames per round, measured
+2.9–4.2% lower GP median execution time and 0.7–2.8% lower EP median execution
+time in the Wasm replay. The replay checks complete DSP state and all DMA
+transfers against the captures. The measurements cover those two frames.
+A retirement shortcut produced gains below 1%, and a memory-range reorder
+slowed GP while speeding up EP. Both candidates were dropped. The replay logs
+are under `build-web-tests/retire-fast-check`.
+
+Optimized MSVC also ran seven paired rounds of ten million instructions with
+matching final register checksums. The targeted load loop dropped from 123.8
+to 89.4 ms median. A mixed loop with three arithmetic instructions per load
+dropped from 115.1 to 112.0 ms. These synthetic programs isolate dispatch cost.
+The native APU build, native and Wasm DSP fixtures, optimized Web build and
+headless launcher checks passed. Retail gameplay FPS and audio continuity
+still need measurement on this build.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

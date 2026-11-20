@@ -155,6 +155,19 @@ int main(int argc,char **argv) {
     memcpy(&expected,&actual,sizeof(expected));memset((void *)reference_cache,0,sizeof(reference_cache));
     dsp56k_add_interrupt(&actual,DSP_INTER_SWI);dsp56k_add_interrupt(&expected,DSP_INTER_SWI);
     for(unsigned i=0;i<12;i++){reference_step(&expected);dsp56k_execute_instruction(&actual);equal_state();}
+    /* The cached X:(Rn)+ load must preserve addressing and leave every other
+     * register alone. Check all operand encodings and non-linear M modes. */
+    const uint32_t modifiers[] = {0xffff, 0, 7, 0x8000};
+    const uint32_t addresses[] = {0x107, 0xc07, 0x1407};
+    for(unsigned m=0;m<ARRAY_SIZE(modifiers);m++) {
+        for(unsigned a=0;a<ARRAY_SIZE(addresses);a++) {
+            for(unsigned r=0;r<8;r++) {
+                initial.registers[DSP_REG_R0 + r] = addresses[a];
+                initial.registers[DSP_REG_M0 + r] = modifiers[m];
+                for(unsigned d=0;d<4;d++)one(0x44d800u | (d<<16) | (r<<8),0);
+            }
+        }
+    }
     /* Uploads must invalidate handlers when the family changes too. */
     initialize(&actual);actual.pram[0]=0x200013;dsp56k_execute_instruction(&actual);
     dsp56k_write_memory(&actual,DSP_SPACE_P,0,0x44f400);dsp56k_write_memory(&actual,DSP_SPACE_P,1,0x123456);
