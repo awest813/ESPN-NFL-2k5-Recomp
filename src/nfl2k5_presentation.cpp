@@ -29,6 +29,7 @@
 #include <wincodec.h>
 #include "nfl2k5_broadcast.h"
 #include "nfl2k5_presentation.h"
+#include "nfl2k5_camera_state.h"
 #include "presentation/presentation_host.h"
 #include <mfapi.h>
 #include <mfidl.h>
@@ -3722,6 +3723,9 @@ static int hud_callback(const XboxHudFrame *f, XboxHudImage *img)
 extern "C" int (*xbox_present_in_match_fn)(void);
 static int in_match(void)
 {
+    uint32_t depth = rd32(NFL2K5_CAMERA_FSM_DEPTH);
+    if (depth >= NFL2K5_CAMERA_FSM_LIMIT ||
+        !nfl2k5_camera_mode_allows_match(rd32(NFL2K5_CAMERA_FSM + depth * 8u))) return 0;
     /* The play-call cards and pause screens are 4:3 panels: drawn at F = 1
      * they fill the picture instead of sitting in a middle strip. */
     GameState g;

@@ -355,6 +355,10 @@ PATCHES = [
     { extern void nfl2k5_diag_res(uint32_t res, int load, uint32_t ret, uint32_t r2, uint32_t r3); nfl2k5_diag_res(ecx, 0, MEM32(esp), MEM32(esp + 8), MEM32(esp + 0x18)); }
 """),
     # Game state-machine pushes/pops (2026-09-24): see nfl2k5_diag_fsm in src/main.c.
+    # sub_0006E2E0 replaces the visible mode without changing stack depth.
+    ("DIAG_FSMREPLACE", "sub_0006E2E0", "MEM32(esi + eax * 8) = edi;", "after", """\
+    { extern void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int change); nfl2k5_diag_fsm(esi, edi, 2); }
+"""),
     ("DIAG_FSMPUSH", "sub_0006E390", "loc_0006E3E6: ;", "after", """\
     { extern void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int push); nfl2k5_diag_fsm(esi, edi, 1); }
 """),

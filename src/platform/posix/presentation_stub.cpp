@@ -12,6 +12,7 @@
 #include <string.h>
 #include "nfl2k5_broadcast.h"
 #include "nfl2k5_presentation.h"
+#include "nfl2k5_camera_state.h"
 #include "platform/guest_memory.h"
 
 extern "C" ptrdiff_t xbox_GetMemoryOffset(void);
@@ -22,6 +23,11 @@ extern "C" int (*xbox_present_in_match_fn)(void);
 static int match_view(void)
 {
     const uintptr_t base = (uintptr_t)xbox_GetMemoryOffset();
+    uint32_t depth, mode;
+    if (!xbox_guest_memory_read(base, NFL2K5_CAMERA_FSM_DEPTH, &depth, 4) ||
+        depth >= NFL2K5_CAMERA_FSM_LIMIT ||
+        !xbox_guest_memory_read(base, (uint64_t)NFL2K5_CAMERA_FSM + depth * 8u, &mode, 4) ||
+        !nfl2k5_camera_mode_allows_match(mode)) return 0;
     uint32_t pause, playcall, clock, period;
     float seconds;
     if (!xbox_guest_memory_read(base, 0x00B38C30u, &playcall, 4) || playcall ||

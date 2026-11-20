@@ -3917,3 +3917,58 @@ Exact artifact/patch hashes, images, logs and checkpoint summaries remain
 under the run directory. Its browser and owned server closed. Broader
 stadium/staff/mode/reference fidelity, default DSP parity, uninterrupted
 whole-game audio and the 30 FPS floor remain unfinished.
+
+### Menu camera state after attract and historical gameplay (2026-11-20)
+
+The unprofiled full-DSP Ice Bowl audit reaches the historical field and
+advances through a run and an incomplete pass, then returns to its objective
+screen; see `WEB-GAME-MODES.md`. It also exposes history-dependent menu width.
+After attract playback, the callback can still accept retained clock and
+team records while Main Menu, Game Modes or the Anniversary screens are
+visible. The camera log retains stretch 1.2444 through those menus. Later
+pause/gameplay transitions restore neutral stretch 1.0000, so the same
+objective screen renders at a different width depending on prior navigation.
+
+The presentation callback now reads the visible top descriptor from the
+retail main mode stack (object `00A84B18`, depth at `+100`, eight-byte entries;
+the push/pop implementations are `sub_0006E390`/`sub_0006E400`). A shared
+policy identifies 18 known full-screen menu states and selects the neutral
+camera even with valid retained match data. Only the top entry is checked;
+a menu lower in the stack does not suppress a world view above it. Empty
+descriptors, failed reads and depths outside 0–31 also use the neutral camera.
+Controller Assign is a menu; its confirmation replaces the top descriptor
+with world state `004E7EC0` at the same depth (`sub_0006E2E0`). Basic Training
+and unclassified world states retain the existing clock/team/pause/play-call
+validation. The optional mode trace now records replacements as well as
+pushes/pops, so this transition is visible during audits. This policy is
+used by both the portable and Windows camera callbacks.
+
+The new stale-match regression fails on the previous callback and passes
+after the fix. Wasm UBSAN and native ASAN/UBSAN checks cover all 18 menu
+states with valid match records, top-versus-ancestor selection, root and last
+valid slots, invalid depths, empty state, historical/training/world/pregame
+views and the existing 10,000 presentation-layout bounds. Native CI now runs
+the portable callback sanitizer fixture as well. This is camera-state
+validation, not proof of every menu or original-Xbox scene's pixel identity.
+
+The final frozen `menu-camera-final-retail` diagnostic uses hardware Chrome,
+full DSP opt-in and the 30 FPS cap, with read-only guest-memory capture. It
+checks Main Menu, attract playback, Game Modes, the Ice Bowl objective,
+Controller Assign, the historical presnap field, pause and quit back to the
+objective. Screenshots and camera-header reads agree: checked menus/panels
+use `{1,1,0}`, while attract and historical world views use stretch 1.2444446.
+At depth five, the descriptor changes from `0051BDD8` to `004E7EC0` in place;
+the replacement trace and direct slot reads both confirm it. After quit the
+objective is `00529D48` at depth four and remains neutral. The objective before
+loading still has a retained nonzero match-clock pointer, exercising the
+original failure condition.
+
+The focused transition case passes with no audit/browser/GPU failures.
+Existing startup TODO diagnostics remain. The final audio sample totals two
+underrun blocks / 256 missing frames; a single endpoint cannot establish when
+those occurred or continuous audio. This capture is not a performance test,
+challenge completion or reference-parity result. The final full Web build,
+Wasm UBSAN, native ASAN/UBSAN and generated-patch check pass; replacement hook
+regeneration is idempotent. Artifact/source hashes and captures remain in the
+private run directory. Its browser and owned server are closed. The pinned
+runtime revision and runtime patch are unchanged by this camera fix.

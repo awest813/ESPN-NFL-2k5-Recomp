@@ -15008,6 +15008,8 @@ loc_0006E2FE: ;
     eax = MEM32(esi + 0x100);
     ecx = esi;
     MEM32(esi + eax * 8) = edi;
+    /* NFL2K5-GENPATCH:DIAG_FSMREPLACE */
+    { extern void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int change); nfl2k5_diag_fsm(esi, edi, 2); }
     PUSH32(esp, 0x0006E30Eu); RECOMP_ABI_CALL(0x000F3180u, sub_000F3180); /* call 0x000F3180 */
 
 loc_0006E30E: ;

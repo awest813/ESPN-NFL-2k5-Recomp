@@ -560,12 +560,12 @@ void recomp_flags_fallback_hit(uint32_t address) { mode_trace_gap(address, 0); }
 void recomp_icall_hist(uint32_t va) { (void)va; }
 void recomp_unresolved_hit(uint32_t address) { mode_trace_gap(address, 1); }
 void recomp_todo_hit(uint32_t address) { mode_trace_gap(address, 2); }
-void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int push)
+void nfl2k5_diag_fsm(uint32_t obj, uint32_t desc, int change)
 {
     static RECOMP_TLS unsigned sequence;
     if (mode_trace_enabled())
         fprintf(stderr, "[MODE-FSM] #%u %s object=%08X descriptor=%08X\n",
-                ++sequence, push ? "push" : "pop", obj, desc);
+                ++sequence, change == 2 ? "replace" : change ? "push" : "pop", obj, desc);
 }
 void nfl2k5_diag_texzero(uint32_t tex, uint32_t ret) { (void)tex; (void)ret; }
 void nfl2k5_diag_reg(uint32_t fn, uint32_t edx_, uint32_t a0, uint32_t a1, uint32_t obj) { (void)fn; (void)edx_; (void)a0; (void)a1; (void)obj; }

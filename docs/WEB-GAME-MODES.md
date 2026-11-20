@@ -109,3 +109,33 @@ The [stadium/staff audit](WEB-STADIUM-FIDELITY.md) documents close replay views.
   all 256 x87 status bytes, and verifies regeneration/idempotence.
 
 No 30 FPS minimum guarantee follows from this mode audit.
+
+## Historical mode with executable DSP — November 20, 2026
+
+The frozen `5de6f40` build is exercised with `RECOMP_APU_DSP=1`, the 30 FPS
+cap, hardware WebGPU and APU/IRQ/per-draw/CPU profiling off. Build and Pages
+workflows for that commit pass. `irq-level-ice-bowl-retail` retains the exact
+artifact hashes, screenshots, runtime log and report.
+
+The Anniversary catalog, Ice Bowl objective and historical uniform/controller
+selection render. The field starts at DAL17–GB14, Q4 4:50, first-and-ten at
+GB32, with fog, frozen field/sidelines, stadium/crowd, staff and readable
+play-call text. Input delays during inspection produce delay-of-game penalties;
+later inspections pause the game. A four-yard run advances to second-and-21
+at GB21, 4:33, and a dropped right-side pass advances to third-and-21 at 4:18.
+Pause, quit submenu and return to the objective screen work. No new FLAGS,
+unresolved-call or browser/GPU failures are recorded.
+
+Audio counters remain at three affected blocks / 384 missing frames from the
+first field checkpoint through the final menu checkpoint. Those intervals
+include inspection pauses and are not an uninterrupted active-play benchmark.
+Initial idle navigation also entered attract mode before returning to the
+menu; it is excluded from challenge coverage. The challenge is not completed,
+and full original-Xbox graphics/audio parity and the other 24 challenges remain
+unverified.
+
+This pass also exposes inconsistent menu camera stretch after previous
+attract/gameplay transitions. The camera callback's clock/team validation can
+accept retained match records while a full-screen menu is visible. The
+follow-up implementation and regression are recorded in the stadium/fidelity
+ledger; broader mode and scene coverage remains open.
