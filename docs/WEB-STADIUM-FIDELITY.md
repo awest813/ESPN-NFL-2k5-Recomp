@@ -2843,3 +2843,60 @@ exact served Wasm/JS/patch hashes are retained in
 workflow passes; Pages deployment is still in progress at this observation.
 Audio continuity, original-Xbox fidelity, complete modes/stadium/staff coverage
 and a sustained 30 FPS floor remain unfinished.
+
+
+### IRQ signal-age phase measurements
+
+`RECOMP_IRQ_PROFILE=1` adds opt-in timing around the existing IRQ/DPC worker.
+It records the first coalesced notification's timestamp and worker phase in
+one atomic word, then measures signal age at APU service, overlap with GGL
+acquisition and vblank work, ISR duration and DPC-drain duration. The stage
+components printed with `max-age` belong to the same worst timed signal;
+`max-isr` and `max-dpc` are independent maxima. A signal raised while a prior
+DPC is running can appear in the next iteration's `prelock` interval, with
+`raised=dpc` identifying that context. This is notification timing, not a
+measurement of every hardware line assertion.
+
+The `missing` field counts service calls without a fresh retained timestamp.
+An asserted level can be serviced again without a new rising notification,
+and a notification can race the observation boundary. Thus this count does
+not by itself demonstrate lost interrupts. Discarded notifications, coalescing
+and declined/uncallable handlers are reported separately. Profile reports
+preserve pending notifications across their statistics resets. IRQ/vblank/DPC
+order and guest priorities are unchanged. The normal path performs no added
+QPC or frequency queries from these helpers.
+
+Deterministic Wasm and native ASAN/UBSAN fixtures use the real wake callback,
+real platform atomic/initialization primitives and a fake QPC. They cover
+stage overlap and clipping, signals during GGL/vblank/DPC work, a later faster
+signal with a slower ISR (without mixing worst-sample components), concurrent
+atomic publication, coalescing, missing/discarded observations, report reset,
+pending-notification preservation and the disabled path's zero clock queries
+with continued event signaling. The complete ordinary Web Python sequence,
+native APU/kernel/video builds and browser game link pass. CI runs the new
+fixture in Wasm and native sanitizer builds. The portable patch now reproduces
+97 files, including the previously unmodified pinned kernel bridge, with a
+fresh application and reverse check.
+
+The approximately 246-second rainy Jacksonville/Chicago capture reports no
+browser/GPU failures. Its 19 five-second FPS averages after 150 seconds range
+from 25.4 to 30.1. Audio records 130 affected blocks and 16,640 missing output
+frames (346.7 ms at 48 kHz), with a longest continuous gap of 1,920 frames
+(40 ms). The final checked view reaches second-and-ten at 2:09 in the first
+quarter, with players and readable overlays visible through rain/fog.
+
+Reported profile windows contain 612 ISR calls, of which 249 have a fresh
+notification timestamp and 363 do not; no discarded/coalesced notifications
+or declined/uncallable handlers are reported in those windows. The largest
+timed signal age is 1.920 ms, comprising 0.030 ms before lock acquisition and
+1.890 ms acquiring GGL, with its associated ISR taking 0.036 ms. Independent
+maxima are 2.295 ms in an ISR and 7.580 ms in a DPC drain. This does not bound
+the untimed calls or prove the cause of every front-end trap. The next
+investigation needs to distinguish repeated asserted-line service from
+notification-boundary races and measure the APU condition-wait wake path;
+these samples do not justify an IRQ-priority reorder. Profiling and different
+scenes prevent controlled comparison with the preceding unprofiled run.
+Evidence and served artifact/patch hashes are retained in
+`build-web-tests/irq-phase-retail`. The preceding correction's Build and Pages
+workflows passed. Uninterrupted/reference-matched audio, complete scene/mode
+fidelity and a sustained 30 FPS floor remain unfinished.

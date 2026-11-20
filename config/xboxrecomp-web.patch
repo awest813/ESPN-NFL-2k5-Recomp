@@ -28339,6 +28339,186 @@ index 0000000..18e9bf7
 +    for(;remaining;p++,remaining--)hash=sg_xxh_rot(hash^((uint64_t)*p*SG_XXH_P5),11)*SG_XXH_P1;
 +    hash^=hash>>33;hash*=SG_XXH_P2;hash^=hash>>29;hash*=SG_XXH_P3;return hash^(hash>>32);
 +}
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -2413,6 +2413,7 @@
+
+ /* Set by the host (src/main.c) when an emulated APU is present. */
+ int (*g_xbox_apu_irq_line)(void);
++#include "irq_profile.h"
+ static HANDLE bridge_irq_event(void)
+ {
+     static HANDLE ev;
+@@ -2425,7 +2426,7 @@
+ }
+ /* An interrupt line went up: deliver it now instead of at the next 10 ms
+  * poll of the timer/DPC thread. */
+-void xbox_kernel_irq_wake(void) { SetEvent(bridge_irq_event()); }
++void xbox_kernel_irq_wake(void) { bridge_irq_profile_signal();SetEvent(bridge_irq_event()); }
+
+ static int kernel_raise_interrupt(uint32_t vector)
+ {
+@@ -2821,6 +2822,8 @@
+      * elsewhere -- one DPC queue, not two). Started unconditionally from
+      * xbox_kernel_bridge_init. */
+     while (InterlockedCompareExchange(&g_kernel_timer_running, 0, 0)) {
++        BridgeIrqTimes irq_times={0};
++        bridge_irq_profile_phase(IRQ_PROFILE_WAIT);
+         /* Woken early when the APU raises its interrupt (xbox_kernel_irq_wake). */
+         /* ...and at the next vblank deadline, not at a 10 ms poll. Polled,
+          * vblanks landed 10 or 20 ms apart (deadline 16.7 seen at 20, 33.3
+@@ -2856,26 +2859,34 @@
+         }
+         { static int named; if (!named && xbox_ggl_enabled()) { named = 1; fprintf(stderr, "  [GGL] timer/DPC thread %lu\n", GetCurrentThreadId()); } }
+         xbox_ggl_set_priority(100);  /* ISRs/DPCs preempt threads, as on hardware */
++        irq_times.asked=bridge_irq_profile_stamp(IRQ_PROFILE_GGL);
+         xbox_ggl_enter();      /* the ISR and DPCs are guest code */
+         if (!InterlockedCompareExchange(&g_kernel_timer_running, 0, 0)) {
+             xbox_ggl_leave();
+             break;
+         }
++        irq_times.locked=bridge_irq_profile_stamp(IRQ_PROFILE_VBLANK);
+         kernel_vblank_tick();  /* the GPU's frame clock */
++        irq_times.isr_begin=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
+         {
+             /* The APU's interrupt (vector 5: DirectSound's ISR, NFL 2K5
+              * 0x44CB6E). Raised while the emulated APU holds its line; the ISR
+              * acknowledges through NV_PAPU_ISTS, which drops it. */
+             extern int (*g_xbox_apu_irq_line)(void);
+             static unsigned n;
++            LONGLONG notification=bridge_irq_profile_take();
+             if (g_xbox_apu_irq_line && g_xbox_apu_irq_line()) {
+                 int r = kernel_raise_interrupt(5);
++                int64_t completed=bridge_irq_profile_stamp(IRQ_PROFILE_ISR);
++                bridge_irq_profile_record(notification,&irq_times,completed,r);
+                 if (n++ < 5 || n % 1000 == 0)
+                     fprintf(stderr, "  [APU] interrupt #%u -> ISR %s\n", n,
+                             r < 0 ? "not callable" : r ? "claimed it" : "declined it");
+-            }
++            }else bridge_irq_profile_discard(notification);
+         }
++        int64_t dpc_begin=bridge_irq_profile_stamp(IRQ_PROFILE_DPC);
+         xbox_bridge_drain_guest_dpcs();
++        bridge_irq_profile_finish(dpc_begin);
+         xbox_ggl_leave();
+     }
+     return 0;
+diff --git a/src/kernel/irq_profile.h b/src/kernel/irq_profile.h
+new file mode 100644
+index 0000000..bdb0b56
+--- /dev/null
++++ b/src/kernel/irq_profile.h
+@@ -0,0 +1,109 @@
++/* Optional signal-to-service timing for the shared IRQ/DPC worker.
++ * Win32-compatible primitives must already be declared by the including TU.
++ * This records coalesced notifications, not hardware line-assertion duration.
++ */
++#pragma once
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdio.h>
++
++enum {IRQ_PROFILE_WAIT,IRQ_PROFILE_GGL,IRQ_PROFILE_VBLANK,IRQ_PROFILE_ISR,
++      IRQ_PROFILE_DPC,IRQ_PROFILE_OTHER};
++typedef struct {int64_t asked,locked,isr_begin;} BridgeIrqTimes;
++typedef struct {
++    int started;int64_t since;
++    unsigned calls,samples,missing,discarded,uncallable,declined;
++    int64_t age,prelock,ggl,vblank,isr,max_isr,max_dpc;
++    unsigned raised_stage;
++} BridgeIrqStats;
++static INIT_ONCE s_irq_profile_once=INIT_ONCE_STATIC_INIT;
++static int s_irq_profile_on;
++static LARGE_INTEGER s_irq_profile_frequency;
++static volatile LONGLONG s_irq_profile_pending;
++static volatile LONG s_irq_profile_stage,s_irq_profile_coalesced;
++static BridgeIrqStats s_irq_profile_stats;
++
++static BOOL WINAPI bridge_irq_profile_init(PINIT_ONCE once,PVOID param,PVOID *context) {
++    (void)once;(void)param;(void)context;
++    s_irq_profile_on=getenv("RECOMP_IRQ_PROFILE")!=NULL;
++    if(s_irq_profile_on && (!QueryPerformanceFrequency(&s_irq_profile_frequency) ||
++       s_irq_profile_frequency.QuadPart<=0))s_irq_profile_on=0;
++    return TRUE;
++}
++static int bridge_irq_profile_enabled(void) {
++    InitOnceExecuteOnce(&s_irq_profile_once,bridge_irq_profile_init,NULL,NULL);
++    return s_irq_profile_on;
++}
++static int64_t bridge_irq_profile_clock(void) {
++    LARGE_INTEGER now;QueryPerformanceCounter(&now);
++    int64_t frequency=s_irq_profile_frequency.QuadPart;
++    return (now.QuadPart/frequency)*1000000+(now.QuadPart%frequency)*1000000/frequency;
++}
++static LONGLONG bridge_irq_profile_exchange(volatile LONGLONG *p,LONGLONG value) {
++    LONGLONG old=InterlockedCompareExchange64(p,0,0),seen;
++    while((seen=InterlockedCompareExchange64(p,value,old))!=old)old=seen;
++    return old;
++}
++static void bridge_irq_profile_phase(unsigned stage) {
++    if(bridge_irq_profile_enabled())InterlockedExchange(&s_irq_profile_stage,(LONG)stage);
++}
++static int64_t bridge_irq_profile_stamp(unsigned stage) {
++    if(!bridge_irq_profile_enabled())return 0;
++    InterlockedExchange(&s_irq_profile_stage,(LONG)stage);
++    return bridge_irq_profile_clock();
++}
++static void bridge_irq_profile_signal(void) {
++    if(!bridge_irq_profile_enabled())return;
++    uint64_t now=(uint64_t)bridge_irq_profile_clock();
++    unsigned stage=(unsigned)InterlockedCompareExchange(&s_irq_profile_stage,0,0);
++    /* One atomic word publishes time and phase together. Zero means empty;
++     * retain the first notification when the auto-reset event coalesces. */
++    LONGLONG token=(LONGLONG)(((now+1)<<3)|(stage&7u));
++    if(InterlockedCompareExchange64(&s_irq_profile_pending,token,0)!=0)
++        InterlockedIncrement(&s_irq_profile_coalesced);
++}
++static LONGLONG bridge_irq_profile_take(void) {
++    return bridge_irq_profile_enabled()?bridge_irq_profile_exchange(&s_irq_profile_pending,0):0;
++}
++static int64_t bridge_irq_profile_span(int64_t begin,int64_t end,int64_t raised) {
++    if(begin<raised)begin=raised;
++    return end>begin?end-begin:0;
++}
++static void bridge_irq_profile_record(LONGLONG token,const BridgeIrqTimes *t,int64_t end,int result) {
++    if(!bridge_irq_profile_enabled())return;
++    BridgeIrqStats *s=&s_irq_profile_stats;s->calls++;
++    if(result<0)s->uncallable++;else if(!result)s->declined++;
++    int64_t isr=end>t->isr_begin?end-t->isr_begin:0;
++    if(isr>s->max_isr)s->max_isr=isr;
++    if(!token){s->missing++;return;}
++    int64_t raised=(int64_t)((uint64_t)token>>3)-1;
++    int64_t age=t->isr_begin>raised?t->isr_begin-raised:0;
++    s->samples++;
++    if(s->samples==1 || age>s->age) {
++        s->age=age;s->raised_stage=(unsigned)((uint64_t)token&7u);
++        s->prelock=t->asked>raised?t->asked-raised:0;
++        s->ggl=bridge_irq_profile_span(t->asked,t->locked,raised);
++        s->vblank=bridge_irq_profile_span(t->locked,t->isr_begin,raised);
++        s->isr=isr;
++    }
++}
++static void bridge_irq_profile_discard(LONGLONG token) {
++    if(token && bridge_irq_profile_enabled())s_irq_profile_stats.discarded++;
++}
++static void bridge_irq_profile_finish(int64_t begin) {
++    if(!bridge_irq_profile_enabled())return;
++    int64_t now=bridge_irq_profile_stamp(IRQ_PROFILE_OTHER);
++    BridgeIrqStats *s=&s_irq_profile_stats;
++    if(now>begin && now-begin>s->max_dpc)s->max_dpc=now-begin;
++    if(!s->started){s->started=1;s->since=now;return;}
++    if(now-s->since<5000000)return;
++    static const char *names[]={"wait","ggl","vblank","isr","dpc","other"};
++    unsigned phase=s->raised_stage<6?s->raised_stage:IRQ_PROFILE_OTHER;
++    LONG coalesced=InterlockedExchange(&s_irq_profile_coalesced,0);
++    fprintf(stderr,"[IRQ-PROFILE] calls=%u samples=%u missing=%u discarded=%u coalesced=%ld uncallable=%u declined=%u max-age=%.3fms prelock=%.3fms ggl=%.3fms vblank=%.3fms isr=%.3fms raised=%s max-isr=%.3fms max-dpc=%.3fms\n",
++        s->calls,s->samples,s->missing,s->discarded,(long)coalesced,s->uncallable,s->declined,
++        s->age/1000.0,s->prelock/1000.0,s->ggl/1000.0,s->vblank/1000.0,s->isr/1000.0,
++        names[phase],s->max_isr/1000.0,s->max_dpc/1000.0);
++    memset(s,0,sizeof *s);s->started=1;s->since=now;
++}
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c

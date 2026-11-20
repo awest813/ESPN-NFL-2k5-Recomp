@@ -83,6 +83,9 @@ jobs:
       - name: Check bounded APU register handoff under continuous arrivals (sanitizers)
         run: python3 -I tests/web/test_apu_lock_handoff.py --native --build-dir build-apu-handoff
 
+      - name: Check optional IRQ phase measurements and disabled clock overhead (sanitizers)
+        run: python3 -I tests/web/test_irq_profile.py --native --build-dir build-irq-profile
+
       - name: Check real AC97 faults and guest-memory copy boundaries
         run: |
           cmake -S external/xboxrecomp/tests/ac97_posix -B build-ac97 -G Ninja
