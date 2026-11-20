@@ -3705,3 +3705,82 @@ rendering stability are verified; a whole-game gain, sustained 30 FPS floor,
 continuous audio and complete reference fidelity remain unproven. The run is
 classified partial, and both owned browser and server were closed. The
 preceding `2e6fc85` Build and Pages workflows passed.
+
+### Immutable WebGPU uniform reuse (2026-11-20)
+
+WebGPU uniform recording now uses full-byte SIMD equality for consecutive
+copies. Fragment constants additionally use a command-local, two-way index:
+128 entries in 64 sets, storing offsets into that command's immutable uniform
+bytes. Offsets survive buffer reallocation; command destruction releases the
+entire index. A 24-byte sampled fingerprint selects candidates. Every hit
+still checks the complete provided bytes, stage, size and retained range;
+fingerprints are not identities. Vertex palette blocks retain consecutive
+reuse without index/hash work. Guest texture validation is unchanged.
+
+The recorder also initializes the final word-rounded upload padding and
+reserves space for a complete GPU uniform binding before offset/size arithmetic
+can overflow. `RECOMP_WEBGPU_UNIFORM_CACHE=0` disables the fragment index while
+retaining SIMD equality. `RECOMP_WEBGPU_UNIFORM_PROFILE=1` reports five-second
+upload counters without enabling per-draw stage timing; the existing SDL GPU
+profile flag also enables these counters. `uncached` is the byte count that
+the same actual command sequence would upload with consecutive-only reuse,
+including its alignment gaps. It can be compared directly with `stored`.
+
+The extracted production recorder and command-buffer structure, with a minimal
+uniform-operation stub, pass 48,295 immutable-history checks under
+Wasm address/undefined-behavior and native address/undefined-behavior
+sanitizers. Cases cover both stages/cache settings, every size 1–4,096, forced
+hash/fingerprint collisions, two-way eviction, moving reallocations, client
+data changes, padding, allocation failure, binding-size overflow and a change
+in the final byte of a 4 KiB block. Equality tests additionally check every
+byte position in 0–129-byte spans at 16 alignments and exact allocation ends.
+The WebGPU API pixel suite passes, including disjoint A/B/A draws that restore
+nonadjacent vertex and fragment constants, without validation errors.
+
+Seven rounds rotate three recorder modes in an isolated, single-threaded,
+unshared Wasm fixture using the same operation stub, rather than the full
+pthread backend. Each records 300 commands of 256 pushes.
+Vertex/fragment payloads are 3,328/784 bytes; the consecutive trace
+uses only vertex constants. Median recording times in one isolated run are:
+
+| Synthetic trace | libc equality, last-only | SIMD, last-only | SIMD + fragment index |
+| --- | ---: | ---: | ---: |
+| Consecutive identical | 19.3425 ms | 4.1196 ms | 4.0715 ms |
+| Repeating eight patterns | 2.8787 ms | 2.9098 ms | 2.5866 ms |
+| All unique | 4.2579 ms | 4.2642 ms | 4.4097 ms |
+| Unique vertex / repeated fragment | 3.6082 ms | 3.5897 ms | 3.1873 ms |
+
+Stored bytes fall from 167,044,800 to 129,024,000 in the eight-pattern trace
+and to 130,252,800 in the mixed trace (22.8%/22.0% lower). The all-unique
+trace stores the same bytes and takes about 3.6% longer in this run. The
+earlier full-block, both-stage hash index was rejected for substantially
+higher recording cost. These are recording/upload-volume results, not
+whole-game FPS gains. Reproduce with `python -I tests/web/test_webgpu_uniforms.py
+--benchmark`; local evidence uses the `webgpu-uniforms` prefix. The published
+runtime patch now contains 98 files and retains the same submodule pin.
+
+The final Release game build and WebGPU API pixel suite pass. An isolated
+retail run verifies Arizona away at New Orleans home and D. Green/J. Haslett
+before starting. Counter-only uniform telemetry is enabled; per-draw timing
+and CPU/DSP sampling are off. The default fragment index remains enabled:
+across 24 five-second active-play windows, the same push sequence requires
+6,002,717,168 uploaded bytes versus 6,215,920,624 with consecutive-only reuse,
+a 3.43% reduction. This measures bytes, not a causal FPS improvement.
+
+| Window | Five-second FPS averages | Additional upload reduction | Missing audio |
+| --- | --- | ---: | ---: |
+| Intro into opening play | 29.6–30.0 (12 windows) | 5.57% | 0 frames |
+| First active-play segment | 29.5–30.1 (12 windows) | 3.11% | 128 frames / 2.7 ms |
+| Following play segment | 28.9–30.1 (12 windows) | 3.72% | 12,032 frames / 250.7 ms |
+
+Audio figures subtract cumulative counters at each approximately 60-second
+boundary; the last two windows contain 1 and 94 affected blocks respectively.
+The upload windows are independently emitted five-second aggregates, so their
+edges can straddle those audio boundaries. Checked frames show players,
+sideline staff, field markings and readable score/down/hangtime overlays.
+No browser/GPU failure is reported. Exact artifact/patch hashes, screenshots,
+counter summaries and logs remain in `build-web-tests/webgpu-uniforms-retail`.
+Both owned browser and server were closed. The preceding `7872a2d` Build and
+Pages workflows passed. This run remains partial: the 30 FPS floor,
+continuous audio, all stadium/staff assets and full reference fidelity are
+still unproven. Local builds use SDK 6.0.10; CI uses SDK 7.0.0.

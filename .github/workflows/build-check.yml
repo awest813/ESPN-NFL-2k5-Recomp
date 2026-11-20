@@ -92,6 +92,9 @@ jobs:
       - name: Check prepared vertex stream packing (address sanitizer)
         run: python3 -I tests/web/test_vertex_fetch.py --native --build-dir build-vertex-streams
 
+      - name: Check WebGPU uniform history and bounded reuse (sanitizers)
+        run: python3 -I tests/web/test_webgpu_uniforms.py --native --build-dir build-webgpu-uniforms
+
       - name: Check bounded APU register handoff under continuous arrivals (sanitizers)
         run: python3 -I tests/web/test_apu_lock_handoff.py --native --build-dir build-apu-handoff
 

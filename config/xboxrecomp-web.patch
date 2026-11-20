@@ -28860,6 +28860,91 @@ index 0000000..bdb0b56
 +        names[phase],s->max_isr/1000.0,s->max_dpc/1000.0);
 +    memset(s,0,sizeof *s);s->started=1;s->since=now;
 +}
+diff --git a/src/kernel/sdlgpu/webgpu/wg_uniform_cache.h b/src/kernel/sdlgpu/webgpu/wg_uniform_cache.h
+new file mode 100644
+index 0000000..e417e6a
+--- /dev/null
++++ b/src/kernel/sdlgpu/webgpu/wg_uniform_cache.h
+@@ -0,0 +1,79 @@
++/* Immutable uniform copies belong to one command buffer. Store offsets,
++ * not pointers, so growing its byte buffer cannot invalidate cache entries. */
++#ifndef WG_UNIFORM_CACHE_H
++#define WG_UNIFORM_CACHE_H
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++#ifdef __wasm_simd128__
++#include <wasm_simd128.h>
++#endif
++#include "../sg_xxhash64.h"
++
++#define WG_UNIFORM_CACHE_SLOTS 128u
++_Static_assert(WG_UNIFORM_CACHE_SLOTS>=2 && !(WG_UNIFORM_CACHE_SLOTS&(WG_UNIFORM_CACHE_SLOTS-1)),"uniform cache pairs need a power-of-two table");
++typedef struct { uint64_t key; uint32_t offset, tag; } WgUniformEntry;
++typedef struct { WgUniformEntry entries[WG_UNIFORM_CACHE_SLOTS]; } WgUniformCache;
++
++static int wg_uniform_bytes_equal(const uint8_t *a, const uint8_t *b, size_t n)
++{
++#ifdef __wasm_simd128__
++    if (n >= 4) {
++        uint32_t first_a, first_b;
++        memcpy(&first_a,a,4);memcpy(&first_b,b,4);
++        if (first_a != first_b) return 0;
++    }
++    for (;n>=64;a+=64,b+=64,n-=64) {
++        v128_t d0=wasm_v128_xor(wasm_v128_load(a),wasm_v128_load(b));
++        v128_t d1=wasm_v128_xor(wasm_v128_load(a+16),wasm_v128_load(b+16));
++        v128_t d2=wasm_v128_xor(wasm_v128_load(a+32),wasm_v128_load(b+32));
++        v128_t d3=wasm_v128_xor(wasm_v128_load(a+48),wasm_v128_load(b+48));
++        if(wasm_v128_any_true(wasm_v128_or(wasm_v128_or(d0,d1),wasm_v128_or(d2,d3))))return 0;
++    }
++    for(;n>=16;a+=16,b+=16,n-=16)
++        if(wasm_v128_any_true(wasm_v128_xor(wasm_v128_load(a),wasm_v128_load(b))))return 0;
++#endif
++    return memcmp(a,b,n)==0;
++}
++
++static uint32_t wg_uniform_tag(uint32_t len, int fragment)
++{
++    return len | ((uint32_t)fragment << 31);
++}
++static uint64_t wg_uniform_key(const void *data, uint32_t len, int fragment)
++{
++    /* This fingerprint selects candidates, never establishes equality. */
++    uint8_t sample[24]={0};const uint8_t *p=data;
++    if(len>=8){memcpy(sample,p,8);memcpy(sample+8,p+(len-8)/2,8);memcpy(sample+16,p+len-8,8);}
++    else memcpy(sample,p,len);
++    return sg_xxh64(sample, sizeof sample,
++                   UINT64_C(0x756e69666f726d73) ^ wg_uniform_tag(len, fragment));
++}
++static WgUniformEntry *wg_uniform_entry(WgUniformCache *cache, uint64_t key)
++{
++    return &cache->entries[((uint32_t)(key ^ (key >> 32)) & (WG_UNIFORM_CACHE_SLOTS/2u - 1u))*2u];
++}
++static int wg_uniform_match(const WgUniformEntry *entry, uint64_t key,
++                            uint32_t tag, const uint8_t *bytes, uint32_t used,
++                            const void *data, uint32_t len)
++{
++    return entry->tag == tag && entry->key == key && entry->offset <= used &&
++        len <= used - entry->offset && wg_uniform_bytes_equal(bytes + entry->offset, data, len);
++}
++static int wg_uniform_find(WgUniformCache *cache, uint64_t key, uint32_t tag,
++                           const uint8_t *bytes, uint32_t used, const void *data,
++                           uint32_t len, uint32_t *offset)
++{
++    WgUniformEntry *bucket=wg_uniform_entry(cache,key);
++    for(unsigned i=0;i<2;i++)if(wg_uniform_match(bucket+i,key,tag,bytes,used,data,len)) {
++        WgUniformEntry hit=bucket[i];if(i){bucket[1]=bucket[0];bucket[0]=hit;}
++        *offset=hit.offset;return 1;
++    }
++    return 0;
++}
++static void wg_uniform_insert(WgUniformCache *cache,uint64_t key,uint32_t offset,uint32_t tag)
++{
++    WgUniformEntry *bucket=wg_uniform_entry(cache,key);
++    bucket[1]=bucket[0];bucket[0]=(WgUniformEntry){key,offset,tag};
++}
++#endif
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
@@ -30386,10 +30471,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..2ff60af
+index 0000000..a5e2d0c
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1808 @@
+@@ -0,0 +1,1872 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -30408,6 +30493,7 @@ index 0000000..2ff60af
 +#include <stdlib.h>
 +#include <string.h>
 +#include <webgpu/webgpu.h>
++#include "wg_uniform_cache.h"
 +
 +/* OFFSCREENCANVAS_SUPPORT (the presentation canvas) needs Emscripten's GL
 + * object even though nothing here uses WebGL. */
@@ -30480,6 +30566,10 @@ index 0000000..2ff60af
 +    Op *ops; uint32_t n, cap;
 +    uint8_t *uniforms; uint32_t ubytes, ucap;   /* pushed uniform data, 256-aligned */
 +    struct { uint32_t offset, size; int valid; } last_uniform[2];
++    WgUniformCache uniform_cache;
++    uint64_t uniform_pushed;
++    uint64_t uniform_uncached_bytes;
++    uint32_t uniform_last_hits, uniform_cache_hits;
 +    int has_download;
 +    int failed;                     /* never replay an incomplete recording */
 +};
@@ -31608,18 +31698,52 @@ index 0000000..2ff60af
 +    for (uint32_t i = 0; i < o->samplers.n; i++) { o->samplers.tex[i] = texture_current(b[i].texture); o->samplers.smp[i] = b[i].sampler; }
 +    op_resources(o, 0);
 +}
++/* Index immutable fragment copies within this command buffer. Vertex palette
++ * blocks keep the consecutive-match path without extra fingerprint work. */
++static atomic_int s_uniform_cache_on = -1;
++static int uniform_cache_enabled(void)
++{
++    int on = atomic_load_explicit(&s_uniform_cache_on, memory_order_relaxed);
++    if (on < 0) {
++        const char *value = getenv("RECOMP_WEBGPU_UNIFORM_CACHE");
++        on = !value || strcmp(value, "0") != 0;
++        atomic_store_explicit(&s_uniform_cache_on, on, memory_order_relaxed);
++    }
++    return on;
++}
 +static void push_uniform(SDL_GPUCommandBuffer *c, int fragment, const void *data, Uint32 len)
 +{
 +    if (!c || c->failed || !len) return;
 +    uint32_t limit = fragment ? WG_FS_UNIFORM_BYTES : WG_VS_UNIFORM_BYTES;
-+    if (!data || len > limit || c->ubytes > UINT32_MAX - WG_UNIFORM_ALIGN - len - 4) {
++    uint32_t binding = WG_VS_UNIFORM_BYTES > WG_FS_UNIFORM_BYTES ? WG_VS_UNIFORM_BYTES : WG_FS_UNIFORM_BYTES;
++    if (!data || len > limit || c->ubytes > UINT32_MAX - WG_UNIFORM_ALIGN - len - binding - 4) {
 +        cmd_fail(c, "invalid uniform data or size"); return;
 +    }
++    c->uniform_pushed += len;
 +    if (c->last_uniform[fragment].valid && c->last_uniform[fragment].size == len
-+        && memcmp(c->uniforms + c->last_uniform[fragment].offset, data, len) == 0) {
++        && wg_uniform_bytes_equal(c->uniforms + c->last_uniform[fragment].offset, data, len)) {
 +        Op *o = push(c, OP_UNIFORM);
 +        if (o) o->uniform = (typeof(o->uniform)){ fragment, c->last_uniform[fragment].offset };
++        c->uniform_last_hits++;
 +        return;
++    }
++    uint64_t key = 0;
++    c->uniform_uncached_bytes = ((c->uniform_uncached_bytes + WG_UNIFORM_ALIGN - 1) &
++                                ~(uint64_t)(WG_UNIFORM_ALIGN - 1)) + len;
++    int cacheable = fragment && uniform_cache_enabled();
++    uint32_t tag = wg_uniform_tag(len, fragment);
++    if (cacheable) {
++        key = wg_uniform_key(data, len, fragment);
++        uint32_t found;
++        if (wg_uniform_find(&c->uniform_cache, key, tag, c->uniforms, c->ubytes, data, len, &found)) {
++            c->last_uniform[fragment].offset = found;
++            c->last_uniform[fragment].size = len;
++            c->last_uniform[fragment].valid = 1;
++            Op *o = push(c, OP_UNIFORM);
++            if (o) o->uniform = (typeof(o->uniform)){ fragment, found };
++            c->uniform_cache_hits++;
++            return;
++        }
 +    }
 +    uint32_t off = (c->ubytes + WG_UNIFORM_ALIGN - 1) & ~(WG_UNIFORM_ALIGN - 1);
 +    uint32_t cap_needed = off + len + 4;   /* + the 4-byte rounding of the final write */
@@ -31636,10 +31760,12 @@ index 0000000..2ff60af
 +    }
 +    memset(c->uniforms + c->ubytes, 0, off - c->ubytes);
 +    memcpy(c->uniforms + off, data, len);
++    memset(c->uniforms + off + len, 0, (4u - (len & 3u)) & 3u);
 +    c->ubytes = off + len;
 +    c->last_uniform[fragment].offset = off;
 +    c->last_uniform[fragment].size = len;
 +    c->last_uniform[fragment].valid = 1;
++    if (cacheable) wg_uniform_insert(&c->uniform_cache, key, off, tag);
 +    Op *o = push(c, OP_UNIFORM);
 +    if (o) o->uniform = (typeof(o->uniform)){ fragment, off };
 +}
@@ -31880,9 +32006,32 @@ index 0000000..2ff60af
 +        emscripten_proxy_finish(r->ctx);
 +}
 +
++static void uniform_profile(const SDL_GPUCommandBuffer *c)
++{
++    static int enabled = -1;
++    static uint64_t since, pushed, stored, uncached, last_hits, cache_hits, commands;
++    if (enabled < 0) enabled = getenv("RECOMP_WEBGPU_UNIFORM_PROFILE") != NULL ||
++                              getenv("RECOMP_SDLGPU_PROFILE") != NULL;
++    if (!enabled) return;
++    pushed += c->uniform_pushed;
++    stored += (c->ubytes + 3u) & ~3u;
++    uncached += (c->uniform_uncached_bytes + 3u) & ~UINT64_C(3);
++    last_hits += c->uniform_last_hits;
++    cache_hits += c->uniform_cache_hits;
++    commands++;
++    uint64_t now = SDL_GetTicks();
++    if (!since) since = now;
++    if (now - since >= 5000) {
++        fprintf(stderr, "[WebGPU-UNIFORMS] cache=%d commands=%llu pushed=%llu stored=%llu uncached=%llu last-hits=%llu cache-hits=%llu\n",
++                uniform_cache_enabled(), (unsigned long long)commands, (unsigned long long)pushed, (unsigned long long)stored, (unsigned long long)uncached,
++                (unsigned long long)last_hits, (unsigned long long)cache_hits);
++        since = now; pushed = stored = uncached = last_hits = cache_hits = commands = 0;
++    }
++}
 +static void replay(Replay *r)
 +{
 +    SDL_GPUCommandBuffer *c = r->c;
++    uniform_profile(c);
 +    r->enc = wgpuDeviceCreateCommandEncoder(s_dev, NULL);
 +
 +    /* Uniforms of the whole submission in one buffer; each draw binds its
@@ -43026,10 +43175,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..7ed8e6c
+index 0000000..ea04779
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2277 @@
+@@ -0,0 +1,2294 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -43193,6 +43342,7 @@ index 0000000..7ed8e6c
 +    Shade shade;
 +    int passes;
 +    int reuse_vertices; /* bind the previously uploaded vertex backing */
++    int uniform_history; /* draw A/B/A constants into three disjoint stripes */
 +    int clear_color; uint32_t clear_argb;
 +    int clear_depth; float depth_value;
 +    SDL_Rect scissor;
@@ -43251,7 +43401,17 @@ index 0000000..7ed8e6c
 +                SDL_PushGPUFragmentUniformData(c, 0, d->fragment_uniforms ? d->fragment_uniforms : &d->shade,
 +                                               d->fragment_uniforms ? d->fragment_size : sizeof d->shade);
 +            }
-+            for (int i = 0; i < count; i++) {
++            if (d->uniform_history) {
++                for (unsigned i=0;i<3;i++) {
++                    float projection[4]={width,height,1,0};
++                    Shade shade=d->shade;
++                    if(i==1){projection[0]*=2;projection[1]*=2;shade.alpha_test=1;shade.alpha_func=0x0200;}
++                    SDL_PushGPUVertexUniformData(c,0,projection,sizeof projection);
++                    SDL_PushGPUFragmentUniformData(c,0,&shade,sizeof shade);
++                    SDL_Rect stripe={100+(int)i*20,100,20,60};
++                    SDL_SetGPUScissor(p,&stripe);SDL_DrawGPUPrimitives(p,d->n,1,0,0);
++                }
++            } else for (int i = 0; i < count; i++) {
 +                SDL_SetGPUScissor(p, &scissors[i]);
 +                SDL_DrawGPUPrimitives(p, d->n, 1, 0, 0);
 +            }
@@ -43567,6 +43727,7 @@ index 0000000..7ed8e6c
 +
 +int main(void)
 +{
++    setenv("RECOMP_WEBGPU_UNIFORM_CACHE","1",1);
 +    static uint8_t img[W * H * 4];
 +    puts("SDLGPU-WEB starting device");
 +    if (!wg_server_start("gpucanvas")) { printf("FAILED: no WebGPU device\n"); return 2; }
@@ -44016,6 +44177,11 @@ index 0000000..7ed8e6c
 +    draw(&d);
 +    download(color, 0, W, H, img);
 +    CHECK(px(img, 130, 130) == 0xFF000000u, "repeated bindings and uniform reuse preserve alpha testing across passes");
++
++    d.passes=0;d.uniform_history=1;d.shade.alpha_test=0;
++    draw(&d);download(color,0,W,H,img);
++    CHECK(px(img,110,130)==0x40FFFFFFu && px(img,130,130)==0xFF000000u && px(img,150,130)==0x40FFFFFFu,
++          "nonadjacent vertex/fragment A-B-A uniforms preserve earlier draws and restore both stages");
 +
 +    /* 6. Blending SRC_ALPHA / ONE_MINUS_SRC_ALPHA, half white over black. */
 +    SDL_GPUGraphicsPipeline *blend = flat_pipe(1, 15, 0, SDL_GPU_COMPAREOP_ALWAYS);
