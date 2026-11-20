@@ -134,6 +134,25 @@ menu; it is excluded from challenge coverage. The challenge is not completed,
 and full original-Xbox graphics/audio parity and the other 24 challenges remain
 unverified.
 
+## Chargers at Bears line-depth regression — November 20, 2026
+
+The final line-depth candidate renders Quick Game's team and coach selection,
+coin-toss players/referee, stadium/crowd and sideline figures. The kickoff
+return reaches CHI29 at Q1 4:57; the opening play reaches 2nd-and-6 at CHI33,
+Q1 4:42. Eight sampled audio counters remain zero. No FLAGS, unresolved-call,
+browser/GPU/DSP failures appear in the bounded run.
+
+Quick Game's quit path includes an additional VIP-stat No/Yes confirmation
+after choosing Quit in the pause submenu. From its default No selection,
+Down/A accepts Yes; cleanup pop events and the main menu follow. Historical
+scenario quit sequences cannot assume this extra confirmation is absent in
+Quick Game. The first case's premature pop wait is retained as failed; the
+separate confirmation/return case passes. The raw report and exact artifacts
+are under the private `d24-lines-quick-game` directory, with the rendering
+fixes and independent tests described in
+[the line-depth audit](WEB-STADIUM-FIDELITY.md#d24-line-depth-and-software-clipping-2026-11-20).
+This does not establish a complete match, exact Xbox parity or a 30 FPS floor.
+
 This pass also exposes inconsistent menu camera stretch after previous
 attract/gameplay transitions. The camera callback's clock/team validation can
 accept retained match records while a full-screen menu is visible. The

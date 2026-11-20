@@ -31,6 +31,10 @@ def main():
     mask_begin=runtime.index("static uint32_t vp_input_mask(",end)
     mask_end=runtime.index("static uint32_t s_xf_input_mask",mask_begin)
     live = runtime[begin:end] + runtime[mask_begin:mask_end] + native[text_begin:text_end]
+    xf = (kernel / "sdlgpu/sdlgpu_xf.inc.c").read_text(encoding="utf-8")
+    shade_begin = xf.index('typedef struct {\n    uint32_t prog[4];')
+    live += xf[shade_begin:xf.index('} SgXfShade;', shade_begin)+len('} SgXfShade;')]
+    live += f'\n#include "{(root / "external/xboxrecomp/tests/sdlgpu_web/depth_quantization_reference.h").as_posix()}"\n'
     cache = (kernel / "sdlgpu/sdlgpu_vpcache.inc.c").read_text(encoding="utf-8")
     stride_start = cache.index("static uint32_t sg_vp_input_stride(")
     live += cache[stride_start:cache.index("static struct {", stride_start)]

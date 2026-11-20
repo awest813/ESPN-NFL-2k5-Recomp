@@ -1,5 +1,6 @@
 /* Differential inputs for the production WGSL translator and CPU oracle. */
 #include <stdarg.h>
+#include <stddef.h>
 /* LIVE_GENERATOR */
 #include "vp_cache_collision.h"
 
@@ -16,6 +17,24 @@ static void save(const char *name, const void *data, size_t bytes) {
     if (!f || fwrite(data, 1, bytes, f) != bytes) abort();
     fclose(f);
 }
+static void compact_line_depth_case(unsigned mask) {
+    char *source=sg_vp_translate_line_wgsl(0,mask);if(!source)abort();
+    save("compact-line.wgsl",source,strlen(source));free(source);
+    save("compact-line-fragment.wgsl",k_sg_xf_linevp_frag_wgsl,strlen(k_sg_xf_linevp_frag_wgsl));
+    FILE *f=fopen("compact-line-depth.json","wb");if(!f)abort();
+    fprintf(f,"{\"mask\":%u,\"vertexUniformBytes\":%zu,\"infoOffset\":%zu,\"shadeBytes\":%zu,\"depthOffset\":%zu,\"cases\":[",
+            mask,sizeof s_vp.c+80,sizeof s_vp.c,sizeof(SgXfShade),offsetof(SgXfShade,depth));
+    unsigned count=0;const unsigned probes[]={20,32,44};
+    for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
+    for(unsigned w=0;w<2;w++)for(unsigned clip=0;clip<2;clip++)for(unsigned p=0;p<3;p++) {
+        const DepthLineCase *c=&depth_line_cases[n];int visible;
+        unsigned integer=depth_line_reference(c,probes[p],w,clip,&visible);
+        fprintf(f,"%s{\"x\":[%.9g,%.9g],\"depth\":[%.9g,%.9g],\"minimum\":%.9g,\"maximum\":%.9g,\"w\":%u,\"clip\":%u,\"probe\":%u,\"integer\":%u,\"visible\":%d}",
+                count++?",":"",c->x[0],c->x[1],c->depth[0],c->depth[1],c->minimum,c->maximum,w,clip,probes[p],integer,visible);
+    }
+    fputs("]}\n",f);fclose(f);
+}
+
 static void compact_vertex_case(void) {
     typedef struct { unsigned location, buffer_slot, format, offset; } SDL_GPUVertexAttribute;
     typedef unsigned Uint32;
@@ -46,6 +65,7 @@ static void compact_vertex_case(void) {
     char *source = sg_vp_translate_wgsl(0);
     if (!source) abort();
     save("compact.wgsl", source, strlen(source)); free(source);
+    compact_line_depth_case(inmask);
     float vertices[3][3][4] = {
         {{0,0,0.5,1}, {0.25,0.5,0.75,1}, {0.125,0.25,0.25,0}},
         {{8,0,0.5,1}, {0.25,0.5,0.75,1}, {0.125,0.25,0.25,0}},

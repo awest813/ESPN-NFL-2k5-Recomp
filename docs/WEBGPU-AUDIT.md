@@ -97,3 +97,9 @@ near/far boundary cases. Generated line vertex modules are now compiled in
 the vertex regression after retail testing exposed an outdated output
 constructor. D16/floating-depth conversion and exhaustive depth precision
 remain outside this verification.
+
+The [D24 line follow-up](WEB-STADIUM-FIDELITY.md#d24-line-depth-and-software-clipping-2026-11-20)
+extends pixel coverage to single, indexed and instanced vertex-program line
+paths, including maximum W, reversed and viewport-clipped segments, and
+custom clip bounds. Software rejects clipped fragments before depth/stencil
+updates and applies the selected bounds when clamping.

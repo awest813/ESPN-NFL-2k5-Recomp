@@ -4256,3 +4256,68 @@ retail run includes pauses: it does not establish uninterrupted whole-game
 audio, a sustained FPS floor, challenge completion or matched Xbox output.
 It also does not prove which depth modes the captured field uses; the focused
 software/GPU fixtures provide the D24-specific evidence.
+
+### D24 line depth and software clipping (2026-11-20)
+
+The follow-up line fixture reproduces the same maximum-W loss in the
+analytic line shader: constant 16,777,215 fails equality against its integer
+clear. Six native GPU probes fail across clip/clamp settings. Twelve
+software probes also fail because D24 fragments do not yet apply the native
+depth clip range: values outside the maximum are accepted in clip mode,
+and a custom minimum is not applied in clamp mode. The initial hardware
+WebGPU run reproduces the maximum-W failures in both single and indexed
+line families. Its fixture additionally needed to redraw the saved baseline
+before the existing padding assertion; that stale-image assertion is not
+counted as a renderer defect.
+
+For integer D24, line W now uses the anchored harmonic expression
+`W0 / (1 + t * (W0 / W1 - 1))`, and native Z uses anchored fused differences
+before exact power-of-two scaling. Software applies the selected native
+clip/clamp range before conversion, depth comparison or stencil updates.
+The format/floating-depth guard remains explicit.
+
+Eight shared horizontal-line cases cover constant fractional and near/far
+values, varying endpoints, reversed endpoints, a viewport-clipped segment,
+an out-of-range depth and custom clip bounds. Three interior probes in both
+Z/W modes and both clip/clamp settings give 96 software checks and 96 native
+GPU checks. The browser fixture checks 192 pixels through single and indexed
+analytic line shaders. Four additional software checks verify that clipped
+fragments preserve depth/stencil, while clamping writes the expected values.
+These full native Vulkan and hardware-WebGPU suites pass, including the
+existing triangle, line-coverage and presentation regressions.
+
+The generated vertex-program regression now also renders the production
+instanced line vertex program with its production fragment shader. The same
+independent double affine/harmonic oracle supplies 96 expected pixels, and
+all pass. The harness uses the production shade layout and matching compact
+input mask; it does not replace the line shader with a test implementation.
+The existing 85 line-module compilations, 2,752 vertex executions, 864
+position checks and 20,480 rendered edge pixels pass as well. All line
+fragment variants regenerate with Naga 27.0.0. The updated runtime patch
+reproduces 101 files from the unchanged pin and reverses cleanly.
+
+This establishes the exercised line-depth and clipping behavior. Extreme
+depth with other orientations, eye-plane crossings, every polygon-offset
+combination and exact matched Xbox pixels are not established by these
+horizontal probes. D16/floating depth, mixed depth ownership and the wider
+rendering/audio/performance goals remain incomplete.
+
+The optimized game build and complete launcher/static-host checks pass. The
+frozen `d24-lines-quick-game` run selects Chargers at Bears and inspects team
+helmets/uniforms, coach matchup, loading text, coin-toss players/referee,
+stadium/crowd/sideline figures, kickoff and an opening play. The return reaches
+CHI29 at Q1 4:57; the next play reaches 2nd-and-6 at CHI33, Q1 4:42. No FLAGS,
+unresolved-call, browser, GPU or DSP failures appear; expected startup TODO
+sites remain. All eight cumulative audio samples report zero underruns and
+missing frames.
+
+The first case is retained as failed because the harness expects cleanup pop
+events before Quick Game's additional VIP-stat confirmation has been accepted.
+The inspected screen is the game's No/Yes warning, rather than a completed
+quit. A separate case accepts the confirmation and verifies cleanup and the
+neutral main menu without diagnostic failures. The overall harness exits 1
+because the initial timeout remains in the report. Both cases, eleven inspected
+images and fourteen build/source hashes are preserved privately. The owned
+browser and server are closed. This paused, bounded regression does not
+establish full-match completion, exact Xbox scene/depth identity, specific
+field depth-mode usage or a sustained 30 FPS floor.
