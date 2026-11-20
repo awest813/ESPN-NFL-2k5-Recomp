@@ -6,22 +6,27 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../web/audio-worklet.js'), 'utf8');
 
-function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
+function fixture(rate, initial = 0, {cap = 32, afterStartup = true, wakeProducer = false} = {}) {
   let Processor;
-  const messages = [];
+  const messages = [], notifications = [];
+  const observedAtomics = {load:Atomics.load, store:Atomics.store, add:Atomics.add,
+    notify(array, index, count) {
+      notifications.push({offset:array.byteOffset, index, value:Atomics.load(array,index)});
+      return Atomics.notify(array,index,count);
+    }};
   const memory = new SharedArrayBuffer(16 + cap * 4);
   const hdr = new Uint32Array(memory, 0, 4), data = new Int16Array(memory, 16);
   hdr[0] = hdr[1] = initial; hdr[2] = cap;
   vm.runInNewContext(source, {
     AudioWorkletProcessor: class { constructor() { this.port = {postMessage(message) {messages.push(message);}}; } },
-    sampleRate: rate, Uint32Array, Int16Array, Atomics,
+    sampleRate: rate, Uint32Array, Int16Array, Atomics:observedAtomics,
     registerProcessor(name, type) { if (name === 'nfl2k5-output') Processor = type; },
   });
-  const processor = new Processor({processorOptions: {memory, ring: 0, rate: 48000}});
+  const processor = new Processor({processorOptions: {memory, ring: 0, rate: 48000, wakeProducer}});
   // Most cases exercise a running stream after its initial buffering.
   processor.started = afterStartup;
   let next = 100;
-  return {hdr, processor, messages,
+  return {hdr, processor, messages, notifications,
     put(count) {
       let w = hdr[0];
       assert(count <= cap - ((w - hdr[1]) >>> 0));
@@ -153,4 +158,24 @@ for (const rate of [8000, 11025, 16000, 22050, 24000, 44100, 48000, 96000]) {
   assert.deepEqual(actual, [100, 100.5, 101, 101.5, 102, 102.5, 103, 103.5]);
   assert.equal(f.processor.played, 4);
 }
+
+// Optional clock pulses never alter the PCM indices and stop with the processor.
+{
+  const off = fixture(48000); off.put(8); off.render(4); assert.equal(off.hdr[3], 0); assert.deepEqual(off.notifications, []);
+  const f = fixture(48000, 0, {cap:4096, afterStartup:false, wakeProducer:true});
+  f.render(128); assert.equal(f.hdr[3], 1); assert.equal(f.hdr[1], 0);
+  f.put(2048); assert.deepEqual(f.render(4).map(x=>x*32768), [100,101,102,103]);
+  assert.equal(f.hdr[3], 2); assert.equal(f.hdr[1], 4);
+  f.hdr[3] = 0x7fffffff; f.render(4); assert.equal(f.hdr[3], 0x80000000);
+  f.hdr[3] = 0xffffffff; f.render(4); assert.equal(f.hdr[3], 0);
+  f.render(4); assert.equal(f.hdr[3], 1);
+  f.processor.port.onmessage({data:'stop'});
+  assert.equal(f.processor.process([], [[new Float32Array(4), new Float32Array(4)]]), false);
+  assert.equal(f.hdr[3], 1);
+  assert.equal(f.notifications.length, 5);
+  assert(f.notifications.every(x=>x.offset===12 && x.index===0));
+  assert.deepEqual(f.notifications.map(x=>x.value), [1,2,-2147483648,0,1]);
+  console.log('ok: optional producer wakes include startup, preserve PCM, wrap and stop');
+}
+
 console.log('audio worklet: all checks passed');

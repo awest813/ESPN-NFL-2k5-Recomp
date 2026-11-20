@@ -2950,3 +2950,73 @@ priority/order or APU catch-up limit changed in this measurement checkpoint.
 Build and Pages workflows for the preceding `b9cd175` diagnostic commit both
 passed. Sustained 30 FPS, continuous reference-matched audio and the broader
 rendering/mode fidelity requirements remain unproven.
+
+
+### Experimental audio-thread wake path
+
+`RECOMP_APU_AUDIO_WAKE=1` opts into advisory audio-thread pulses for the APU's
+positive finite condition waits. It remains disabled by default. The worklet
+increments/notifies the ring header's previously reserved 32-bit word once
+per render callback, including startup priming. PCM and both queue indices
+retain their layout and behavior. No extra audio frames, silence padding or
+new queue cushion is added. Existing rational 48 kHz deadlines and the 64 ms
+catch-up limit remain in force.
+
+The APU snapshots the wake sequence while holding its mutex, releases the
+mutex, waits only if that sequence still matches, then reacquires the mutex.
+Both ordinary APU condition signals and broadcasts notify this sequence and
+the original condition variable, so MMIO completion and shutdown still wake
+the mixer when the audio context is suspended or has failed. Infinite waits
+retain the original condition path. Until a worklet has produced its first
+pulse, or when the option/backend is unavailable, finite waits also retain
+that path. A zero sequence on counter wrap briefly uses the same fallback;
+the next pulse restarts the clock path. Closing preserves the existing ring
+allocation lifetime, allowing saved wait addresses to remain valid. Native
+runtime behavior is unchanged by the Web-only shim branch.
+
+Wasm and native ASAN/UBSAN fixtures execute the production wait helper,
+notification wrappers, backend helpers, close path and platform mutexes. They
+cover opt-out/unavailable/startup fallback, nonpositive waits, signed/unsigned
+counter wrap, a notification exactly at mutex release, ordinary signal and
+broadcast wakes without any audio callbacks, advisory/spurious pulses,
+timeout, infinite condition waits and close. A mutant which snapshots the
+sequence after releasing the mutex fails the race assertion. Worklet tests
+verify notifications target the reserved word, preserve samples/indices,
+include priming and stop at shutdown. Bridge tests check option transfer
+through deferred loads and retain replacement-ring/shutdown coverage. The
+DSP integration fixture now links the real dormant audio backend to satisfy
+its added notification dependency; its firmware/PCM assertions pass. The
+ordinary Python audit initially exposed that link omission; the corrected
+fixture and then the complete ordinary Python audit were rerun successfully.
+Full Web game and Linux runtime builds pass,
+and fresh patch application reproduces all 97 runtime files.
+
+Two serial approximately 246-second retail DSP captures use the same frozen
+Wasm/JS/worklet/patch hashes, the 30 FPS limit and identical profiling options.
+Only the first enables the wake experiment. The randomized attract-mode
+matchups differ, so they do not provide a controlled performance comparison.
+The opt-in capture reaches Cleveland/Chicago, first-and-ten at 2:02 in the
+first quarter, with players, a referee and readable scoreboard visible.
+It records no browser/GPU failures; its 20 five-second FPS windows after
+150 seconds range from 24.0 to 30.1. Audio records 634 affected blocks and
+81,152 missing frames (1,690.7 ms at 48 kHz), with a longest continuous gap
+of 2,816 frames (58.7 ms). Reported schedule windows contain 24 deadline
+rebases totaling 1,670.0 ms, with maximum wake overshoot 13.2 ms. Shorter waits
+do not establish uninterrupted audio, and this run does not support enabling
+the experiment by default. Evidence is in
+`build-web-tests/apu-audio-wake-on-retail` and its off comparison directory.
+
+
+The default-path comparison reaches Houston/Minnesota, first-and-ten at 1:58
+in the first quarter. It also records no browser/GPU failures. Its 19 FPS
+windows after 150 seconds range from 23.4 to 30.1. Audio records 168 affected
+blocks and 21,504 missing frames (448.0 ms), with a longest gap of 2,944 frames
+(61.3 ms). Reported schedule windows contain six rebases totaling 442.6 ms;
+maximum wake overshoot is 19.9 ms. Different matchups, playback timing and host
+scheduling prevent attributing these differences to the option. Both traces
+leave substantial deadline loss despite a different wake mechanism. The sums
+of missing output and rebased time are close in both runs; that association
+needs finer frame-work/MMIO/trap attribution before changing catch-up policy.
+This experiment remains opt-in, with full audio fidelity, all modes/stadiums
+and the 30 FPS floor still unfinished. Owned audit browsers and server were
+closed after the serial captures.

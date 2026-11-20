@@ -4,7 +4,8 @@
 // The APU mixer (xboxrecomp apu/apu_web_audio.c) writes 48 kHz 16-bit stereo
 // frames into a ring in wasm memory; this reads them. Ring layout (bytes from
 // `ring`): 0 write index, 4 read index (frame counters, wrapping at 2^32),
-// 8 capacity in frames (power of two), 16.. interleaved int16 samples.
+// 8 capacity in frames (power of two), 12 optional wake sequence,
+// 16.. interleaved int16 samples.
 // Indices go through Atomics so a frame is only read once fully written.
 //
 // When the AudioContext does not run at 48 kHz, frames are resampled
@@ -23,6 +24,8 @@ class NFL2K5Output extends AudioWorkletProcessor {
     super();
     const o = options.processorOptions;
     this.hdr = new Uint32Array(o.memory, o.ring, 4);
+    this.wakeProducer = !!o.wakeProducer;
+    this.wakeWord = this.wakeProducer ? new Int32Array(o.memory, o.ring + 12, 1) : null;
     this.cap = this.hdr[2];
     this.mask = this.cap - 1;
     this.data = new Int16Array(o.memory, o.ring + 16, this.cap * 2);
@@ -44,6 +47,13 @@ class NFL2K5Output extends AudioWorkletProcessor {
 
   process(inputs, outputs) {
     if (this.stopped) return false;
+    // A timed Wasm atomic wait can oversleep a short deadline on some hosts.
+    // These are advisory pulses; the APU rechecks its predicate/deadline.
+    // Pulse even during startup priming, when there is no PCM to consume yet.
+    if (this.wakeWord) {
+      Atomics.add(this.wakeWord, 0, 1);
+      Atomics.notify(this.wakeWord, 0);
+    }
     const out = outputs[0];
     const L = out[0], R = out[1] || out[0];
     const n = L.length, hdr = this.hdr, data = this.data, mask = this.mask;

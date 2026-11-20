@@ -59,15 +59,17 @@ index 9a38a07..37e78bc 100644
 +}
 diff --git a/src/apu/apu_web_audio.c b/src/apu/apu_web_audio.c
 new file mode 100644
-index 0000000..8652202
+index 0000000..18e763e
 --- /dev/null
 +++ b/src/apu/apu_web_audio.c
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,164 @@
 +/* WebAssembly audio output through an AudioWorklet. See apu_web_audio.h. */
 +#ifdef __EMSCRIPTEN__
 +#include "apu_web_audio.h"
 +
 +#include <emscripten/em_asm.h>
++#include <emscripten/threading.h>
++#include <limits.h>
 +#include <stdatomic.h>
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -79,11 +81,12 @@ index 0000000..8652202
 +    _Atomic uint32_t write;
 +    _Atomic uint32_t read;
 +    uint32_t capacity;
-+    uint32_t reserved;
++    _Atomic int32_t wake;
 +    int16_t data[RING_FRAMES * 2];
 +} WebAudioRing;
 +
 +static WebAudioRing *s_ring;
++static int s_clock_wake;
 +
 +int web_audio_open(void)
 +{
@@ -94,6 +97,7 @@ index 0000000..8652202
 +        return 0;
 +    memset(ring, 0, sizeof *ring);
 +    ring->capacity = RING_FRAMES;
++    s_clock_wake = getenv("RECOMP_APU_AUDIO_WAKE") != NULL;
 +
 +    /* On the page's thread: find the AudioContext (the page made one in the
 +     * Play click and handed it over as Module.SDL3.audioContext, see
@@ -118,7 +122,7 @@ index 0000000..8652202
 +            if (stats.state === 'closed' || Module['nfl2k5Audio'] !== stats) return;
 +            var node = new AudioWorkletNode(ctx, 'nfl2k5-output', {
 +                numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-+                processorOptions: { memory: HEAPU8.buffer, ring: $0, rate: 48000 }
++                processorOptions: { memory: HEAPU8.buffer, ring: $0, rate: 48000, wakeProducer: !!$1 }
 +            });
 +            stats.node = node;
 +            var clock = new AudioWorkletNode(ctx, 'nfl2k5-audio-clock', {
@@ -145,12 +149,14 @@ index 0000000..8652202
 +            err('[AUDIO] AudioWorklet could not start (' + url + '): ' + e);
 +        });
 +        return 1;
-+    }, ring);
++    }, ring, s_clock_wake);
 +    if (!ok) {
 +        free(ring);
 +        return 0;
 +    }
 +    s_ring = ring;
++    if (s_clock_wake)
++        fprintf(stderr, "[AUDIO] Optional APU audio-clock wake pulses enabled\n");
 +    fprintf(stderr, "[AUDIO] AudioWorklet output (48000 Hz stereo 16-bit, %u-frame ring)\n",
 +            RING_FRAMES);
 +    return 1;
@@ -171,6 +177,25 @@ index 0000000..8652202
 +    });
 +    /* The worklet may still hold the ring's address; leave it allocated. */
 +    s_ring = NULL;
++}
++
++/* Clock pulses and ordinary APU condition signals share one sequence. A
++ * snapshot taken while holding the APU mutex closes the unlock-to-wait race.
++ * The worklet starts the sequence; until then, use the existing condition. */
++volatile int32_t *web_audio_clock_word(void)
++{
++    if (!s_clock_wake || !s_ring || !atomic_load_explicit(&s_ring->wake, memory_order_acquire))
++        return NULL;
++    return (volatile int32_t *)&s_ring->wake;
++}
++
++void web_audio_notify(void)
++{
++    volatile int32_t *word = web_audio_clock_word();
++    if (!word)
++        return;
++    __atomic_fetch_add(word, 1, __ATOMIC_RELEASE);
++    emscripten_futex_wake((void *)word, INT_MAX);
 +}
 +
 +uint32_t web_audio_queued(void)
@@ -204,10 +229,10 @@ index 0000000..8652202
 +#endif
 diff --git a/src/apu/apu_web_audio.h b/src/apu/apu_web_audio.h
 new file mode 100644
-index 0000000..f2bf1e7
+index 0000000..ddb4faf
 --- /dev/null
 +++ b/src/apu/apu_web_audio.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,37 @@
 +#ifndef APU_WEB_AUDIO_H
 +#define APU_WEB_AUDIO_H
 +/* WebAssembly audio output: an AudioWorklet reading a ring in shared memory.
@@ -222,7 +247,7 @@ index 0000000..f2bf1e7
 + * (ScriptProcessorNode, which pulls samples on the main thread).
 + *
 + * Ring layout (byte offsets): 0 write index, 4 read index (frame counters,
-+ * wrapping at 2^32), 8 capacity in frames (a power of two), 12 reserved,
++ * wrapping at 2^32), 8 capacity in frames (a power of two), 12 optional wake sequence,
 + * 16.. capacity * 2 int16 samples. The producer publishes with a release
 + * store of the write index; the consumer with a release store of the read
 + * index (Atomics in the worklet). */
@@ -234,6 +259,11 @@ index 0000000..f2bf1e7
 + * worklet may still be loading. */
 +int  web_audio_open(void);
 +void web_audio_close(void);
++/* Optional audio-clock wake path. NULL before the first clock pulse or when
++ * disabled/unavailable. Ordinary condition signals must also notify this word.
++ * The ring stays allocated after close so an in-flight wait cannot dangle. */
++volatile int32_t *web_audio_clock_word(void);
++void web_audio_notify(void);
 +/* Frames written and not yet played. */
 +uint32_t web_audio_queued(void);
 +/* Append frames (interleaved stereo); returns how many fit. */
@@ -4975,6 +5005,46 @@ diff --git a/src/apu/apu_shim.h b/src/apu/apu_shim.h
  }
  #endif
 
+@@ -62,8 +65,39 @@
+  * Threading extensions (timedwait, thread create/join)
+  * ============================================================ */
+
++#ifdef __EMSCRIPTEN__
++#include "apu_web_audio.h"
++#include <emscripten/threading.h>
++
++static inline int apu_audio_clock_timedwait(QemuMutex *m, int ms) {
++    volatile int32_t *word = web_audio_clock_word();
++    if (!word || ms <= 0) return 0;
++    int32_t expected = __atomic_load_n(word, __ATOMIC_ACQUIRE);
++    qemu_mutex_unlock(m);
++    emscripten_futex_wait((void *)word, (uint32_t)expected, (double)ms);
++    qemu_mutex_lock(m);
++    return 1;
++}
++
++/* Infinite waits keep using their condition variable. Notify both paths so
++ * MMIO completion, pause and shutdown never depend on a running worklet. */
++static inline void apu_cond_signal(QemuCond *c) {
++    web_audio_notify();
++    qemu_cond_signal(c);
++}
++static inline void apu_cond_broadcast(QemuCond *c) {
++    web_audio_notify();
++    qemu_cond_broadcast(c);
++}
++#define qemu_cond_signal apu_cond_signal
++#define qemu_cond_broadcast apu_cond_broadcast
++#endif
++
+ #ifndef qemu_cond_timedwait
+ static inline void qemu_cond_timedwait(QemuCond *c, QemuMutex *m, int ms) {
++#ifdef __EMSCRIPTEN__
++    if (apu_audio_clock_timedwait(m, ms)) return;
++#endif
+     SleepConditionVariableCS(&c->cv, &m->cs, (DWORD)ms);
+ }
+ #endif
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c

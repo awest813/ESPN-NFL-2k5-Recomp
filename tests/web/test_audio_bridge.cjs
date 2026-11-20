@@ -4,11 +4,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../../external/xboxrecomp/src/apu/apu_web_audio.c'), 'utf8');
-const openBody = source.match(/MAIN_THREAD_EM_ASM_INT\(\{([\s\S]*?)\n    \}, ring\);/)[1];
+const openBody = source.match(/MAIN_THREAD_EM_ASM_INT\(\{([\s\S]*?)\n    \}, ring, s_clock_wake\);/)[1];
 const closeBody = source.match(/void web_audio_close[\s\S]*?MAIN_THREAD_EM_ASM\(\{([\s\S]*?)\n    \}\);/)[1];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture({failMonitor = false} = {}) {
+function fixture({failMonitor = false, wakeProducer = false} = {}) {
   const pending = [], nodes = [], errors = [];
   const ctx = {sampleRate: 48000, destination: {}, audioWorklet: {
     addModule: () => new Promise((resolve, reject) => pending.push({resolve, reject})),
@@ -25,8 +25,8 @@ function fixture({failMonitor = false} = {}) {
     disconnect() { this.connections = []; this.disconnects++; }
   }
   const Module = {SDL3: {audioContext: ctx}};
-  const args = [Module, {}, Node, {buffer: new SharedArrayBuffer(1024)}, 0, error => errors.push(error)];
-  const names = ['Module', 'globalThis', 'AudioWorkletNode', 'HEAPU8', '$0', 'err'];
+  const args = [Module, {}, Node, {buffer: new SharedArrayBuffer(1024)}, 0, wakeProducer, error => errors.push(error)];
+  const names = ['Module', 'globalThis', 'AudioWorkletNode', 'HEAPU8', '$0', '$1', 'err'];
   const open = new Function(...names, openBody), close = new Function(...names, closeBody);
   return {Module, pending, nodes, errors, ctx, open: () => open(...args), close: () => close(...args)};
 }
@@ -63,6 +63,10 @@ function fixture({failMonitor = false} = {}) {
   {
     const f = fixture(); f.open(); f.close(); f.pending[0].reject(Error('late failure')); await flush();
     assert.equal(f.Module.nfl2k5Audio.state, 'closed'); assert.deepEqual(f.errors, []);
+  }
+  for (const wakeProducer of [false, true]) {
+    const f = fixture({wakeProducer}); f.open(); f.pending[0].resolve(); await flush();
+    assert.equal(f.nodes[0].options.processorOptions.wakeProducer, wakeProducer); f.close();
   }
   console.log('audio bridge: deferred loads, replacement rings, monitor wiring and shutdown passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
