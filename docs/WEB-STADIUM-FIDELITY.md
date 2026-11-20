@@ -3270,3 +3270,51 @@ are in `build-web-tests/frame-pacing-host`. The owned browser and HTTP server
 were closed after measurement. The preceding `b0927c3` Pages deployment
 succeeded; the SDK compatibility fix's workflows were still running when
 this benchmark was recorded.
+
+### Supported monotonic clock in SDL's Web timer
+
+SDL 3.2.20 selects `CLOCK_MONOTONIC_RAW` whenever that macro exists.
+Emscripten defines it as clock ID 4 but rejects that ID; the inspected libc
+only accepts IDs 0 through 3. SDL then falls back to `gettimeofday`, making
+its performance counter depend on millisecond wall time. The original local
+archive reports a 1 MHz frequency, and a direct raw-clock probe returns
+`EINVAL`. This affects SDL elapsed-time users separately from the already
+corrected Win32 compatibility clock.
+
+`config/sdl-web.patch` makes only the Emscripten branch select the supported
+`CLOCK_MONOTONIC`; native raw-clock selection is unchanged. The linked Web
+SDL now reports 1 GHz and retains the SDK's common worker time origin.
+`tools/build-web.sh` applies the patch idempotently and records a pin/patch
+revision after successful installation. An existing unstamped SDK rebuilds;
+a second invocation of the actual dependency-build block skips recompilation.
+Fresh/reverse patch checks reproduce the exact built source, and shell syntax
+checks pass. Configuration also checks that SDL really enabled its pthread
+backend before building/installing it.
+
+The linked-archive fixture creates and joins a real SDL worker, checks the
+common time origin and frequency, and performs 6,000 exact monotonic brackets
+while moving `Date.now` forward/backward by an hour and a day. SDL elapsed
+ticks must remain monotonic. It passes in Node and an owned isolated Chrome;
+the ordinary Web Python suite passes too. Pages now runs the browser clock
+fixture before publishing. The full Web game links, and the WebGPU renderer
+fixture passes with no validation errors.
+
+Validation exposed a stale local build directory with a cached failed pthread
+probe. The first local rebuild used that directory and made the audio smoke
+worker fail to start. Rebuilding from the working pthread-enabled configuration
+restored it; the standard directory's stale probe has also been cleared and
+successfully reconfigured. The smoke fixture now reports thread-creation
+failure explicitly, and the clock fixture's real worker detects this case.
+The long-silence audio check then passes: its clock advances 7.019 seconds in
+7.012 seconds, followed by a 439.8 Hz tone, with zero affected blocks or missing
+output frames in that fixture.
+
+The final 540-frame real-wait benchmark confirms a 1 GHz SDL counter but still
+shows host sleep jitter: under-budget scenarios average 29.896-29.979 FPS,
+95th-percentile completed intervals are 47.630-47.735 ms, and the largest wait
+overshoot is 16.977 ms. The 40 ms workload averages 24.992 FPS without pacer
+waits. This fixes clock source/precision and wall-clock-jump correctness; it
+does not establish a performance gain, continuous retail audio, full reference
+fidelity or a sustained 30 FPS floor. Results and exact library/source hashes
+are retained in `build-web-tests/frame-pacing-monotonic`. The preceding
+`d5d6931` and `1e14ea1` Build workflows and `d5d6931` Pages deployment passed.

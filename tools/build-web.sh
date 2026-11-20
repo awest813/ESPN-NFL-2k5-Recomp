@@ -53,17 +53,38 @@ fi
 
 # SDL3 for Emscripten (static, pthreads).
 SDL_PREFIX="$ROOT/dependencies/sdl3-wasm"
-if [ ! -f "$SDL_PREFIX/lib/cmake/SDL3/SDL3Config.cmake" ]; then
-  if [ ! -d dependencies/SDL/.git ]; then
-    git clone --filter=blob:none https://github.com/libsdl-org/SDL.git dependencies/SDL
-  fi
+if [ ! -f dependencies/SDL/CMakeLists.txt ]; then
+  git clone --filter=blob:none https://github.com/libsdl-org/SDL.git dependencies/SDL
+fi
+if [ -d dependencies/SDL/.git ] || [ -f dependencies/SDL/.git ]; then
   git -C dependencies/SDL checkout -q "$SDL_COMMIT"
+fi
+# Emscripten defines CLOCK_MONOTONIC_RAW but does not implement it. Without
+# this Web-only fix SDL silently falls back to Date.now-based wall time.
+sdl_patch=(git -c core.whitespace=cr-at-eol apply --ignore-space-change --directory=dependencies/SDL)
+if "${sdl_patch[@]}" --check config/sdl-web.patch 2>/dev/null; then
+  "${sdl_patch[@]}" config/sdl-web.patch
+  echo "applied config/sdl-web.patch"
+elif "${sdl_patch[@]}" --reverse --check config/sdl-web.patch 2>/dev/null; then
+  : # already applied
+else
+  echo "config/sdl-web.patch does not apply to dependencies/SDL" >&2
+  exit 1
+fi
+SDL_REVISION="$SDL_COMMIT:$(sha256sum config/sdl-web.patch | cut -d ' ' -f1)"
+if [ ! -f "$SDL_PREFIX/lib/cmake/SDL3/SDL3Config.cmake" ] || \
+   [ "$(cat "$SDL_PREFIX/.nfl2k5-web-revision" 2>/dev/null || true)" != "$SDL_REVISION" ]; then
   emcmake cmake -S dependencies/SDL -B dependencies/build-sdl-wasm -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$SDL_PREFIX" \
     -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
     -DSDL_PTHREADS=ON -DCMAKE_C_FLAGS=-pthread
+  if ! grep -q '^#define SDL_THREAD_PTHREAD 1' dependencies/build-sdl-wasm/include-config-release/build_config/SDL_build_config.h; then
+    echo "SDL pthread support was not configured; inspect dependencies/build-sdl-wasm/CMakeFiles/CMakeConfigureLog.yaml" >&2
+    exit 1
+  fi
   cmake --build dependencies/build-sdl-wasm -j "$JOBS"
   cmake --install dependencies/build-sdl-wasm
+  printf '%s\n' "$SDL_REVISION" > "$SDL_PREFIX/.nfl2k5-web-revision"
 fi
 
 emcmake cmake -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DNFL2K5_BUILD_GAME=ON \

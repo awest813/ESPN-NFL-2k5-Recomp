@@ -45,6 +45,12 @@ The script does four things:
   applied yet;
 - configures `build-web/`.
 
+The SDL build applies `config/sdl-web.patch` so Emscripten uses its supported
+monotonic clock. Without it, SDL 3.2.20 selects an unsupported raw clock and
+falls back to wall time. A dependency revision stamp rebuilds existing SDL
+installations when the pin or patch changes. `tests/web/test_sdl_clock.py`
+checks the linked archive against monotonic time and simulated clock changes.
+
 `tools/test-web.sh` then runs the web tests (Node, from the same emsdk):
 the DirectSound rewrite, the APU accessors, fixed-address mappings with the
 heap ceiling, and the real `xbox_MemoryLayoutInit` on a minimal XBE. CI runs

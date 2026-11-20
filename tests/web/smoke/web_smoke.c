@@ -192,7 +192,12 @@ int main(void)
     xbox_FramebufferSetKeyHook(on_key);
     xbox_FramebufferWindowSet(FB_VA, FB_PITCH);
     xbox_FramebufferWindowForceStart();
-    SDL_DetachThread(SDL_CreateThread(audio_thread, "smoke_audio", NULL));
+    SDL_Thread *audio = SDL_CreateThread(audio_thread, "smoke_audio", NULL);
+    if (!audio) {
+        fprintf(stderr, "[SMOKE] audio thread creation failed: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_DetachThread(audio);
     if (getenv("SMOKE_GPU") && wg_available())
         gpu_start();
     printf("[SMOKE] ready\n");

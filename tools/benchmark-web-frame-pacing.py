@@ -61,6 +61,7 @@ static void summary(const char *name,int scenario,double *values,int count){
 }
 int main(void){
     assert(SDL_Init(0));
+    printf("WAITBENCH sdl_performance_frequency=%llu\n",(unsigned long long)SDL_GetPerformanceFrequency());
     const unsigned work_ms[]={0,10,20,28,40,0};
     for(int scenario=0;scenario<6;scenario++){
         double frames[N],overshoot[N],waits[N],requests[N],actuals[N];
@@ -94,7 +95,8 @@ int main(void){
     generated = out / 'benchmark.c'
     generated.write_bytes(code.encode('utf-8'))
     inputs = [source, library, generated, Path(__file__).resolve(),
-              root / 'tools/benchmark-web-waits.cjs', root / 'config/xboxrecomp-web.patch']
+              root / 'tools/benchmark-web-waits.cjs', root / 'config/xboxrecomp-web.patch',
+              root / 'config/sdl-web.patch']
     manifest = {
         'host': platform.platform(),
         'node': subprocess.check_output([node, '--version'], text=True).strip(),

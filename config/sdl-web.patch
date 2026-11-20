@@ -1,0 +1,15 @@
+diff --git a/src/timer/unix/SDL_systimer.c b/src/timer/unix/SDL_systimer.c
+--- a/src/timer/unix/SDL_systimer.c
++++ b/src/timer/unix/SDL_systimer.c
+@@ -51,7 +51,10 @@
+ 
+ // Use CLOCK_MONOTONIC_RAW, if available, which is not subject to adjustment by NTP
+ #ifdef HAVE_CLOCK_GETTIME
+-#ifdef CLOCK_MONOTONIC_RAW
++// Altered for the NFL2K5 Web build: Emscripten defines RAW but rejects its
++// clock ID. Use its supported monotonic clock instead of falling back to
++// gettimeofday (wall time, millisecond resolution).
++#if defined(CLOCK_MONOTONIC_RAW) && !defined(SDL_PLATFORM_EMSCRIPTEN)
+ #define SDL_MONOTONIC_CLOCK CLOCK_MONOTONIC_RAW
+ #else
+ #define SDL_MONOTONIC_CLOCK CLOCK_MONOTONIC

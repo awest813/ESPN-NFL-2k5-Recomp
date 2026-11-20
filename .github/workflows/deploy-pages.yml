@@ -41,7 +41,9 @@ jobs:
           npm install --no-save playwright@1.63.0
           npx playwright install --with-deps chromium
       - name: Verify launcher and static-host isolation
-        run: node tests/web/test_web_page.js build-web
+        run: |
+          python3 -I tests/web/test_sdl_clock.py --browser
+          node tests/web/test_web_page.js build-web
       - name: Prepare public files
         run: node tools/prepare-pages.mjs
       - uses: actions/upload-pages-artifact@v4
