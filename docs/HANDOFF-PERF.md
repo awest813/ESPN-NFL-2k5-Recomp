@@ -1,5 +1,41 @@
 # Performance handoff (2026-10-03)
 
+## Current native verification checkpoint (2026-11-20)
+
+The October measurements below are historical runs, not current proof of a
+30 FPS floor or of the present runtime's native gameplay behavior. Current
+retail browser captures still show stalls and audio starvation; see
+`docs/WEB-STADIUM-FIDELITY.md` for those failures.
+
+Windows CI previously built the pinned runtime without the published
+`config/xboxrecomp-web.patch`, whereas Linux/Web applied that overlay. The
+Windows job now applies the same cross-platform fixes before building. The
+submodule remains pinned to `9a31daa67c22893f5b0ebed8f3f7b01970d364ef`.
+
+Local optimized Windows runtime and tools build successfully with MSVC
+19.44.35228 and SDL 3.2.20. This is a runtime/tools build with the game target
+off; it does not verify a full native retail executable or its FPS. Compiler
+warnings, including existing NV2A macro redefinitions, remain in the log.
+
+`tests/native-dsp` reuses the production-core DSP fixtures for native builds.
+Optimized MSVC passes 141,664 cold/warm full-state dispatch comparisons,
+software interrupt retirement, executable upload invalidation, firmware,
+bootstrap, idle and scratch/FIFO DMA checks. Release assertions stay enabled.
+Windows and Linux CI run these checks. See its README for reproducible commands.
+
+The optional dispatch benchmark now uses QueryPerformanceCounter on Windows
+instead of millisecond-resolution `clock()`. In the local five-round sample,
+reference/current medians for two million instructions are 25.999/25.205 ms
+for program 0 and 27.104/25.104 ms for program 1. Individual pairs are noisy,
+including a regression in program 1's first pair. This compares the existing
+handler cache with the older reference dispatcher on synthetic programs;
+there is no new runtime optimization in this checkpoint and no inferred FPS
+gain. It supplies a native correctness and measurement baseline for further
+profiling. Raw logs remain local under `build-web-tests/native-msvc-build.log`
+and `build-web-tests/native-dsp-msvc-final.log`.
+
+## Historical measurements
+
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
 internal resolutions (the menu maximum stays at 9×, i.e. 6480×4320; no 16×). There is also a
 frame-rate cap option (30/60/120/Unlimited).

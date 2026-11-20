@@ -26,6 +26,11 @@
 /* DSP dispatch equivalence against the pre-handler-cache retirement path.
  * Reference dispatcher adapted from xemu, GPL-2.0-or-later;
  * Copyright (c) 2015 espes, 2020-2025 Matt Borgerson. */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include "dsp_cpu.c"
 #include "fixtures/dsp_pm5_reference.inc.c"
 #include <stddef.h>
@@ -84,6 +89,11 @@ static void one(uint32_t word,uint32_t extension) {
 static double ms(void) {
 #ifdef __EMSCRIPTEN__
     return emscripten_get_now();
+#elif defined(_WIN32)
+    LARGE_INTEGER frequency, counter;
+    assert(QueryPerformanceFrequency(&frequency));
+    assert(QueryPerformanceCounter(&counter));
+    return (double)counter.QuadPart*1000.0/(double)frequency.QuadPart;
 #else
     return (double)clock()*1000.0/CLOCKS_PER_SEC;
 #endif
