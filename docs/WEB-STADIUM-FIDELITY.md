@@ -3794,3 +3794,51 @@ bound on writes, with both immediate and delayed transition delivery. The
 real browser suite passes locally, including stale-marker rejection, timeout
 failure, injected GPU/page errors and interactive close. This changes test
 expectations only; runtime retry and game input behavior are unchanged.
+
+### Fixed-matchup APU scheduling comparison (2026-11-20)
+
+The `e3d5b39` Build workflow passes on Linux, Windows and Web; its Pages
+deployment and production smoke check also pass. Two subsequent local runs
+reuse the exact frozen uniform-cache build, with DSP and APU lock/stage/
+schedule counters enabled, per-draw timing and CPU sampling disabled. Both
+verify Arizona away at New Orleans home and D. Green/J. Haslett before start.
+The only diagnostic setting changed between runs is
+`RECOMP_APU_AUDIO_WAKE=1`, whose activation is confirmed in the second log.
+No local build or benchmark competes with either capture.
+
+| Run / approximately 60-second window | Five-second FPS averages | Missing audio | Resynchronizations / time | Maximum wake lateness |
+| --- | --- | ---: | ---: | ---: |
+| Default wake, intro into opening play | 29.7–30.0 | 0 frames | 0 / 0 ms | 20.8 ms |
+| Default wake, first active segment | 29.1–30.0 | 3,328 frames / 69.3 ms | 1 / 70.7 ms | 18.7 ms |
+| Default wake, following segment | 29.5–30.0 | 15,744 frames / 328.0 ms | 4 / 311.0 ms | 19.3 ms |
+| Optional audio wake, intro into opening play | 29.7–30.1 | 1,408 frames / 29.3 ms | 0 / 0 ms | 9.9 ms |
+| Optional audio wake, first active segment | 28.6–30.1 | 7,936 frames / 165.3 ms | 2 / 150.8 ms | 9.6 ms |
+| Optional audio wake, following segment | 29.8–30.1 | 0 frames | 0 / 0 ms | 9.9 ms |
+
+Audio figures subtract cumulative worklet counters at the actual sample
+boundaries. FPS and scheduling counters are independently emitted aggregate
+windows, so their edges can straddle those boundaries; the optional first
+active segment contains 13 scheduling windows rather than 12. The two
+active segments report producer rates of 1,498.1/1,492.3 frames per second
+with default wake, and 1,496.6/1,499.9 with optional wake (target 1,500).
+The optional run lowers reported wake delay, but does not remove underruns.
+Different play sequences prevent attributing the total audio/FPS difference
+to this setting from one pair. The option remains off by default.
+
+In the default run's final segment, four resynchronizations discard 311 ms
+of accumulated schedule debt while the worklet misses 328 ms. No individual
+reported producer gap exceeds 22.6 ms in that segment; 372 front-end waits
+total 1,767.9 ms, with no 40 ms timeout. These are correlated aggregates,
+not proof of an individual causal chain. They direct the next investigation
+toward cumulative front-end/guest-ISR delay and resynchronization rather
+than assuming a single long DSP instruction or rendering stall. The 64 ms
+catch-up cap, output priming and PCM contents are unchanged.
+
+Exact artifact hashes, team/coach screenshots, intro/active-play frames,
+logs and audio-boundary scheduling summaries remain in
+`build-web-tests/uniform-apu-schedule-retail` and
+`build-web-tests/uniform-apu-wake-retail`. Checked frames show players,
+referees, stadium/crowd, field markings and readable overlays; neither run
+reports browser/GPU failures. Both browsers and the owned server are closed.
+The runs remain partial: continuous/reference-matched audio, a sustained
+30 FPS floor and complete stadium/staff/mode fidelity are still unfinished.
