@@ -13,6 +13,11 @@ const fixture=`<!doctype html><link rel="icon" href="/favicon.ico"><body data-re
 const state={running:false}; const nfl2k5Log=[]; function log(line){nfl2k5Log.push(line);}
 let playCount=0;
 document.getElementById('play').onclick=()=>{
+  if(new URLSearchParams(location.search).get('audio')==='1'){
+    const ctx=new AudioContext({sampleRate:48000});void ctx.resume();
+    window.nfl2k5Module={nfl2k5AudioContext:ctx,nfl2k5Audio:{state:'running',underruns:1,underrunFrames:128,maxUnderrunFrames:128}};
+    return;
+  }
   const retry=new URLSearchParams(location.search).get('retry');
   if(retry==='1'||retry==='delayed'){
     void (async()=>{
@@ -102,6 +107,26 @@ const server=http.createServer((req,res)=>{
       });
       return {...result,report:JSON.parse(fs.readFileSync(path.join(dir,'report.json'),'utf8'))};
     }
+    const audio=await runWaitAudit('audio-clock',[
+      {action:'begin',id:'audio-clock'},{action:'play'},{action:'wait',ms:1500},
+      {action:'audio'},{action:'play'},{action:'wait',ms:1500},
+      {action:'audio'},{action:'end',result:'pass'},{action:'close'},
+    ],false,'audio=1');
+    assert.equal(audio.code,1,audio.output);assert.equal(audio.report.cases[0].result,'fail');
+    const sample=audio.report.audioSamples[0];
+    assert.equal(sample.context.state,'running');assert.ok(sample.context.time>0);
+    assert.ok(Number.isFinite(sample.clock.originMs)&&sample.clock.originMs>1e12);
+    assert.ok(sample.clock.readBeginMs<=sample.clock.readEndMs);
+    assert.equal(sample.at,sample.clock.readEndMs);
+    assert.ok(Number.isFinite(sample.clock.outputTimestamp?.contextTime));
+    assert.ok(Number.isFinite(sample.clock.outputTimestamp?.performanceTime));
+    const failures=audio.report.failures.filter(row=>row.kind==='audio-underrun');
+    assert.equal(failures.length,2,'both equal-count output streams must fail independently');
+    const observed=failures[0];
+    const detail=JSON.parse(observed.line.slice('[AUDIO-UNDERRUN] '.length));
+    assert.equal(detail.clock.originMs,sample.clock.originMs);
+    assert.ok(Number.isFinite(detail.clock.outputTimestamp?.performanceTime));
+    console.log('PASS real audit snapshots and periodic failures retain browser/audio clock anchors and equal-count replacement streams');
     const waiting=await runWaitAudit('transitions',[
       {action:'begin',id:'first'}, {action:'play'}, {action:'wait-log',pattern:'phase=1',ms:5000}, {action:'end',result:'pass'},
       {action:'begin',id:'second'}, {action:'play'}, {action:'wait-log',pattern:'phase=',ms:5000}, {action:'end',result:'pass'},

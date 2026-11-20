@@ -56,22 +56,47 @@ console.log('PASS retail diagnostics retain expected probes and reject browser/G
   const vm=require('node:vm');
   const {drainAuditRows}=require('../../tools/web-audit-audio.cjs');
   const window={auditPending:[{line:'[TODO] guest site 00000001'}]};
-  const context=vm.createContext({window,performance:{now:()=>31000}});
-  const drain=()=>JSON.parse(JSON.stringify(vm.runInContext(`(${drainAuditRows.toString()})()`,context)));
-  assert.equal(drain().length,1);assert.deepEqual(drain(),[]);
-  const stats={underruns:0,underrunFrames:0,maxUnderrunFrames:0};
-  window.nfl2k5Module={nfl2k5Audio:stats,nfl2k5AudioContext:{currentTime:30}};
-  assert.deepEqual(drain(),[]);
+  let clocks=0;
+  const context=vm.createContext({window,performance:{timeOrigin:1000000,now:()=>31000+clocks++/4}});
+  const drain=(snapshot=false)=>JSON.parse(JSON.stringify(vm.runInContext(`(${drainAuditRows.toString()})(${snapshot})`,context)));
+  assert.equal(drain().length,1);assert.deepEqual(drain(),[]);assert.equal(clocks,0);
+  const stats={state:'running',underruns:0,underrunFrames:0,maxUnderrunFrames:0};
+  const ctx={state:'running',sampleRate:48000,currentTime:30,baseLatency:0.01,outputLatency:0.04,
+    getOutputTimestamp:()=>({contextTime:29.95,performanceTime:30950})};
+  window.nfl2k5Module={nfl2k5Audio:stats,nfl2k5AudioContext:ctx};
+  assert.deepEqual(drain(),[]);assert.equal(clocks,0,'no clock sampling on unchanged periodic polls');
   Object.assign(stats,{underruns:1,underrunFrames:128,maxUnderrunFrames:128,
     firstUnderrunTime:29.01,lastUnderrunTime:29.02,lastUnderrunQueued:0,lastUnderrunRequired:1,queued:1024});
-  let rows=drain();assert.equal(rows.length,1);assert.equal(rows[0].at,31000);
+  window.auditPending.push({line:'[APU-SCHEDULE] retained'});
+  const snapshot=drain(true);
+  assert.equal(snapshot.output.underruns,1);assert.equal(snapshot.context.time,30);
+  assert.deepEqual(snapshot.clock,{originMs:1000000,readBeginMs:31000,readEndMs:31000.25,
+    outputTimestamp:{contextTime:29.95,performanceTime:30950}});
+  assert.equal(window.auditPending.length,1);assert.equal(window.auditAudioUnderruns,0,'snapshot must not acknowledge a new gap');
+  let rows=drain();assert.equal(rows.length,2);assert.equal(rows[1].at,31000.75);
   assert.equal(caseDiagnostics('pass',rows).result,'fail');
-  const detail=JSON.parse(rows[0].line.slice('[AUDIO-UNDERRUN] '.length));
+  const detail=JSON.parse(rows[1].line.slice('[AUDIO-UNDERRUN] '.length));
   assert.deepEqual(detail,{blocks:1,missingFrames:128,maxGapFrames:128,contextTime:30,
+    clock:{originMs:1000000,readBeginMs:31000.5,readEndMs:31000.75,outputTimestamp:{contextTime:29.95,performanceTime:30950}},
     firstGapTime:29.01,lastGapTime:29.02,available:0,required:1,queued:1024});
-  assert.deepEqual(drain(),[]); // don't turn one gap into many failures
-  stats.underruns=2;assert.equal(drain().length,1);
+  const oldClocks=clocks;assert.deepEqual(drain(),[]);assert.equal(clocks,oldClocks);
+  for(const timestamp of [undefined,()=>{throw Error('unsupported diagnostic');},()=>({contextTime:NaN,performanceTime:1})]) {
+    ctx.getOutputTimestamp=timestamp;stats.underruns++;
+    rows=drain();assert.equal(caseDiagnostics('pass',rows).result,'fail');
+    assert.equal(JSON.parse(rows[0].line.slice('[AUDIO-UNDERRUN] '.length)).clock.outputTimestamp,null);
+  }
+  ctx.getOutputTimestamp=()=>({contextTime:0,performanceTime:0});stats.underruns++;
+  assert.deepEqual(JSON.parse(drain()[0].line.slice('[AUDIO-UNDERRUN] '.length)).clock.outputTimestamp,{contextTime:0,performanceTime:0});
+  // A replacement stream may already have gaps at the first poll, even if
+  // its cumulative count is equal to or lower than the previous stream's.
+  window.nfl2k5Module={nfl2k5Audio:{underruns:1}};assert.equal(drain().length,1);
+  window.nfl2k5Module={nfl2k5Audio:{underruns:1}};
+  drain(true);assert.equal(drain().length,1,'snapshot must not acknowledge replacement stream');
+  window.nfl2k5Module.nfl2k5AudioContext={currentTime:0};
+  assert.equal(drain().length,1,'replacement context with retained stats needs a new baseline');
   window.nfl2k5Module={nfl2k5Audio:{underruns:0}};assert.deepEqual(drain(),[]);
   window.nfl2k5Module.nfl2k5Audio.underruns=1;assert.equal(drain().length,1);
-  console.log('PASS periodic audio observation records real gaps once, preserves times and resets for replacement streams');
+  delete window.nfl2k5Module;
+  const empty=drain(true);assert.equal(empty.context,null);assert.equal(empty.output,null);
+  console.log('PASS audio observation preserves clock anchors, raw output timestamps, failures with unavailable diagnostics, replacement streams and snapshot/drain separation');
 }

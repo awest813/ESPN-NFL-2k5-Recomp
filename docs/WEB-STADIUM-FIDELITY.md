@@ -4635,3 +4635,63 @@ shared consumer/producer clock anchor and wait/reacquisition separation.
 Frame windows also fall below 30 FPS. This profiled, differently timed matchup
 is not an A/B improvement claim; audio continuity, full Xbox fidelity and a
 sustained 30 FPS floor remain open.
+
+
+### Browser/APU clock anchors and replacement-stream audit (2026-11-20)
+
+The retail audit now records `performance.timeOrigin` and brackets the
+`AudioContext.currentTime` read with `performance.now()` for each explicit
+audio snapshot and newly observed underrun. This is the local SDK 6.0.10
+pthread QPC clock domain (`timeOrigin + now`), so producer times no longer
+need to be inferred from delayed host log arrivals. It also retains the raw
+`getOutputTimestamp()` pair when supported. Per the [Web Audio specification](https://www.w3.org/TR/webaudio/#dom-audiocontext-getoutputtimestamp),
+that pair estimates device presentation; it is not a worklet execution
+timestamp, and its difference from `currentTime` is not a reliable latency
+measurement. Missing, throwing or non-finite timestamp diagnostics stay null
+and cannot suppress a failure. Raw zero/zero values are retained for an
+unstarted output graph rather than treated as a usable clock mapping.
+
+Snapshot and periodic drain modes share the same serialized observer. Taking
+a snapshot neither drains pending logs nor acknowledges a newly observed
+gap. Unchanged periodic polls do not sample extra clocks. A separate regression
+reproduces a false negative when a replacement output stream already has an
+equal or lower nonzero underrun counter. The baseline now belongs to the
+stats object and AudioContext identity. New streams report their own gaps;
+snapshots cannot accidentally acknowledge that replacement. The isolated
+regression fails with zero events before the identity fix and passes after it.
+The real browser CLI test creates two equal-count streams and retains both
+failure records, along with clock anchors. Transition, timeout, retry and
+interactive-close checks also pass.
+
+The frozen `audio-anchor-retail` run uses the preceding optimized game and
+unchanged scheduling policy, with APU/IRQ profiling on and optional wake off.
+It inspects Steelers at 49ers team/coach presentation and returns through team
+selection to the neutral main menu. Five screenshots, four snapshots and
+29 unchanged artifact hashes are retained privately; the browser and server
+are closed. After the frozen capture, the observer and two test files are
+copied alongside its evidence before applying the replacement-stream fix.
+This is a menu/audio investigation, not a new gameplay or stadium-parity test.
+
+The run fails on two affected audio blocks / 256 missing frames, longest
+256 frames (5.33 ms at 48 kHz). Its single automatic failure record places
+the missing interval at AudioContext seconds 6.514666666666667 through
+6.519979166666666. Counters stay unchanged through the last snapshot at
+second 169.04 and close. Completed scheduling windows contain no rebases.
+The event's observer anchor has a 0.015 ms read bracket; simple extrapolation
+from its block-stepped currentTime gives [1795211232139.014,
+1795211232144.327] ms in the QPC domain. This is an estimate rather than an
+exact render callback interval. The raw output-device pair instead estimates
+presentation at [1795211232184.674, 1795211232189.986] ms.
+
+The following completed profile window's maximum frame gap ends at
+1795211231833.910 ms, about 305–310 ms before the observer extrapolation.
+Its worst wake ends at the same instant. These maxima therefore do not
+identify the individual consumer gap. The maximum lateness is 25.5 ms at
+1795211232146.285 ms, much closer to that extrapolation. That window's worst
+pipeline frame is 19.0 ms, including 18.8 ms in VP and no measured voice wait;
+these are elapsed times, not exclusive CPU measurements. The available
+records do not locate that pipeline frame precisely. Event history and
+separation of host waiting/reacquisition from pipeline execution remain the
+next diagnostic steps. The new anchors resolve clock-domain ambiguity;
+they do not fix audio continuity or establish exact Xbox audio fidelity or
+a sustained 30 FPS floor. This different matchup/timing is not an A/B result.

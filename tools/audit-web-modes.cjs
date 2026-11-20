@@ -158,14 +158,7 @@ async function act(c){
       await flush();result=await page.evaluate(()=>({running:state.running,status:document.querySelector('#launch-status').textContent,
         recent:nfl2k5Log.slice(-12)}));break;
     case 'audio':{
-      const sample=await page.evaluate(()=>{
-        const mod=window.nfl2k5Module,ctx=mod?.nfl2k5AudioContext,s=mod?.nfl2k5Audio;
-        return {at:performance.now(),context:ctx?{state:ctx.state,rate:ctx.sampleRate,time:ctx.currentTime,
-          baseLatency:ctx.baseLatency,outputLatency:ctx.outputLatency}:null,
-          output:s?{state:s.state,played:s.played,rendered:s.rendered,underruns:s.underruns,underrunFrames:s.underrunFrames,maxUnderrunFrames:s.maxUnderrunFrames,queued:s.queued,
-            firstUnderrunTime:s.firstUnderrunTime,lastUnderrunTime:s.lastUnderrunTime,lastUnderrunQueued:s.lastUnderrunQueued,lastUnderrunRequired:s.lastUnderrunRequired,
-            peak:s.peak,frequency:s.frequency}:null};
-      });
+      const sample=await page.evaluate(drainAuditRows,true);
       (report.audioSamples||=[]).push(sample);writeReport();result=sample;break;
     }
     case 'close':{
