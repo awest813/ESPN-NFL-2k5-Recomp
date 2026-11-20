@@ -3731,7 +3731,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      SDL_GPUTexture *tex;
      uint32_t        last_use;
      uint32_t        epoch_used; /* s_sg_queue.epoch when last used: in flight
-@@ -29,30 +29,68 @@
+@@ -29,30 +29,86 @@
      SgCachedTexture *pending;   /* cache slot to mark valid once the upload is issued */
      uint64_t         pending_key;
      SDL_GPUSampler *sampler;
@@ -3775,8 +3775,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +
 +
 +/* Direct guest textures can change between draws, including within one frame.
-+ * Keep bounded byte copies for a fast full-content comparison before reusing
-+ * their hashes. Exhausting the copy arena falls back to hashing every bind. */
++ * Keep bounded persistent copies for a full-content comparison before reusing
++ * hashes. Ring eviction, oversized images or allocation failure force a hash. */
 +#define SG_HASH_MEMO 4096
 +#define SG_HASH_COPY_BYTES (16u * 1024u * 1024u)
 
@@ -3784,32 +3784,52 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      const uint8_t *pixels;
      size_t         bytes;
 -    uint32_t       shape[4];
+-    uint32_t       frame;
+-    uint64_t       hash;
 +    uint32_t       shape[5];
-     uint32_t       frame;
-     uint64_t       hash;
-+    uint8_t       *checked;    /* frame-local copy; NULL forces a new hash */
++    uint32_t       frame;      /* last use, for collision-window replacement */
++    uint64_t       hash, copy_start;
++    uint8_t       *checked;    /* ring copy; validate its serial before reading */
  } SgHashMemo;
 
  static SgHashMemo s_sg_hash_memo[SG_HASH_MEMO];
  static uint32_t   s_sg_frame = 1;            /* bumped at every flip */
 +static uint8_t   *s_sg_hash_copies;
-+static size_t     s_sg_hash_copy_used;
-+static uint32_t   s_sg_hash_copy_frame;
++static uint64_t   s_sg_hash_copy_cursor;
 +
-+static uint8_t *sg_hash_copy_allocate(size_t bytes) {
-+    if(bytes>SG_HASH_COPY_BYTES-s_sg_hash_copy_used)return NULL;
++/* Every retained allocation is inside the most recent capacity bytes of the
++ * monotonic ring timeline. Even partial overwrite invalidates the whole copy. */
++static int sg_hash_copy_valid(const SgHashMemo *m) {
++    return m->checked && m->copy_start<=s_sg_hash_copy_cursor &&
++        s_sg_hash_copy_cursor-m->copy_start>=m->bytes &&
++        s_sg_hash_copy_cursor-m->copy_start<=SG_HASH_COPY_BYTES;
++}
++static uint8_t *sg_hash_copy_allocate(size_t bytes,uint64_t *start) {
++    if(!bytes || bytes>SG_HASH_COPY_BYTES)return NULL;
 +    if(!s_sg_hash_copies) {
 +        s_sg_hash_copies=malloc(SG_HASH_COPY_BYTES);
 +        if(!s_sg_hash_copies)return NULL;
 +    }
-+    uint8_t *copy=s_sg_hash_copies+s_sg_hash_copy_used;
-+    s_sg_hash_copy_used+=bytes;
-+    return copy;
++    size_t offset=(size_t)(s_sg_hash_copy_cursor%SG_HASH_COPY_BYTES);
++    uint64_t padding=bytes>SG_HASH_COPY_BYTES-offset?SG_HASH_COPY_BYTES-offset:0;
++    if(s_sg_hash_copy_cursor>UINT64_MAX-padding-bytes) {
++        memset(s_sg_hash_memo,0,sizeof s_sg_hash_memo);
++        s_sg_hash_copy_cursor=0;padding=0;
++    }
++    *start=s_sg_hash_copy_cursor+padding;
++    s_sg_hash_copy_cursor=*start+bytes;
++    return s_sg_hash_copies+(size_t)(*start%SG_HASH_COPY_BYTES);
++}
++static uint32_t sg_hash_memo_bucket(const uint8_t *pixels,uint32_t width,uint32_t height) {
++    uint32_t bucket=(uint32_t)(uintptr_t)pixels;
++    bucket^=bucket>>16;bucket*=0x7FEB352Du;bucket^=bucket>>15;
++    bucket^=width*0x9E3779B9u^height;
++    return bucket&(SG_HASH_MEMO-1u);
 +}
 
  /* One decode buffer per stage: one batch can upload several stages. */
  static uint32_t       *s_sg_decode[4];
-@@ -65,13 +103,19 @@
+@@ -65,13 +121,19 @@
  }
 
  /* ── Samplers, from the title's own per-stage settings (as the D3D11 path):
@@ -3835,7 +3855,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  static SDL_GPUSamplerAddressMode sg_address_mode(uint32_t m)
  {
-@@ -82,29 +126,88 @@
+@@ -82,29 +144,88 @@
      }
  }
 
@@ -3938,7 +3958,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +215,198 @@
+@@ -112,75 +233,195 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -3983,13 +4003,17 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  /* Everything that decides the decoded texels: raw bytes, palette, format,
   * size, row pitch. Wrap and clamp are shader state, not part of the key. */
 -static uint64_t sg_texture_key(int st)
-+static uint64_t sg_texture_key(int st, int refresh)
++typedef struct {uint64_t key;const uint8_t *pixels;} SgTextureKey;
++/* pixels remains stable until the next texture-key lookup on this draw thread
++ * when a retained copy exists (or the executor already owns the snapshot). */
++static SgTextureKey sg_texture_key_snapshot(int st, int refresh)
  {
      const TextureSnapshot *snap = &s_texture_snapshot[st];
      const Texture *tx = sg_stage_texture(st);
 -    uint32_t shape[4] = { tx->width, tx->height, tx->color, tx->pitch };
+-    uint64_t h;
 +    uint32_t shape[5] = { tx->width, tx->height, tx->color, tx->pitch, texture_mip_levels(st,tx) };
-     uint64_t h;
++    uint64_t h;const uint8_t *pixels=snap->pixels;
 
      if (!snap->owned) {
 -        SgHashMemo *m = &s_sg_hash_memo[(((uintptr_t)snap->pixels >> 6) ^ tx->width ^ (tx->height << 7))
@@ -4002,50 +4026,42 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -            m->frame = s_sg_frame;
 -            m->hash = sg_hash(snap->pixels, snap->bytes,
 -                              sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
-+        if(s_sg_hash_copy_frame!=s_sg_frame) {
-+            /* A wrapped frame counter must not revive an old arena pointer. */
-+            if(s_sg_frame<s_sg_hash_copy_frame)memset(s_sg_hash_memo,0,sizeof s_sg_hash_memo);
-+            s_sg_hash_copy_frame=s_sg_frame;
-+            s_sg_hash_copy_used=0;
+-            }
++        /* Search the whole collision window before replacing a cold entry:
++         * an unchanged image can survive many flips behind another address. */
++        uint32_t bucket=sg_hash_memo_bucket(snap->pixels,tx->width,tx->height);
++        SgHashMemo *m=NULL,*victim=NULL;
++        for(unsigned probe=0;probe<16;probe++) {
++            SgHashMemo *candidate=&s_sg_hash_memo[(bucket+probe)&(SG_HASH_MEMO-1u)];
++            if(candidate->pixels==snap->pixels && candidate->bytes==snap->bytes &&
++               memcmp(candidate->shape,shape,sizeof shape)==0) {m=candidate;break;}
++            if(!victim || !candidate->pixels || (victim->pixels &&
++               s_sg_frame-candidate->frame>s_sg_frame-victim->frame))victim=candidate;
 +        }
-+        /* Xbox textures are frequently aligned to 4 or 64 KB. Taking only
-+         * low address bits made same-sized textures evict one another on
-+         * almost every draw. Mix the full address and probe collisions. */
-+        uint32_t bucket = (uint32_t)(uintptr_t)snap->pixels;
-+        bucket ^= bucket >> 16;
-+        bucket *= 0x7FEB352Du;
-+        bucket ^= bucket >> 15;
-+        bucket ^= tx->width * 0x9E3779B9u ^ tx->height;
-+        SgHashMemo *m = &s_sg_hash_memo[bucket & (SG_HASH_MEMO - 1)];
-+        for (unsigned probe = 0; probe < 16; probe++) {
-+            SgHashMemo *candidate = &s_sg_hash_memo[(bucket + probe) & (SG_HASH_MEMO - 1)];
-+            if (candidate->frame != s_sg_frame ||
-+                (candidate->pixels == snap->pixels && candidate->bytes == snap->bytes &&
-+                 memcmp(candidate->shape, shape, sizeof shape) == 0)) {
-+                m = candidate;
-+                break;
-             }
-+        }
-+        int identity=m->frame==s_sg_frame && m->pixels==snap->pixels &&
-+            m->bytes==snap->bytes && memcmp(m->shape,shape,sizeof shape)==0;
++        int identity=m!=NULL;
++        if(!m)m=victim;
++        int retained=identity && sg_hash_copy_valid(m);
 +        int unchanged=0;
-+        if(identity && !refresh && m->checked) {
++        if(retained && !refresh) {
 +            s_sg_stats.texture_compare_bytes+=snap->bytes;
 +            unchanged=sg_texture_bytes_equal(m->checked,snap->pixels,snap->bytes);
 +        }
 +        if(!unchanged) {
-+            uint8_t *copy=identity?m->checked:sg_hash_copy_allocate(snap->bytes);
++            uint64_t start=retained?m->copy_start:0;
++            uint8_t *copy=retained?m->checked:sg_hash_copy_allocate(snap->bytes,&start);
 +            m->pixels=snap->pixels;
 +            m->bytes=snap->bytes;
 +            memcpy(m->shape,shape,sizeof shape);
 +            m->frame=s_sg_frame;
-+            m->hash=sg_hash(snap->pixels,snap->bytes,
-+                           sg_hash((const uint8_t*)shape,sizeof shape,0x243F6A8885A308D3ull));
-+            m->checked=copy;
 +            if(copy)memcpy(copy,snap->pixels,snap->bytes);
++            m->hash=sg_hash(copy?copy:snap->pixels,snap->bytes,
++                           sg_hash((const uint8_t*)shape,sizeof shape,0x243F6A8885A308D3ull));
++            m->checked=copy;m->copy_start=start;
 +            s_sg_stats.texture_hash_bytes+=snap->bytes;
 +        }
++        m->frame=s_sg_frame;
          h = m->hash;
++        if(m->checked)pixels=m->checked;
      } else {
          h = sg_hash(snap->pixels, snap->bytes,
                      sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
@@ -4053,9 +4069,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      if (tx->color == 0x0B)                    /* 1 KB palette: cheap, hashed every time */
          h = sg_hash((const uint8_t *)snap->palette, sizeof snap->palette, h);
-     return h ? h : 1;
- }
-
+-    return h ? h : 1;
+-}
+-
 -/* Decode a stage into s_sg_decode[st]. 0 if the software path cannot read it. */
 -static int sg_texture_decode(int st, uint32_t w, uint32_t h)
 -{
@@ -4077,6 +4093,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -            s_sg_decode[st][(size_t)y * w + x] = ((argb >> 16) & 0xFFu) | (argb & 0xFF00u)
 -                                               | ((argb & 0xFFu) << 16) | (argb & 0xFF000000u);
 -        }
++    return (SgTextureKey){h?h:1,pixels};
++}
++static inline uint64_t sg_texture_key(int st,int refresh) {
++    return sg_texture_key_snapshot(st,refresh).key;
++}
++
 +/* Decode each DXT block once when uploading an entire image. The scalar
 + * sampler intentionally decodes one texel at a time; using it for a full
 + * texture recomputes the same colour/alpha palettes sixteen times. */
@@ -4185,7 +4207,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +414,14 @@
+@@ -188,11 +429,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4202,7 +4224,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +437,35 @@
+@@ -208,23 +452,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4228,7 +4250,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
 -    key = sg_texture_key(st);
-+    key = sg_texture_key(st, refreshed);
++    SgTextureKey content=sg_texture_key_snapshot(st,refreshed);
++    key=content.key;
      s_sg_texture_tick++;
 -    for (i = 0; i < SG_MAX_TEXTURES; i++) {
 -        SgCachedTexture *c = &s_sg_textures[i];
@@ -4247,18 +4270,24 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,18 +486,18 @@
+@@ -245,18 +502,23 @@
                  slot = &s_sg_textures[i];
      }
 
 -    if (!sg_texture_decode(st, w, h))
-+    uint64_t decode_start = sg_profile_now();
-+    if (!sg_texture_decode(st, w, h, layers, levels))
-         return 0;
+-        return 0;
 -    if (!slot->tex || slot->w != w || slot->h != h) {
 -        /* A full mip chain, generated on the GPU after each upload */
 -        uint32_t levels = 1, big = w > h ? w : h;
 -        while (big > 1) { big >>= 1; levels++; }
++    uint64_t decode_start = sg_profile_now();
++    /* Use exactly the retained bytes that produced the key, even if guest RAM
++     * changes while an eviction flush submits earlier commands. */
++    uint8_t *guest_pixels=s_texture_snapshot[st].pixels;
++    s_texture_snapshot[st].pixels=(uint8_t*)content.pixels;
++    int decoded=sg_texture_decode(st,w,h,layers,levels);
++    s_texture_snapshot[st].pixels=guest_pixels;
++    if(!decoded)return 0;
 +    if (decode_start) s_sg_stats.texture_decode_ticks += sg_profile_now() - decode_start;
 +    s_sg_stats.texture_decodes++;
 +    if (!slot->tex || slot->w != w || slot->h != h || slot->layers != layers || slot->levels != levels) {
@@ -4275,7 +4304,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          };
          if (slot->tex)
              SDL_ReleaseGPUTexture(s_sg.dev, slot->tex);
-@@ -266,6 +507,8 @@
+@@ -266,6 +528,8 @@
              return 0;
          slot->w = w;
          slot->h = h;
@@ -4284,7 +4313,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
      /* The slot only becomes a cache hit in sg_texture_commit(), once its
       * upload has been recorded: a batch that fails in between must not leave
-@@ -273,7 +516,7 @@
+@@ -273,7 +537,7 @@
      slot->key = 0;
      slot->last_use = s_sg_texture_tick;
      slot->epoch_used = s_sg_queue.epoch;      /* reserved by this batch */
@@ -4293,7 +4322,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -291,4 +534,4 @@
+@@ -291,4 +555,4 @@
      if (use->pending)
          use->pending->key = use->pending_key;
      use->pending = NULL;
@@ -5639,7 +5668,7 @@ diff --git a/tests/sdlgpu_posix/CMakeLists.txt b/tests/sdlgpu_posix/CMakeLists.t
 diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 --- a/tests/sdlgpu_posix/test_main.c
 +++ b/tests/sdlgpu_posix/test_main.c
-@@ -10,87 +10,78 @@
+@@ -10,87 +10,83 @@
   *    in float (and draws a quad's shared diagonal twice), a GPU snaps
   *    vertices to a 1/256 px grid; those pixels are not compared
   *
@@ -5674,6 +5703,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +/* Exercise the actual executor state and decoding, so renderer changes
 + * cannot silently outgrow a duplicate test-only layout. */
 +static int fail_next_submit, fail_next_wait;
++static uint32_t *rewrite_texture_on_submit;
 +static bool checked_submit(SDL_GPUCommandBuffer *command);
 +static bool checked_wait(SDL_GPUDevice *device, bool all, SDL_GPUFence *const *fences, Uint32 count);
 +#define SDL_SubmitGPUCommandBuffer checked_submit
@@ -5686,6 +5716,10 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    if (fail_next_submit) {
 +        fail_next_submit = 0; SDL_CancelGPUCommandBuffer(command);
 +        SDL_SetError("injected submit failure"); return false;
++    }
++    if(rewrite_texture_on_submit) {
++        for(unsigned i=0;i<64;i++)rewrite_texture_on_submit[i]=0xFF2468ACu;
++        rewrite_texture_on_submit=NULL;
 +    }
 +    return SDL_SubmitGPUCommandBuffer(command);
 +}
@@ -5784,7 +5818,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  {
      uint32_t out = 0;
      for (int sh = 0; sh < 32; sh += 8)
-@@ -162,10 +153,10 @@
+@@ -162,10 +158,10 @@
                      float su = (w1 * uv[0][0] + w2 * uv[1][0] + w0 * uv[2][0]) / area;
                      float sv = (w1 * uv[0][1] + w2 * uv[1][1] + w0 * uv[2][1]) / area;
                      uint32_t texel;
@@ -5798,7 +5832,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
                          continue;
                      }
                  }
-@@ -208,9 +199,9 @@
+@@ -208,9 +204,9 @@
      for (int i = 0; i < SG_MAX_SURFACES; i++)        /* the title wrote the surface */
          if (s_sg.surf[i].color) s_sg.surf[i].owner = SG_OWNER_GUEST;
 
@@ -5810,7 +5844,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +222,1285 @@
+@@ -231,34 +227,1285 @@
      return bad == 0;
  }
 
@@ -7100,7 +7134,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1509,11 @@
+@@ -267,10 +1514,11 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -7115,7 +7149,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1551,30 @@
+@@ -308,12 +1556,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -7144,10 +7178,28 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    CHECK(left==0xFFFF0000u && right==0xFF0000FFu,
 +          "same-frame queued images: %08X %08X",left,right);
 +    printf("same-frame texture rewrites preserve queued red and new blue pixels\n");
++    /* Simulate a CPU rewrite during the eviction flush between key selection
++     * and texture decoding. The first draw must keep the hashed snapshot. */
++    s_gpu.clear_color=0;CHECK(sg_clear(0xF0),"snapshot consistency clear");
++    s_gpu.tex.valid=0;g_ntris=2;quad(0,100,100,120,120,0,0,0,0,0xFF888888u,0);
++    upload_scene();CHECK(sg_draw_batch(1),"snapshot consistency pending draw");
++    for(unsigned i=0;i<SG_MAX_TEXTURES;i++)s_sg_textures[i].epoch_used=s_sg_queue.epoch;
++    s_gpu.tex.valid=1;for(unsigned i=0;i<64;i++)tex[i]=0xFFA13579u;
++    g_ntris=2;quad(0,0,0,32,32,0,0,8,8,0xFFFFFFFFu,1);upload_scene();
++    rewrite_texture_on_submit=tex;CHECK(sg_draw_batch(1),"snapshot consistency first draw");
++    CHECK(!rewrite_texture_on_submit && tex[0]==0xFF2468ACu,"snapshot rewrite did not occur during flush");
++    CHECK(s_texture_snapshot[0].pixels==(uint8_t*)tex,"decode did not restore the guest snapshot pointer");
++    g_ntris=2;quad(0,32,0,64,32,0,0,8,8,0xFFFFFFFFu,1);upload_scene();
++    CHECK(sg_draw_batch(1),"snapshot consistency second draw");download_frame();
++    memcpy(&left,g_ram+s_gpu.color_offset+8*s_gpu.pitch+8*4,4);
++    memcpy(&right,g_ram+s_gpu.color_offset+8*s_gpu.pitch+40*4,4);
++    CHECK(left==0xFFA13579u && right==0xFF2468ACu,
++          "hashed snapshot and next rewrite pixels: %08X %08X",left,right);
++    printf("texture hashes and decoded images preserve the same snapshot across an eviction rewrite\n");
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1583,32 @@
+@@ -322,6 +1606,32 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 

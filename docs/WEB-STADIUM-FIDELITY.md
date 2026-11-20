@@ -2691,3 +2691,69 @@ controlled FPS or audio comparison with preceding runs. Evidence and exact
 Wasm/JS/patch hashes are retained in `build-web-tests/xxh64-retail`. Original-Xbox
 scene/audio parity, all modes/stadium/staff variants and a sustained 30 FPS
 floor remain unfinished.
+
+
+### Persistent checked texture copies and consistent decoding
+
+The checked-image arena now retains copies across flips within the same
+16 MiB budget. Every bind still compares the complete current image before
+reusing its hash. Unchanged images no longer require a new hash and copy just
+because a frame ended. A monotonic allocation serial detects full or partial
+ring overwrite before any retained bytes are read. Oversized images and copy
+allocation failure continue through uncached hashing. Cursor overflow clears
+memo identities before storage reuse. The collision window is searched fully
+for an exact pointer/size/shape identity before a cold entry is replaced;
+frame counters now track use rather than copy validity.
+
+The production fixture keeps 64 textures through 32 additional flips without
+increasing the hash-byte counter, while the preceding runtime fails that
+assertion. Tests retain per-byte same/new-frame mutations and stage aliases,
+plus deliberately colliding identities, capacity churn, oversized images,
+partial ring overwrite and frame/64-bit cursor wrap. Disabling copy-serial
+validation in an isolated fixture makes the partial-overwrite test fail.
+SIMD Wasm, scalar Wasm, native ASAN/UBSAN and the complete ordinary Web Python
+unit sequence pass.
+
+Review also found that hashing guest RAM, copying it and later decoding it
+could select different byte versions if a write intervened. Retained images
+now copy first, hash that copy and decode from the same copy. Owned executor
+snapshots already have their own storage; images that cannot be retained
+continue using the existing direct uncached path. Decode temporarily selects
+the retained source and restores the executor's guest pointer on success or
+failure, preserving later draws and software fallback.
+
+A real native GPU fixture injects a guest rewrite during an eviction flush,
+after key selection and before decoding. With decoding deliberately switched
+back to live guest RAM, both draws incorrectly show the newer color. The fix
+renders the selected first snapshot (`FFA13579`) and the next rewrite
+(`FF2468AC`) separately. The complete sanitized native Vulkan renderer and
+Linux kernel/video/browser builds pass. A fresh pinned checkout reproduces
+all 95 patched runtime files, with a reverse check. The preceding `d84a5b8`
+Build and Pages workflows both passed.
+
+An intermediate approximately 246-second retail pass, before the decoding
+consistency change, reports no browser/GPU failures and 27.7–30.1 FPS across
+19 five-second intervals after 150 seconds. It records 12,544 missing output
+frames (261.3 ms at 48 kHz), with a longest gap of 1,280 frames (26.7 ms).
+Representative busy intervals hash 0.17 MiB/frame while checking about
+61 MiB/frame. These are observations from that scene rather than a controlled
+comparison with earlier matchups. Its evidence is retained separately in
+`build-web-tests/persistent-texture-retail`. The final snapshot-consistent
+build also passes the packaged Pages isolation, save-worker, Wasm integrity,
+linked notice and mobile-layout smoke checks.
+
+
+The final approximately 246-second Pages-artifact run selects rainy New Orleans
+at Denver. The coin-toss view shows rain, floodlights, stadium seating,
+players/referee and readable text. Later gameplay keeps players, field
+markings and overlays visible. No browser/GPU failure is reported. The
+19 five-second FPS averages after 150 seconds range from 25.7 to 30.1.
+Audio records 114 affected blocks and 14,592 missing
+output frames (304.0 ms at 48 kHz), with a longest gap of
+2,304 frames (48.0 ms). A busy interval checks
+120.43 MiB/frame, hashes 0.20 MiB/frame and processes 2,883,168 line segments
+in 4,402 draws. The evidence and exact served Wasm/JS/patch hashes are retained
+in `build-web-tests/persistent-snapshot-retail`. Different teams/scenes prevent
+a controlled whole-game performance comparison. Original-Xbox scene/audio
+parity, all modes/stadium/staff variants, uninterrupted audio and the 30 FPS
+floor remain unfinished.

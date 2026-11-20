@@ -16,6 +16,7 @@ def main():
     src = (args.runtime / "src/kernel/sdlgpu/sdlgpu_texture.inc.c").read_text(encoding="utf-8")
     memo = src[src.index("#define SG_HASH_MEMO"):src.index("/* One decode buffer")]
     start=src.find("static int sg_texture_bytes_equal(")
+    if "s_sg_hash_copy_cursor" in memo:memo="#define TEST_PERSISTENT_COPY 1\n"+memo
     hashing=src[start if start>=0 else src.index("static uint64_t sg_hash("):src.index("/* Decode each DXT block")]
     if start<0:hashing='static int sg_texture_bytes_equal(const uint8_t*a,const uint8_t*b,size_t n){return memcmp(a,b,n)==0;}\n'+hashing
     harness = r'''
@@ -81,6 +82,14 @@ int main(void) {
         CHECK(sg_texture_key(0, 0) == keys[i]);
     }
     CHECK(s_sg_stats.texture_hash_bytes == 64 * 4096);
+    for(unsigned frame=0;frame<32;frame++) {
+        s_sg_frame++;
+        for(unsigned i=0;i<64;i++) {
+            s->pixels=data+(63-i)*65536;
+            CHECK(sg_texture_key(0,0)==keys[63-i]);
+        }
+        CHECK(s_sg_stats.texture_hash_bytes==64*4096);
+    }
     s->pixels = data; s->pixels[0] ^= 1;
     CHECK(sg_texture_key(0, 1) != keys[0]); /* refresh after GPU download */
     CHECK(s_sg_stats.texture_hash_bytes == 65 * 4096);
@@ -105,6 +114,7 @@ int main(void) {
     before=sg_texture_key(0,0);
     for(unsigned at=0;at<4096;at++) {
         data[at]^=1u<<(at&7);
+        if(!(at&63))s_sg_frame++;
         uint64_t changed=sg_texture_key(0,0);CHECK(changed!=before);
         bytes=s_sg_stats.texture_hash_bytes;
         CHECK(sg_texture_key(0,0)==changed && s_sg_stats.texture_hash_bytes==bytes);
@@ -114,8 +124,8 @@ int main(void) {
     tx[1]=tx[0];s_texture_snapshot[1]=*s;
     CHECK(sg_texture_key(1,0)==before);data[2061]^=0x80;
     uint64_t alias=sg_texture_key(1,0);CHECK(alias!=before && sg_texture_key(0,0)==alias);
-    /* A bounded copy pool may run out. Every uncached span must stay coherent,
-     * then frame advancement must safely reuse storage from the old frame. */
+    /* Churn beyond bounded copy capacity. Rebinding evicted spans and frame
+     * advancement must retain content coherence. */
     s_sg_frame++;tx[0]=(Texture){1024,512,0x12,4096};s->bytes=2*1024*1024;
     for(unsigned i=0;i<17;i++) {
         s->pixels=data+i*16;before=sg_texture_key(0,0);
@@ -126,8 +136,43 @@ int main(void) {
     s->pixels[17]^=2;CHECK(sg_texture_key(0,0)!=before);
     s_sg_frame=UINT32_MAX;before=sg_texture_key(0,0);s_sg_frame=0;
     s->pixels[32]^=4;CHECK(sg_texture_key(0,0)!=before);
+#ifdef TEST_PERSISTENT_COPY
+    /* Persistent lookup must find an identity beyond cold colliding entries. */
+    tx[0]=(Texture){2,1,0x12,8};s->bytes=8;
+    uint8_t *collisions[17];unsigned found=0;
+    for(size_t i=0;i+8<64*65536 && found<17;i+=16)
+        if(sg_hash_memo_bucket(data+i,2,1)==0)collisions[found++]=data+i;
+    CHECK(found==17);
+    uint64_t collision_keys[17];
+    for(unsigned i=0;i<16;i++) {
+        memset(collisions[i],i+17,8);s->pixels=collisions[i];collision_keys[i]=sg_texture_key(0,0);
+    }
+    bytes=s_sg_stats.texture_hash_bytes;s_sg_frame++;
+    for(unsigned i=0;i<16;i++){s->pixels=collisions[15-i];CHECK(sg_texture_key(0,0)==collision_keys[15-i]);}
+    CHECK(s_sg_stats.texture_hash_bytes==bytes);
+    memset(collisions[16],71,8);s->pixels=collisions[16];collision_keys[16]=sg_texture_key(0,0);
+    for(unsigned i=0;i<17;i++){s->pixels=collisions[i];CHECK(sg_texture_key(0,0)==collision_keys[i]);}
+    /* Force partial ring overwrite, with overwritten copy bytes deliberately
+     * equal to changed guest bytes. An invalid serial must never yield a hit. */
+    uint8_t *large=malloc(SG_HASH_COPY_BYTES+1);CHECK(large);memset(large,2,SG_HASH_COPY_BYTES+1);
+    memset(s_sg_hash_memo,0,sizeof s_sg_hash_memo);s_sg_hash_copy_cursor=0;
+    s->pixels=data;s->bytes=8;memset(data,1,8);(void)sg_texture_key(0,0);
+    s->pixels=large;s->bytes=SG_HASH_COPY_BYTES-4;(void)sg_texture_key(0,0);
+    s->pixels=data;s->bytes=8;memset(data,2,8);
+    s->owned=1;uint64_t expected=sg_texture_key(0,0);s->owned=0;CHECK(sg_texture_key(0,0)==expected);
+    s->pixels=large;s->bytes=SG_HASH_COPY_BYTES+1;before=sg_texture_key(0,0);
+    bytes=s_sg_stats.texture_hash_bytes;CHECK(sg_texture_key(0,0)==before);
+    CHECK(s_sg_stats.texture_hash_bytes==bytes+s->bytes); /* oversize stays uncached */
+    large[SG_HASH_COPY_BYTES]^=4;CHECK(sg_texture_key(0,0)!=before);
+    s->pixels=data;s->bytes=8;s_sg_hash_copy_cursor=UINT64_MAX-7;
+    CHECK(sg_texture_key(0,0)==expected && s_sg_hash_copy_cursor<=SG_HASH_COPY_BYTES);
+    data[7]^=1;CHECK(sg_texture_key(0,0)!=expected);
+    memset(data,15,8);SgTextureKey frozen=sg_texture_key_snapshot(0,0);
+    data[0]=16;CHECK(frozen.pixels!=data && frozen.pixels[0]==15);
+    CHECK(sg_texture_key(0,0)!=frozen.key);free(large);
+#endif
     free(data);
-    puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes, every-byte same-frame rewrites, aliases, allocation failure, arena exhaustion and frame wrap");
+    puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes, every-byte same-frame rewrites, aliases, allocation failure, bounded ring eviction, oversized images, frame/cursor wrap and cross-frame reuse");
     return 0;
 }
 '''
