@@ -69,6 +69,15 @@ Send newline-delimited JSON commands on stdin, or a JSON array via --script.
 Actions include play, begin (id/title), key (key/ms/gap), press (buttons), wait
 (ms), wait-log (pattern/ms), shot (tag), status, end (result/detail), reload and close. key uses real
 keyboard events; A/D assigns a team whereas arrow keys change menus/uniforms.
+
+The audit drains audio telemetry with runtime logs. Every observed increase
+in the cumulative underrun counter emits one `[AUDIO-UNDERRUN]` record with
+missing-frame counts, AudioContext gap times and source availability. It fails
+the case even without an explicit `audio` command; ordinary queue occupancy
+and authored zero PCM do not fail it. The `audio` action still saves complete
+snapshots. Older saved runs retain their original classifier results, including
+the manually marked partial `line-offset-retail` run. Periodic reports can
+locate an observed gap but do not establish its producer-side cause.
 press uses the game's opt-in file queue: each word presses for 100 ms and
 releases for at least 250 ms. A polling stall expires the old press before
 returning another sample. Verify screenshots after transitions.

@@ -8,6 +8,7 @@
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
 const {isAuditFailure,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
+const {drainAuditRows}=require('./web-audit-audio.cjs');
 const args=process.argv.slice(2);
 const option=(name,fallback)=>{const i=args.indexOf('--'+name);return i<0?fallback:args[i+1];};
 const origin=option('url','http://127.0.0.1:8080/');
@@ -36,7 +37,7 @@ function flush(){
   if(!page||page.isClosed())return Promise.resolve();
   flushing=(async()=>{
     try{
-      const rows=await page.evaluate(()=>window.auditPending?.splice(0)||[]);
+      const rows=await page.evaluate(drainAuditRows);
       for(const row of rows){
         row.hostTime=new Date().toISOString();events.push(row);
         const offset=/offset ([+-]\d+) from Xbox base/.exec(row.line);
@@ -162,6 +163,7 @@ async function act(c){
         return {at:performance.now(),context:ctx?{state:ctx.state,rate:ctx.sampleRate,time:ctx.currentTime,
           baseLatency:ctx.baseLatency,outputLatency:ctx.outputLatency}:null,
           output:s?{state:s.state,played:s.played,rendered:s.rendered,underruns:s.underruns,underrunFrames:s.underrunFrames,maxUnderrunFrames:s.maxUnderrunFrames,queued:s.queued,
+            firstUnderrunTime:s.firstUnderrunTime,lastUnderrunTime:s.lastUnderrunTime,lastUnderrunQueued:s.lastUnderrunQueued,lastUnderrunRequired:s.lastUnderrunRequired,
             peak:s.peak,frequency:s.frequency}:null};
       });
       (report.audioSamples||=[]).push(sample);writeReport();result=sample;break;

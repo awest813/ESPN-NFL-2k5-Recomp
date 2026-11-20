@@ -4409,3 +4409,62 @@ process exit zero do not override the audio observation. Presentation logs
 include sub-30 FPS intervals. This run establishes neither continuous audio,
 a sustained 30 FPS floor, matched Xbox pixels nor retail use of the corrected
 offset-state combination.
+
+### Audio publication and gap timing (2026-11-20)
+
+The prior retail gap is only bounded by audio samples 94 seconds apart; its
+onset and cause are not established. A separate controlled test identifies
+a worklet defect: the producer cursor is sampled once per render block, so
+PCM published after that read can be ignored for the rest of the block.
+At 8 kHz, the reproducer outputs eight zero frames despite sufficient newly
+published PCM. The worklet now rechecks the atomic producer cursor on each
+shortage before reporting a missing output frame. It remains nonblocking and
+preserves the source cursor and fractional resampling phase.
+
+The controlled publication checks pass at 8, 44.1, 48 and 96 kHz, including
+32-bit counter wrap. Existing startup, starvation, authored-silence, exact
+phase, fractional phase and optional-wake checks pass. The worklet reports
+first/last missing-frame AudioContext times and the last available/required
+source-frame counts. A real Chromium AudioWorklet starvation test verifies
+that the continuous gap duration agrees with its exact missing-frame count
+and that all 2,048 published PCM frames are consumed once.
+
+The browser audio/video/input suite passes, including zero underruns in the
+three-second steady tone windows at all four rates. Its previous allowance
+of one underrun is removed. The separate 35-second silence-to-tone test
+reports zero affected blocks and missing frames; its measured audio clock
+advances 7.019 seconds over 7.016 seconds of wall time across the silence
+boundary. Bridge lifecycle, audit diagnostics and launcher/static-host checks
+also pass. These short controlled checks do not establish complete retail
+audio continuity or show that stale publication caused the earlier gap.
+
+Retail audits now emit `[AUDIO-UNDERRUN]` records automatically when the
+observed cumulative counter increases. Each record includes context and gap
+times plus occupancy evidence, and causes the case to fail. Unchanged counters
+are not logged again; replacement streams reset the observation baseline.
+Older artifacts and their original classifier results remain unchanged.
+
+The frozen `audio-publication-retail` run is **failed**, with browser exit 1.
+It selects Colts at 49ers, reaches the coin toss and paused kickoff, then
+accepts the VIP quit warning and returns to the inspected neutral main menu.
+Nine screenshots, five audio snapshots, seven automatic underrun records and
+nineteen unchanged artifact hashes are retained privately. A black intro
+snapshot is retained alongside the later visible coin-toss scene. The owned
+browser and server are closed.
+
+The audio counters reach 506 affected blocks / 64,512 missing output frames,
+with a longest continuous gap of 1,792 frames. The first missing frame occurs
+at AudioContext second 37.632 and the last at 61.7813125; the counters then
+remain stable through the final snapshot at second 338.912. Shortage reports
+show zero available source frames against one required after refreshing the
+producer cursor. The first cluster overlaps the main-to-team-selection
+transition; guest critical-section waits on `0x00468CDC` (holder site
+`0x004434AD`) and global-lock contention appear nearby. These are correlated
+observations, not proof of a cause. Source submission logs also record
+low-queue submissions without dropped submissions.
+
+The refreshed-cursor defect is independently reproduced and fixed, but this
+retail run still fails audio continuity. Its comparison with the earlier
+one-gap run is not a controlled A/B test. Producer/guest scheduling around
+team selection remains an investigation target; this does not establish
+full audio fidelity, complete gameplay or a sustained 30 FPS floor.

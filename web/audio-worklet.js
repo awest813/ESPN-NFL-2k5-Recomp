@@ -15,6 +15,8 @@
 // blocks that ran dry after sound first started; underrunFrames and
 // maxUnderrunFrames count missing output frames (total and longest continuous
 // gap, including gaps spanning render blocks). Startup priming is excluded.
+// First/last underrun times are AudioContext seconds at the missing output
+// frames; queued/required describe the last shortage after rechecking writes.
 // Frequency is estimated from
 // zero crossings of the left channel (useful for tests and diagnostics).
 'use strict';
@@ -38,6 +40,10 @@ class NFL2K5Output extends AudioWorkletProcessor {
     this.underrunFrames = 0;
     this.maxUnderrunFrames = 0;
     this.underrunRun = 0;
+    this.firstUnderrunTime = null;
+    this.lastUnderrunTime = null;
+    this.lastUnderrunQueued = 0;
+    this.lastUnderrunRequired = 0;
     this.peak = 0;
     this.crossings = 0;
     this.prev = 0;
@@ -57,7 +63,7 @@ class NFL2K5Output extends AudioWorkletProcessor {
     const out = outputs[0];
     const L = out[0], R = out[1] || out[0];
     const n = L.length, hdr = this.hdr, data = this.data, mask = this.mask;
-    const w = Atomics.load(hdr, 0);
+    let w = Atomics.load(hdr, 0);
     let r = Atomics.load(hdr, 1);
     // Prime two APU submissions before playback. Keep their exact samples;
     // adding zero frames to the producer would put gaps into the game audio.
@@ -71,10 +77,19 @@ class NFL2K5Output extends AudioWorkletProcessor {
     // an unwritten source frame or stall a known exact sample for lookahead.
     for (let i = 0; i < n; i++) {
       const phase = this.frac + this.step, advance = Math.floor(phase);
-      if (((w - r) >>> 0) < Math.max(this.frac ? 2 : 1, advance)) {
+      const required = Math.max(this.frac ? 2 : 1, advance);
+      // The producer can publish while this block is being rendered. Refresh
+      // only on shortage; never wait for it or skip unpublished source frames.
+      if (((w - r) >>> 0) < required) w = Atomics.load(hdr, 0);
+      if (((w - r) >>> 0) < required) {
         L[i] = R[i] = 0;
         dry = true;
         if (this.started) {
+          const time = currentTime + i / sampleRate;
+          if (this.firstUnderrunTime === null) this.firstUnderrunTime = time;
+          this.lastUnderrunTime = time;
+          this.lastUnderrunQueued = (w - r) >>> 0;
+          this.lastUnderrunRequired = required;
           this.underrunFrames++;
           this.underrunRun++;
           if (this.underrunRun > this.maxUnderrunFrames) this.maxUnderrunFrames = this.underrunRun;
@@ -104,6 +119,8 @@ class NFL2K5Output extends AudioWorkletProcessor {
       this.port.postMessage({
         played: this.played, underruns: this.underruns,
         underrunFrames: this.underrunFrames, maxUnderrunFrames: this.maxUnderrunFrames,
+        firstUnderrunTime: this.firstUnderrunTime, lastUnderrunTime: this.lastUnderrunTime,
+        lastUnderrunQueued: this.lastUnderrunQueued, lastUnderrunRequired: this.lastUnderrunRequired,
         queued: (Atomics.load(hdr, 0) - r) >>> 0,
         peak: this.peak,
         frequency: this.crossings / 2 / (this.windowFrames / sampleRate),

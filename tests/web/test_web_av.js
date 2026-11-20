@@ -85,7 +85,7 @@ async function checkWorklet(page, rate, label) {
   await page.waitForTimeout(3000);
   const st2 = await page.evaluate(() => window.nfl2k5Module.nfl2k5Audio);
   check(st2.played - p0 > 48000 * 2, `${label}: kept playing (${st2.played - p0} frames in 3 s)`);
-  check(st2.underruns - u0 <= 1, `${label}: no underruns while fed (${st2.underruns - u0} in 3 s)`);
+  check(st2.underruns === u0, `${label}: no underruns while fed (${st2.underruns - u0} in 3 s)`);
   check(await page.evaluate(() => !(window.nfl2k5Module.SDL3 && window.nfl2k5Module.SDL3.audio_playback)),
         `${label}: SDL's ScriptProcessor output not used`);
   check(await page.evaluate(() => window.nfl2k5Module.nfl2k5AudioContext === window.smokeAudio),

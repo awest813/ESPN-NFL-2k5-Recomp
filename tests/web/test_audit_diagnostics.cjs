@@ -27,6 +27,8 @@ for(const failure of [
   {line:'[SDLGPU] queued draws dropped: rejected command buffer'},
   {line:'[AUDIO] AudioWorklet could not start (audio-worklet.js): network error'},
   {line:'[AUDIO] AudioWorklet processor failed'},
+  {line:'[AUDIO-UNDERRUN] {"blocks":1,"missingFrames":128}'},
+  {line:'missing output frames',kind:'audio-underrun'},
   {line:'[AUDIO] SDL_OpenAudioDeviceStream failed: no device'},
   {line:'[APU-DSP] GP frame did not idle; pc=000123 overruns=1'},
   {line:'[APU-DSP] unsupported EP PCM packet: 4096 bytes'},
@@ -48,3 +50,28 @@ for(const failure of [
 assert.equal(caseDiagnostics('fail',benign).result,'fail');
 assert.equal(caseDiagnostics('pass',[]).result,'pass'); // previous case errors stay in their own case
 console.log('PASS retail diagnostics retain expected probes and reject browser/GPU/audio false passes');
+
+// Run the same serialized callback as Playwright, with page-owned state.
+{
+  const vm=require('node:vm');
+  const {drainAuditRows}=require('../../tools/web-audit-audio.cjs');
+  const window={auditPending:[{line:'[TODO] guest site 00000001'}]};
+  const context=vm.createContext({window,performance:{now:()=>31000}});
+  const drain=()=>JSON.parse(JSON.stringify(vm.runInContext(`(${drainAuditRows.toString()})()`,context)));
+  assert.equal(drain().length,1);assert.deepEqual(drain(),[]);
+  const stats={underruns:0,underrunFrames:0,maxUnderrunFrames:0};
+  window.nfl2k5Module={nfl2k5Audio:stats,nfl2k5AudioContext:{currentTime:30}};
+  assert.deepEqual(drain(),[]);
+  Object.assign(stats,{underruns:1,underrunFrames:128,maxUnderrunFrames:128,
+    firstUnderrunTime:29.01,lastUnderrunTime:29.02,lastUnderrunQueued:0,lastUnderrunRequired:1,queued:1024});
+  let rows=drain();assert.equal(rows.length,1);assert.equal(rows[0].at,31000);
+  assert.equal(caseDiagnostics('pass',rows).result,'fail');
+  const detail=JSON.parse(rows[0].line.slice('[AUDIO-UNDERRUN] '.length));
+  assert.deepEqual(detail,{blocks:1,missingFrames:128,maxGapFrames:128,contextTime:30,
+    firstGapTime:29.01,lastGapTime:29.02,available:0,required:1,queued:1024});
+  assert.deepEqual(drain(),[]); // don't turn one gap into many failures
+  stats.underruns=2;assert.equal(drain().length,1);
+  window.nfl2k5Module={nfl2k5Audio:{underruns:0}};assert.deepEqual(drain(),[]);
+  window.nfl2k5Module.nfl2k5Audio.underruns=1;assert.equal(drain().length,1);
+  console.log('PASS periodic audio observation records real gaps once, preserves times and resets for replacement streams');
+}

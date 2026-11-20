@@ -229,12 +229,17 @@ The game's own SDL code runs unchanged; on the web it runs on workers
     through `Atomics`, and no wasm runs in the worklet;
   - if the browser runs the context at another rate, the worklet resamples
     linearly;
+  - when a render block runs short, it rechecks the published producer cursor
+    before declaring a missing frame. PCM arriving during the block can play
+    immediately; the worklet never waits for the producer or skips ahead;
   - the producer queue limit is about 128 ms. Playback primes with two
     actual 1024-frame submissions, preserving their PCM;
   - a terminal worklet monitor keeps the graph processed during silence,
     avoiding Chromium's slower silent-sink clock without injecting samples;
   - the worklets report frames played/rendered, underruns, peak level and an
     estimated frequency, kept as `Module.nfl2k5Audio`;
+    first/last missing-frame times use AudioContext seconds, and the last
+    shortage records available/required source frames;
   - browsers without `AudioWorklet`, or `?env=RECOMP_WEB_SDL_AUDIO=1`, use
     SDL's output as before.
 

@@ -8,8 +8,12 @@ const source = fs.readFileSync(path.join(__dirname, '../../web/audio-worklet.js'
 
 function fixture(rate, initial = 0, {cap = 32, afterStartup = true, wakeProducer = false} = {}) {
   let Processor;
+  let loadHook;
+  let renderedFrames=0;
   const messages = [], notifications = [];
-  const observedAtomics = {load:Atomics.load, store:Atomics.store, add:Atomics.add,
+  const observedAtomics = {load(array,index) {
+      const value=Atomics.load(array,index);loadHook?.(array,index,value);return value;
+    }, store:Atomics.store, add:Atomics.add,
     notify(array, index, count) {
       notifications.push({offset:array.byteOffset, index, value:Atomics.load(array,index)});
       return Atomics.notify(array,index,count);
@@ -19,7 +23,7 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true, wakeProducer
   hdr[0] = hdr[1] = initial; hdr[2] = cap;
   vm.runInNewContext(source, {
     AudioWorkletProcessor: class { constructor() { this.port = {postMessage(message) {messages.push(message);}}; } },
-    sampleRate: rate, Uint32Array, Int16Array, Atomics:observedAtomics,
+    sampleRate: rate, get currentTime() {return renderedFrames/rate;}, Uint32Array, Int16Array, Atomics:observedAtomics,
     registerProcessor(name, type) { if (name === 'nfl2k5-output') Processor = type; },
   });
   const processor = new Processor({processorOptions: {memory, ring: 0, rate: 48000, wakeProducer}});
@@ -27,6 +31,7 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true, wakeProducer
   processor.started = afterStartup;
   let next = 100;
   return {hdr, processor, messages, notifications,
+    onLoad(hook) { loadHook=hook; },
     put(count) {
       let w = hdr[0];
       assert(count <= cap - ((w - hdr[1]) >>> 0));
@@ -39,6 +44,7 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true, wakeProducer
     render(count) {
       const left = new Float32Array(count), right = new Float32Array(count);
       assert(processor.process([], [[left, right]]));
+      renderedFrames+=count;
       assert(((hdr[0] - hdr[1]) >>> 0) <= cap, `read cursor passed producer at ${rate} Hz`);
       for (let i = 0; i < count; i++) assert(left[i] === -right[i]);
       return Array.from(left);
@@ -103,6 +109,25 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true, wakeProducer
 }
 console.log('ok: exact phases play a lone source frame; fractional phases retain interpolation state across gaps');
 
+// A release publication after the consumer's initial acquire must be usable
+// within the same render block, without replaying or skipping source frames.
+for(const rate of [8000,44100,48000,96000])for(const initial of [0,0xfffffffc]) {
+  const reference=fixture(rate,initial,{cap:128});reference.put(64);
+  const expected=reference.render(8);
+  const concurrent=fixture(rate,initial,{cap:128});concurrent.put(2);
+  let published=false;
+  concurrent.onLoad((array,index)=>{
+    if(array===concurrent.processor.hdr && index===0 && !published) {
+      published=true;concurrent.put(62);
+    }
+  });
+  assert.deepEqual(concurrent.render(8),expected,`late PCM publication at ${rate} Hz / ${initial}`);
+  assert.equal(concurrent.processor.played,reference.processor.played);
+  assert.equal(concurrent.processor.frac,reference.processor.frac);
+  assert.equal(concurrent.processor.underrunFrames,0);
+}
+console.log('ok: PCM published during a render block is consumed without a stale-snapshot gap');
+
 // Missing output frames distinguish a partial render block from a full gap.
 for (const rate of [48000, 96000]) {
   const f = fixture(rate);
@@ -111,10 +136,14 @@ for (const rate of [48000, 96000]) {
   const missing = block.filter(x => x === 0).length;
   assert.equal(f.processor.underruns, 1);
   assert.equal(f.processor.underrunFrames, missing);
+  assert.equal(f.processor.firstUnderrunTime,(8-missing)/rate);
+  assert.equal(f.processor.lastUnderrunTime,7/rate);
+  assert(f.processor.lastUnderrunQueued<f.processor.lastUnderrunRequired);
   f.render(8);
   assert.equal(f.processor.underruns, 2);
   assert.equal(f.processor.underrunFrames, missing + 8);
   assert.equal(f.processor.maxUnderrunFrames, missing + 8);
+  assert.equal(f.processor.lastUnderrunTime,15/rate);
   f.put(12);f.render(4);
   assert.equal(f.processor.underrunRun, 0);
   assert.equal(f.processor.maxUnderrunFrames, missing + 8);
@@ -125,6 +154,8 @@ for (const rate of [48000, 96000]) {
   f.render(rate / 2);
   assert.equal(f.messages.at(-1).underrunFrames, f.processor.underrunFrames);
   assert.equal(f.messages.at(-1).maxUnderrunFrames, f.processor.maxUnderrunFrames);
+  assert.equal(f.messages.at(-1).firstUnderrunTime,f.processor.firstUnderrunTime);
+  assert.equal(f.messages.at(-1).lastUnderrunTime,f.processor.lastUnderrunTime);
 }
 console.log('ok: exact missing-frame counts span blocks, reset on recovery and exclude authored silence');
 

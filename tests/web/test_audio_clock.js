@@ -59,6 +59,43 @@ const dir = path.resolve(process.argv[2] || 'build-web-tests/smoke');
     assert.deepEqual(errors, []);
     assert(!await page.evaluate(() => smokeLog.some(line => /AudioWorklet.*(?:failed|could not start)/.test(line))));
     console.log(`ok: exact silence transitions to a ${tone.frequency.toFixed(1)} Hz tone; ${tone.underruns} affected blocks / ${tone.underrunFrames} missing output frames`);
+
+    // Exercise real worklet starvation separately from the running producer.
+    // Known PCM drains once; the following gap must have exact frame timing.
+    await page.close();
+    const gap=await browser.newPage();
+    await gap.goto('http://127.0.0.1:18769/smoke.html');
+    await gap.evaluate(()=>{
+      const button=document.createElement('button');button.id='gap-start';button.textContent='Start controlled gap';
+      document.body.replaceChildren(button);
+      button.onclick=async()=>{
+        try {
+          const ctx=window.gapContext=new AudioContext({sampleRate:48000});await ctx.resume();
+          await ctx.audioWorklet.addModule('audio-worklet.js');
+          const memory=new SharedArrayBuffer(16+4096*4),hdr=window.gapHeader=new Uint32Array(memory,0,4);
+          const pcm=new Int16Array(memory,16);hdr[2]=4096;
+          for(let i=0;i<2048;i++){pcm[i*2]=1000;pcm[i*2+1]=-1000;}
+          Atomics.store(hdr,0,2048);
+          const node=window.gapNode=new AudioWorkletNode(ctx,'nfl2k5-output',{
+            numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[2],processorOptions:{memory,ring:0,rate:48000}});
+          node.port.onmessage=e=>{window.gapStats=e.data;};node.connect(ctx.destination);
+        }catch(e){window.gapError=String(e);}
+      };
+    });
+    await gap.click('#gap-start');
+    await gap.waitForFunction(()=>window.gapError||window.gapStats?.underrunFrames>0,null,{timeout:10000});
+    const observed=await gap.evaluate(()=>({error:window.gapError,stats:window.gapStats,
+      time:window.gapContext.currentTime,rate:window.gapContext.sampleRate,read:Atomics.load(window.gapHeader,1)}));
+    assert(!observed.error,observed.error);const s=observed.stats;
+    assert.equal(s.played,2048);assert.equal(observed.read,2048);
+    assert(s.firstUnderrunTime>0 && s.lastUnderrunTime>=s.firstUnderrunTime && s.lastUnderrunTime<=observed.time);
+    assert(Math.abs((s.lastUnderrunTime-s.firstUnderrunTime)*observed.rate-(s.underrunFrames-1))<1e-6,
+      'continuous gap timestamps must match the exact missing-frame count');
+    assert.equal(s.lastUnderrunQueued,0);assert.equal(s.lastUnderrunRequired,1);
+    assert.equal(s.maxUnderrunFrames,s.underrunFrames);
+    await gap.evaluate(async()=>{gapNode.disconnect();gapNode.port.postMessage('stop');await gapContext.close();});
+    await gap.close();
+    console.log('ok: actual AudioWorklet gap times match missing output frames and preserve all published PCM');
   } finally {
     if (browser) await browser.close();
     server.kill();
