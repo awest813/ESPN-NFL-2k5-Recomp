@@ -14,6 +14,7 @@ def main():
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=root / "build-web-tests/vp-parity")
+    parser.add_argument("--scalar", action="store_true", help="Exercise the portable operand path without Wasm SIMD")
     args = parser.parse_args()
     emcc = shutil.which("emcc")
     node = shutil.which("node")
@@ -32,7 +33,8 @@ def main():
     source = args.build_dir / "vp_parity.c"
     output = args.build_dir / "vp_parity.js"
     source.write_text(harness.replace("/* LIVE_INTERPRETER */", live), encoding="utf-8")
-    subprocess.run([emcc, str(source), "-I", str(fixtures), "-O3", "-msimd128",
+    flags = [] if args.scalar else ["-msimd128"]
+    subprocess.run([emcc, str(source), "-I", str(fixtures), "-O3", *flags,
                     "-sENVIRONMENT=node", "-o", str(output)], check=True)
     subprocess.run([node, str(output)], check=True)
 

@@ -2325,3 +2325,72 @@ output frames (754.7 ms at 48 kHz); the longest continuous gap is 2,304 frames
 so it cannot establish a rain-scene or whole-game performance improvement.
 Audio continuity, a sustained 30 FPS floor, original-Xbox fidelity and broader
 staff/stadium/all-mode coverage remain unfinished.
+
+
+### Bit-preserving SIMD vertex operands
+
+The first identity/broadcast branch fast paths passed parity but regressed the
+mixed-program benchmark, including a variant that returned unchanged operand
+pointers. Those variants are discarded. The retained Wasm path prepares one
+16-byte shuffle per operand with each instruction's exact source words. A
+SIMD byte swizzle selects all float components; a sign-bit XOR applies
+negation. Scalar ILU operations prepare C's broadcast selectors, including
+paired MAC/shared-C use. Constant values and relative addresses are still
+resolved at execution time. Full four-component register writes use a short
+copy; partial write masks retain their existing lane assignments. Native and
+non-SIMD Wasm builds use the portable scalar operand implementation.
+
+A new regression makes 196,608 exact operand-bit comparisons against the
+frozen scalar reference: every swizzle, both negations, all source banks,
+scalar/shared C, R12/oPos, invalid register fallback, relative-address clamps,
+quiet/signaling NaN payloads, signed zeros, infinities and subnormal values.
+Every write mask is checked separately. The existing 40,000 full-program
+comparisons preserve outputs, temporaries, address registers, writable
+constants and cache invalidation. Both SIMD and `--scalar` Wasm pass; an
+ASAN/UBSAN native build passes the same operand/program comparisons. The
+emitted test Wasm contains the intended byte-shuffle and XOR instructions.
+
+Intel hardware WebGPU and SwiftShader each pass 2,752 differential GPU vertex
+executions, the production packed-input layout, 864 position checks and 20,480
+rendered edge pixels including non-unit W and widescreen offsets. Shader-cache
+identity checks, the native sanitized SDL/Vulkan renderer, browser game and
+Linux kernel/video builds pass. A fresh pinned checkout reproduces all 93
+patched runtime files and passes reverse-application checks.
+
+A frozen mixed MOV/MUL/DP4/MAD benchmark at Wasm O2 compares the preceding
+prepared interpreter with the retained changes. Three-run medians are 25.89 ms
+and 21.60 ms per 100,000 vertices, with identical 1,365,000 checksums. This
+approximately 17% reduction measures synthetic interpreter work, not retail
+FPS. A native scalar O2 comparison is effectively unchanged in this small
+sample (52.10 versus 52.52 ms medians); no native speedup is claimed.
+
+Separately, the preceding dry Seattle/San Francisco audio trace records ten
+completed-interval deadline rebases totaling 737.7 ms, versus 754.7 ms of
+missing output frames. Its large missing-frame increments overlap the rebase
+intervals near 166.7, 186.7, 216.7 and 236.7 seconds. This correlation motivates
+examining accumulated scheduling debt: it does not prove individual gap
+causality or justify changing the 64 ms catch-up limit. No audio pacing,
+buffering, sample rate or interrupt policy changes are made in this pass.
+
+
+Static inspection also finds four host-clock reads in each acknowledgement
+poll iteration: frame-counter maintenance, framebuffer tracing (before its
+disabled-trace check), KeTickCount publication and the Wasm unrouted-write
+scan. Sharing one fresh time sample across those operations is a concrete
+follow-up to the clock-heavy profile. It has not been implemented here; the
+acknowledgement loop and timing semantics remain unchanged.
+
+
+The approximately 246-second owned hardware-Chrome integration run selects
+Pittsburgh at Arizona. The 130-second coin-toss view renders players, referee,
+field and stadium/crowd; the 240-second sideline close-up renders a bench
+player, uniform/face and sideline coolers/equipment with stadium advertising.
+No browser/GPU failure is reported. Five-second FPS averages after 150 seconds
+range from 27.6 to 30.1, so the requested floor remains unmet. Audio records
+123 affected blocks and 15,744 missing output frames (328 ms at 48 kHz), with
+a longest continuous gap of 1,664 frames (34.7 ms). Completed schedule
+intervals contain four rebases totaling 294.7 ms. Different teams/scenes and
+host scheduling prevent treating this as a controlled retail performance or
+audio improvement. Rain-scene throughput, uninterrupted audio, original-Xbox
+scene matching and full stadium/staff/game-mode fidelity remain unfinished.
+The preceding `53e66a6` Build and Pages workflows both passed.

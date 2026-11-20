@@ -1438,17 +1438,24 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          case NV097_SET_TRANSFORM_EXECUTION_MODE: s_vp.mode = param & 3;
              return 1;
          case NV097_SET_TRANSFORM_PROGRAM_LOAD: s_vp.prog_load = param;
-@@ -2540,10 +2763,71 @@
+@@ -2540,24 +2763,99 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
 +/* Decoded instruction fields are shared by every vertex in a batch. The
 + * four source words validate each slot after the guest uploads a program. */
++#if defined(__wasm_simd128__)
++#include <wasm_simd128.h>
++#endif
++
 +typedef struct {
 +    uint32_t words[4];
 +    uint8_t valid, mac, ilu, mux[3], reg[3], neg[3], swizzle[3][4];
 +    uint8_t mac_mask, ilu_mask, output_mask, output_reg, output_bank, output_address, output_mux;
 +    uint8_t input_index, constant_index, relative, final, source_mask;
++#if defined(__wasm_simd128__)
++    uint8_t swizzle_bytes[3][16];
++#endif
 +} VpInstruction;
 +
 +/* Source lanes used by the opcode, independent of destination masks.
@@ -1486,6 +1493,15 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +                d->swizzle[1][component] = vp_field(t, 2, 23 - component * 2, 2);
 +                d->swizzle[2][component] = vp_field(t, 2, 8 - component * 2, 2);
 +            }
++#if defined(__wasm_simd128__)
++            for (unsigned source = 0; source < 3; source++) {
++                int scalar = source == 2 && d->ilu >= 2 && d->ilu <= 6;
++                for (unsigned component = 0; component < 4; component++)
++                    for (unsigned byte = 0; byte < 4; byte++)
++                        d->swizzle_bytes[source][component * 4 + byte] =
++                            d->swizzle[source][scalar ? 0 : component] * 4 + byte;
++            }
++#endif
 +            d->mac_mask = vp_field(t, 3, 24, 4);
 +            d->ilu_mask = vp_field(t, 3, 16, 4);
 +            d->output_mask = vp_field(t, 3, 12, 4);
@@ -1504,14 +1520,20 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +}
 +
  /* One source operand: register file by mux (1 R, 2 v, 3 c), swizzle, negate.
-  * `scalar` replicates the first swizzle component, which is how the ILU
-  * reads its (C) operand for the scalar ops. */
+- * `scalar` replicates the first swizzle component, which is how the ILU
+- * reads its (C) operand for the scalar ops. */
 -static void vp_src(const uint32_t *t, int mux, int reg, int neg, const int swz[4],
-+static void vp_src(const VpInstruction *instruction, int mux, int reg, int neg, const uint8_t swz[4],
-                    float R[13][4], float O[16][4], const float V[16][4], int a0,
-                    int scalar, float out[4]) {
+-                   float R[13][4], float O[16][4], const float V[16][4], int a0,
+-                   int scalar, float out[4]) {
++ * Scalar ILU operations replicate C's first selected component, including
++ * when the paired MAC also reads that shared operand. */
++static void vp_src(const VpInstruction *instruction, unsigned source,
++                   float R[13][4], float O[16][4], const float V[16][4], int a0, float out[4]) {
      const float *s;
-@@ -2553,11 +2837,11 @@
+-    int i;
+-    float tmp[4];
++    unsigned mux = instruction->mux[source], reg = instruction->reg[source];
+
      switch (mux) {
          case 1: s = reg == 12 ? O[0] : R[reg < 13 ? reg : 0];
              break;
@@ -1526,7 +1548,37 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2623,7 +2907,19 @@
+@@ -2569,14 +2867,25 @@
+         default: s = R[0];
+             break;
+     }
+-    for (i = 0; i < 4; i++)
+-        tmp[i] = s[scalar ? swz[0] : swz[i]];
+-    for (i = 0; i < 4; i++)
+-        out[i] = neg ? -tmp[i] : tmp[i];
++#if defined(__wasm_simd128__)
++    /* Byte swizzles preserve every float bit, including signed zeros and NaN
++     * payloads. Scalar ILU/shared-C replication was prepared with the words. */
++    v128_t value = wasm_i8x16_swizzle(wasm_v128_load(s),
++                                    wasm_v128_load(instruction->swizzle_bytes[source]));
++    v128_t sign = wasm_i32x4_splat((int32_t)((uint32_t)instruction->neg[source] << 31));
++    wasm_v128_store(out, wasm_v128_xor(value, sign));
++#else
++    const uint8_t *swz = instruction->swizzle[source];
++    int scalar = source == 2 && instruction->ilu >= 2 && instruction->ilu <= 6;
++    float tmp[4];
++    for (unsigned i = 0; i < 4; i++) tmp[i] = s[scalar ? swz[0] : swz[i]];
++    for (unsigned i = 0; i < 4; i++) out[i] = instruction->neg[source] ? -tmp[i] : tmp[i];
++#endif
+ }
+
+ static void vp_write(float *dst, const float v[4], uint32_t mask) {
+     /* mask bit 3 = x ... bit 0 = w */
++    if (mask == 15) { memcpy(dst, v, 16); return; }
+     if (mask & 8) dst[0] = v[0];
+     if (mask & 4) dst[1] = v[1];
+     if (mask & 2) dst[2] = v[2];
+@@ -2623,7 +2932,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -1547,7 +1599,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +2930,56 @@
+@@ -2634,68 +2955,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1566,7 +1618,6 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 -        uint32_t o_mask = vp_field(t, 3, 12, 4), out_r = vp_field(t, 3, 20, 4);
 -        uint32_t orb = vp_field(t, 3, 11, 1), out_addr = vp_field(t, 3, 3, 8);
 -        uint32_t out_mux = vp_field(t, 3, 2, 1);
-+        const uint8_t *sa = instruction->swizzle[0], *sb = instruction->swizzle[1], *sc = instruction->swizzle[2];
 +        int mux_a = instruction->mux[0], mux_b = instruction->mux[1], mux_c = instruction->mux[2];
 +        int reg_a = instruction->reg[0], reg_b = instruction->reg[1], reg_c = instruction->reg[2];
 +        uint32_t mac_mask = instruction->mac_mask, ilu_mask = instruction->ilu_mask;
@@ -1594,10 +1645,9 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 -               ilu >= 2 && ilu <= 6, C);
 +        // Trace mode retains every encoded operand in its diagnostic output.
 +        uint32_t sources=s_vp_trace_next?7u:instruction->source_mask;
-+        if(sources&1u)vp_src(instruction, mux_a, reg_a, instruction->neg[0], sa, R, O, V, a0, 0, A);
-+        if(sources&2u)vp_src(instruction, mux_b, reg_b, instruction->neg[1], sb, R, O, V, a0, 0, B);
-+        if(sources&4u)vp_src(instruction, mux_c, reg_c, instruction->neg[2], sc, R, O, V, a0,
-+                            ilu >= 2 && ilu <= 6, C);
++        if(sources&1u)vp_src(instruction, 0, R, O, V, a0, A);
++        if(sources&2u)vp_src(instruction, 1, R, O, V, a0, B);
++        if(sources&4u)vp_src(instruction, 2, R, O, V, a0, C);
 
          switch (mac) {
              case 1: memcpy(mres, A, sizeof mres);
@@ -1641,7 +1691,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +3012,12 @@
+@@ -2728,20 +3035,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1664,7 +1714,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +3050,13 @@
+@@ -2774,13 +3073,13 @@
                  break;
              }
              case 7: {
@@ -1682,7 +1732,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +3099,18 @@
+@@ -2823,11 +3122,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1706,7 +1756,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,25 +3130,60 @@
+@@ -2847,25 +3153,60 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -1771,7 +1821,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -2891,8 +3209,10 @@
+@@ -2891,8 +3232,10 @@
                  O[3][0], O[3][1], O[3][2], O[3][3], O[9][0], O[9][1]);
          }
      }
@@ -1784,7 +1834,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      x->z = O[0][2];
      x->w = O[0][3];
      x->w = vp_clamp_w(x->w);
-@@ -3012,13 +3332,182 @@
+@@ -3012,13 +3355,182 @@
      }
  }
 
@@ -1968,7 +2018,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3546,15 @@
+@@ -3057,26 +3569,15 @@
          }
          return;
      }
@@ -1998,7 +2048,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3091,6 +3569,12 @@
+@@ -3091,6 +3592,12 @@
      maxx = (int) ceilf(fmaxf(a->x, fmaxf(b->x, c->x)));
      miny = (int) floorf(fminf(a->y, fminf(b->y, c->y)));
      maxy = (int) ceilf(fmaxf(a->y, fmaxf(b->y, c->y)));
@@ -2011,7 +2061,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (minx < (int) s_gpu.clip_x) minx = (int) s_gpu.clip_x;
      if (miny < (int) s_gpu.clip_y) miny = (int) s_gpu.clip_y;
      if (maxx > (int) (s_gpu.clip_x + s_gpu.clip_w)) maxx = (int) (s_gpu.clip_x + s_gpu.clip_w);
-@@ -3116,38 +3600,20 @@
+@@ -3116,38 +3623,20 @@
              float la, lb, lc, pa, pb, pc, iw, z;
              uint32_t argb, k;
              float col[4], spec[4], fog;
@@ -2059,7 +2109,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3623,11 @@
+@@ -3157,6 +3646,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -2071,7 +2121,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3639,12 @@
+@@ -3168,9 +3662,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -2085,7 +2135,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3652,54 @@
+@@ -3178,26 +3675,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -2144,7 +2194,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,11 +3734,19 @@
+@@ -3232,11 +3757,19 @@
                      }
                  }
              }
@@ -2164,7 +2214,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void xf_lerp(XfVert *o, const XfVert *p, const XfVert *q, float t) {
-@@ -3253,7 +3763,7 @@
+@@ -3253,7 +3786,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -2173,7 +2223,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3772,34 @@
+@@ -3262,32 +3795,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -2220,7 +2270,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,76 +3846,161 @@
+@@ -3334,76 +3869,161 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -2403,7 +2453,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Batches drawn through a vertex program (3D) since the last present: a
-@@ -3424,7 +4021,8 @@
+@@ -3424,7 +4044,8 @@
      s_vp.batches++;
      if (s_gpu.tex.valid)
          note_texture_use();
@@ -2413,7 +2463,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Count constant arrays once per batch, never from the per-vertex fetch path.
-@@ -3605,7 +4203,7 @@
+@@ -3605,7 +4226,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -2422,7 +2472,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4441,7 @@
+@@ -3843,7 +4464,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -2431,7 +2481,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4464,7 @@
+@@ -3866,7 +4487,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -2440,7 +2490,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +4903,7 @@
+@@ -4305,7 +4926,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -2449,7 +2499,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5354,7 @@
+@@ -4756,7 +5377,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -2458,7 +2508,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5472,7 @@
+@@ -4874,7 +5495,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2467,7 +2517,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5480,7 @@
+@@ -4882,7 +5503,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -2476,7 +2526,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5532,7 @@
+@@ -4934,7 +5555,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2485,7 +2535,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5540,7 @@
+@@ -4942,7 +5563,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;

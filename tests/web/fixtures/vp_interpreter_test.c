@@ -181,7 +181,54 @@ static int source_usage_check(void) {
     if(vp_input_mask(0)!=(1u<<5) || unwritten_reads!=1 || memcmp(output[3],input[5],16) || memcmp(s_vp_dbg_r[1],s_vp.c[2],16)){puts("FAIL paired MAC/ILU source usage");return 1;}
     puts("PASS live source usage: unused input layouts and constants, unmasked ARL and paired MAC/ILU");return 0;
 }
+static int operand_bits_check(void) {
+    static const uint32_t bits[]={0,0x80000000u,0x7f800000u,0xff800000u,
+        0x7fc12345u,0xffc54321u,0x7f812345u,0xff854321u,1u,0x80000001u,
+        0x3f800000u,0xbf123456u};
+    float r[13][4],o[16][4],v[16][4];
+    for(unsigned row=0;row<16;row++)for(unsigned c=0;c<4;c++) {
+        uint32_t b=bits[(row+c)%12];memcpy(&v[row][c],&b,4);
+        b=bits[(row+c+9)%12];memcpy(&o[row][c],&b,4);
+        if(row<13){b=bits[(row+c+3)%12];memcpy(&r[row][c],&b,4);}
+    }
+    for(unsigned row=0;row<192;row++)for(unsigned c=0;c<4;c++) {
+        uint32_t b=bits[(row+c)%12];memcpy(&s_vp.c[row][c],&b,4);
+    }
+    s_vp.start=0;unsigned count=0;
+    for(unsigned source=0;source<3;source++)for(unsigned pattern=0;pattern<256;pattern++)
+    for(unsigned neg=0;neg<2;neg++)for(unsigned mux=0;mux<4;mux++)
+    for(unsigned scalar=0;scalar<2;scalar++)for(unsigned ri=0;ri<4;ri++)
+    for(unsigned ai=0;ai<4;ai++) {
+        unsigned reg=(unsigned[]){0,7,12,15}[ri];int a0=(int[]){-900,0,1,900}[ai];
+        uint32_t *t=s_vp.prog[0];memset(t,0,16);
+        t[1]=(1u<<21)|((scalar?2u:1u)<<25)|(5u<<9)|(2u<<13);t[3]=3u;
+        if(source==0){t[1]|=pattern|(neg<<8);t[2]|=(reg<<28)|(mux<<26);}
+        if(source==1)t[2]|=(pattern<<17)|(neg<<25)|(reg<<13)|(mux<<11);
+        if(source==2){t[2]|=(pattern<<2)|(neg<<10)|(reg>>2);t[3]|=((reg&3u)<<30)|(mux<<28);}
+        vp_prepare_program();
+        int swz[4]={(pattern>>6)&3,(pattern>>4)&3,(pattern>>2)&3,pattern&3};
+        float expected[4],actual[4];
+        reference_vp_src(t,mux,reg,neg,swz,r,o,v,a0,source==2&&scalar,expected);
+        vp_src(&s_vp_instructions[0],source,r,o,v,a0,actual);
+        if(memcmp(expected,actual,16)) {
+            printf("FAIL operand bits source %u swizzle %02x neg %u mux %u scalar %u reg %u a0 %d\n",
+                source,pattern,neg,mux,scalar,reg,a0);return 1;
+        }
+        count++;
+    }
+    for(unsigned pattern=0;pattern<12;pattern++)for(unsigned mask=0;mask<16;mask++) {
+        float src[4],expected[4],actual[4];
+        for(unsigned c=0;c<4;c++){uint32_t b=bits[(pattern+c)%12];memcpy(&src[c],&b,4);}
+        memset(expected,0xa5,16);memcpy(actual,expected,16);
+        reference_vp_write(expected,src,mask);vp_write(actual,src,mask);
+        if(memcmp(expected,actual,16)){printf("FAIL register write bits mask %u\n",mask);return 1;}
+    }
+    printf("PASS %u exact operand bit comparisons: all swizzles, negation, scalar/shared C, banks, address clamps, NaN payloads and signed zeros; all write masks\n",count);
+    return 0;
+}
+
 int main(void) {
+    if(operand_bits_check()) return 1;
     if(source_usage_check()) return 1;
     if(comparison_check()) return 1;
     if(reciprocal_check()) return 1;
