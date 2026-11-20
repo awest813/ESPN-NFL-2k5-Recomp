@@ -2171,3 +2171,41 @@ Linux APU/kernel/video builds pass, and a fresh pinned runtime reproduces all
 93 patched files. The preceding `73c0bdc` Build and Pages workflows passed.
 Uninterrupted audio, original-Xbox scene/audio parity, all-mode accuracy and
 a sustained 30 FPS floor remain unfinished.
+
+
+### Exact-phase AudioWorklet tail samples
+
+The worklet previously required two source frames at every output phase,
+even though an exact phase reads only the current frame. At 48 kHz output
+this replaced a valid final queued sample with silence while waiting for a
+neighbor that interpolation did not need. A regression with one source frame
+fails on that implementation: it outputs zero instead of the authored sample.
+
+Required occupancy now depends on the current phase: an exact phase needs
+one sample, a fractional phase needs two, and downsampling still requires its
+entire source advance. The consumer never advances into unwritten data.
+A 48 kHz regression plays the lone sample, waits only when empty and recovers
+with the next authored sample. A 96 kHz case plays an exact sample immediately,
+retains fractional phase across a missing neighbor and then resumes the exact
+100, 100.5, 101, 101.5 sequence. Existing rate-conversion, wraparound, authored-
+silence, gap-duration and posted-statistics checks continue to pass. This
+corrects sample availability without changing startup buffering or sample rate.
+
+Producer diagnostics now call zero/one-frame arrivals `low_queue_submissions`.
+A single frame may be playable at an exact phase, so that counter cannot
+accurately claim exact worklet starvation. Its threshold is unchanged; missing
+output duration remains measured by the worklet's separate frame counters.
+The producer regression preserves exact PCM for startup/short writes, rejects
+full queues and verifies the renamed low-queue report.
+
+The actual hardware-Chrome audio smoke fixture passes the 35-second authored-
+silence boundary, measures 7.011 seconds of audio-clock progress over 7.018
+seconds of wall time, and transitions to a 439.8 Hz tone with the expected
+level, zero affected blocks and zero missing output frames. The bridge and
+browser game build also pass. This is a controlled smoke/PCM result, not a
+new retail gameplay run, original-Xbox audio parity or a sustained-FPS claim.
+The preceding retail trace still contains IRQ-thread waits of 33 to 134 ms
+for the guest lock during live play, with a last scheduling-site marker of
+`0x00016CEE`. That marker identifies the last observed scheduling point,
+not necessarily the host/guest code currently holding the lock; those waits
+remain a separate investigation.

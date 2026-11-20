@@ -300,7 +300,7 @@ diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
          return 0;
 
      /* RECOMP_AUDIO_WAV=<path>: record up to 10 minutes of speaker output */
-@@ -185,6 +205,11 @@
+@@ -185,20 +205,28 @@
          }
      }
 
@@ -312,21 +312,27 @@ diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
      queued_bytes = SDL_GetAudioStreamQueued(g_sdl_stream);
      if (queued_bytes < 0)
          queued_bytes = 0;
-@@ -195,9 +220,12 @@
+
+     {
+-        static unsigned long drops = 0, starves = 0, subs = 0;
++        static unsigned long drops = 0, low_queues = 0, subs = 0;
+         static Uint64 last = 0;
          Uint64 now = SDL_GetTicks();
          subs++;
          if (queued_bytes >= XA2_MAX_QUEUED_BYTES) drops++;
 -        else if (queued_bytes == 0 && subs > 50) starves++;
-+        /* The worklet retains one source frame for interpolation. That queue
-+         * cannot produce another output sample, even though it is not empty.
-+         * Count producer arrivals to a dry queue, not worklet render blocks. */
-+        else if (queued_bytes <= (g_web_audio ? XA2_FRAME_BYTES : 0) && subs > 50) starves++;
++        /* A fractional worklet phase needs two source frames; an exact phase
++         * can consume the final one. This producer-side measure counts low
++         * queue arrivals, not exact missing output frames or render blocks. */
++        else if (queued_bytes <= (g_web_audio ? XA2_FRAME_BYTES : 0) && subs > 50) low_queues++;
          if (now - last >= 10000) {
 -            fprintf(stderr, "[AUDIO] submits=%lu dropped=%lu underruns=%lu queued_bytes=%d\n",
-+            fprintf(stderr, "[AUDIO] submits=%lu dropped=%lu starved_submissions=%lu queued_bytes=%d\n",
-                     subs, drops, starves, queued_bytes);
+-                    subs, drops, starves, queued_bytes);
++            fprintf(stderr, "[AUDIO] submits=%lu dropped=%lu low_queue_submissions=%lu queued_bytes=%d\n",
++                    subs, drops, low_queues, queued_bytes);
              last = now;
          }
+     }
 @@ -206,13 +234,20 @@
      if (queued_bytes >= XA2_MAX_QUEUED_BYTES)
          return 0;

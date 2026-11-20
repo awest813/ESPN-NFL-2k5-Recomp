@@ -56,11 +56,12 @@ class NFL2K5Output extends AudioWorkletProcessor {
       return true;
     }
     let dry = false;
-    // Interpolation reads r and r + 1. Downsampling can consume more than
-    // two source frames per output; wait for that whole advance as well.
+    // A fractional phase reads r and r + 1; an exact phase reads only r.
+    // Downsampling must also have the whole advance available. Never consume
+    // an unwritten source frame or stall a known exact sample for lookahead.
     for (let i = 0; i < n; i++) {
       const phase = this.frac + this.step, advance = Math.floor(phase);
-      if (((w - r) >>> 0) < Math.max(2, advance)) {
+      if (((w - r) >>> 0) < Math.max(this.frac ? 2 : 1, advance)) {
         L[i] = R[i] = 0;
         dry = true;
         if (this.started) {

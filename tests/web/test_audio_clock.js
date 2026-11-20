@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '../..');
 const dir = path.resolve(process.argv[2] || 'build-web-tests/smoke');
 
 (async () => {
-  const server = spawn('python3', [path.join(root, 'tools/serve-web.py'), dir, '--port', '18769'],
+  const server = spawn(process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), [path.join(root, 'tools/serve-web.py'), dir, '--port', '18769'],
     {env: {...process.env, NFL2K5_SERVE_QUIET: '1'}, stdio: ['ignore', 'pipe', 'inherit']});
   let browser;
   try {
@@ -30,6 +30,7 @@ const dir = path.resolve(process.argv[2] || 'build-web-tests/smoke');
       const m = window.nfl2k5Module, s = m.nfl2k5Audio;
       return {wall: performance.now() / 1000, context: m.nfl2k5AudioContext.currentTime,
         state: s.state, played: s.played, rendered: s.rendered, underruns: s.underruns,
+        underrunFrames: s.underrunFrames, maxUnderrunFrames: s.maxUnderrunFrames,
         peak: s.peak, frequency: s.frequency};
     });
     assert.equal((await sample()).peak, 0, 'the silence fixture must start silent');
@@ -53,9 +54,11 @@ const dir = path.resolve(process.argv[2] || 'build-web-tests/smoke');
     const tone = await sample();
     assert(Math.abs(tone.frequency - 440) < 9, `tone pitch after silence: ${tone.frequency}`);
     assert(tone.peak > 0.33 && tone.peak < 0.40, `tone level after silence: ${tone.peak}`);
+    assert(Number.isInteger(tone.underrunFrames) && tone.underrunFrames >= 0);
+    assert(Number.isInteger(tone.maxUnderrunFrames) && tone.maxUnderrunFrames <= tone.underrunFrames);
     assert.deepEqual(errors, []);
     assert(!await page.evaluate(() => smokeLog.some(line => /AudioWorklet.*(?:failed|could not start)/.test(line))));
-    console.log(`ok: exact silence transitions to a ${tone.frequency.toFixed(1)} Hz tone; ${tone.underruns} total underrun blocks`);
+    console.log(`ok: exact silence transitions to a ${tone.frequency.toFixed(1)} Hz tone; ${tone.underruns} affected blocks / ${tone.underrunFrames} missing output frames`);
   } finally {
     if (browser) await browser.close();
     server.kill();

@@ -39,7 +39,7 @@ int main(int argc,char **argv) {
     int16_t pcm[1024][2];
     for(int i=0;i<1024;i++) {pcm[i][0]=(int16_t)(100+i);pcm[i][1]=(int16_t)(-100-i);}
     if(argc>1) {
-        /* After startup, one retained frame is dry; two frames are readable. */
+        /* After startup, zero/one-frame arrivals are low queues; two frames are above the diagnostic threshold. */
         queued=2048;
         for(int i=0;i<51;i++){written=0;assert(xa2_submit_samples(&pcm[0][0],1024));}
         const uint32_t depths[]={1,2,0};
@@ -74,6 +74,6 @@ subprocess.run([shutil.which('emcc') or 'emcc', str(out / 'test.c'), '-O2',
 subprocess.run([shutil.which('node') or 'node', str(out / 'test.js')], check=True)
 diagnostic = subprocess.run([shutil.which('node') or 'node', str(out / 'test.js'), 'diagnostics'],
                             check=True, capture_output=True, text=True)
-counts = re.findall(r'starved_submissions=(\d+) queued_bytes=(\d+)', diagnostic.stderr)
+counts = re.findall(r'low_queue_submissions=(\d+) queued_bytes=(\d+)', diagnostic.stderr)
 assert counts == [('1', '4'), ('1', '8'), ('2', '0')], diagnostic.stderr
-print('ok: producer starvation distinguishes one retained frame from two readable frames')
+print('ok: producer diagnostics distinguish low queue arrivals without claiming exact worklet starvation')

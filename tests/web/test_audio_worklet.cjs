@@ -77,6 +77,27 @@ function fixture(rate, initial = 0, {cap = 32, afterStartup = true} = {}) {
   console.log('ok: startup buffering preserves the first samples without underruns');
 }
 
+// An integer phase reads only its current source sample. Retain the next
+// sample requirement only when interpolation actually needs that neighbor.
+{
+  const f=fixture(48000);f.put(1);
+  assert.deepEqual(f.render(1).map(x=>x*32768),[100]);
+  assert.equal(f.hdr[1],1);assert.equal(f.processor.underrunFrames,0);
+  assert.deepEqual(f.render(1),[0]);assert.equal(f.processor.underrunFrames,1);
+  f.put(1);assert.deepEqual(f.render(1).map(x=>x*32768),[101]);
+  assert.equal(f.processor.played,2);assert.equal(f.processor.underrunFrames,1);
+}
+{
+  const f=fixture(96000);f.put(1);
+  const output=f.render(2); // exact first sample, then wait for its neighbor
+  assert.equal(f.processor.frac,.5);assert.equal(f.hdr[1],0);
+  f.put(1);output.push(...f.render(3));
+  assert.equal(f.processor.frac,.5);assert.equal(f.hdr[1],1);
+  f.put(2);output.push(...f.render(4));
+  assert.deepEqual(output.map(x=>x*32768),[100,0,100.5,101,0,101.5,102,102.5,103]);
+}
+console.log('ok: exact phases play a lone source frame; fractional phases retain interpolation state across gaps');
+
 // Missing output frames distinguish a partial render block from a full gap.
 for (const rate of [48000, 96000]) {
   const f = fixture(rate);
