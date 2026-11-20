@@ -14,13 +14,13 @@
 #define NV_VERTEX_ATTRS 16
 typedef unsigned DWORD;
 static DWORD GetTickCount(void){return 0;}
-static struct {unsigned start;uint32_t prog[136][4];float c[192][4];unsigned depth_test,zminmax,specular_enable,light_control;uint64_t verts;}s_vp;
+static struct {unsigned start;uint32_t prog[136][4];float c[192][4];unsigned depth_test,zminmax,specular_enable,light_control,control0;uint64_t verts;}s_vp;
 static uint8_t s_const_written[192];static unsigned s_vp_cgen;
 static void const_unwritten_note(int c,int a){(void)c;(void)a;}
 static uint32_t vp_field(const uint32_t*t,int word,int bit,int len){return(t[word]>>bit)&((1u<<len)-1u);}
 typedef struct{uint32_t offset,type,size,stride;}VertexAttr;
 typedef struct{uint32_t color,width,height;}Texture;
-static struct{VertexAttr attr[16];uint16_t idx[512];uint32_t idx_count,shade_mode,prim,provoking_vertex;int inline_active;unsigned inline_count;void*inline_buf;Texture tex;}s_gpu;
+static struct{VertexAttr attr[16];uint16_t idx[512];uint32_t idx_count,shade_mode,prim,provoking_vertex,format;int inline_active;unsigned inline_count;void*inline_buf;Texture tex;}s_gpu;
 static Texture s_stage[4];static float s_attr_inline[16][4];
 static struct{unsigned enable,mode;float p[3];}s_fog;
 static _Alignas(16) uint8_t memory[131072];

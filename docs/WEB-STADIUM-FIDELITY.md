@@ -4570,3 +4570,12 @@ windows also fall below 30 FPS. Expected startup TODO diagnostics remain;
 no WebGPU validation failure is reported. The owned browser and server are
 closed. This bounded scene check does not establish that retail exercised D16,
 full stadium/staff fidelity, audio accuracy or a sustained 30 FPS floor.
+
+
+Follow-up CI finds the separate GPU-line generator's mock state lacks the
+`format` and `control0` members referenced by the newly extracted D16 helper.
+Adding those production state fields restores compilation without changing
+renderer behavior or test expectations. All 78 line cases then pass locally,
+including 34 pinned Xbox width cases, CPU clipping differentials and ordered
+instanced blending. D16's 600 line / 92 triangle / 65,536 encoding checks had
+already passed in that failed CI job; Windows and Linux builds also passed.
