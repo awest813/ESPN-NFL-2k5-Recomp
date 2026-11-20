@@ -2268,3 +2268,60 @@ workload from the preceding traces; it does not isolate an optimization's FPS
 impact. It demonstrates that substantial performance and audio-continuity work
 remain. Original-Xbox scene/audio parity, broader staff/stadium fidelity,
 all-mode accuracy and a sustained 30 FPS floor are still unverified.
+
+
+### Prepared CPU vertex input streams
+
+The rainy Miami/Chicago trace identifies CPU-transformed lines as a material
+cost: five-second renderer intervals report approximately 26–29 ms of vertex
+preparation per frame, with millions of line indices per interval. GPU
+triangles already prepare attribute ranges once per batch; CPU-transformed
+lines previously repeated checked address calculations/copies and scanned all
+16 attribute slots for each unique vertex.
+
+Both paths now share a prepared input-stream helper. CPU batch setup computes
+the maximum submitted index, validates each used stream once and keeps an
+active-slot list. Valid float arrays copy directly with default zero/one
+components preserved; other formats use the existing decoder. Immediate and
+zero-stride constants are sampled once per batch. Unmapped or partially valid
+spans retain per-index checked fetching, so valid vertices in a partially
+mapped stream remain readable. Windows CPU rendering retains its existing
+fetch path; the direct guest-memory optimization is guarded for Linux/Wasm.
+No vertex instruction, output, homogeneous clipping or analytic line-coverage
+rule changes.
+
+The Wasm regression extracts the actual CPU batch setup/fetch functions and
+shared CPU/GPU helpers. It passes 640,000 randomized CPU/GPU vertex cases over
+sparse input masks, all supported formats, inline arrays, constants and invalid
+ranges against the frozen checked-fetch reference. Explicit cases verify zero
+per-vertex checked reads for a fully mapped stream, continued checked reads
+and exact values across a partial mapping, index 65535, empty masks,
+generation wrap and constants refreshed between batches. The browser game
+and Linux kernel/video builds pass. Earlier overlapping local test invocations
+were canceled; only the single final regression run is used as evidence.
+The preceding `88d5865` Build and Pages workflows both passed.
+
+
+The final ASAN/UBSAN native SDL/Vulkan renderer suite passes, including the
+pinned line-width masks and ordered translucent line batches. The final
+platform-guarded browser game and Linux kernel/video builds also pass. A fresh
+pinned runtime reproduces all 93 patched files and reverse application checks.
+
+An input-only Wasm O2 benchmark uses three float attributes over 30,000 batches
+of 64 vertices. Three-run medians are 86.727 ms for the preceding per-vertex
+slot scan/checked fetch and 34.340 ms for prepared fetching, with the same
+69,813,072 checksum. The guarded-memory fixture counts 5,760,000 checked reads
+in the former and zero in the latter. The prepared timing includes batch input
+setup, but the fixture stubs program preparation and guest-memory validation;
+it measures input fetching, not full vertex interpretation or retail FPS.
+
+The approximately 246-second owned headless hardware-Chrome integration run
+selects dry Seattle at San Francisco. Players, referee, stadium crowd/signage,
+lighting and readable coin-toss text are visible in the 130-second capture.
+No browser/GPU failure is reported. Five-second FPS averages after 150 seconds
+range from 28.5 to 30.1. Output records 283 affected blocks and 36,224 missing
+output frames (754.7 ms at 48 kHz); the longest continuous gap is 2,304 frames
+(48 ms). The dry scene has far fewer line indices than rainy Miami/Chicago,
+so it cannot establish a rain-scene or whole-game performance improvement.
+Audio continuity, a sustained 30 FPS floor, original-Xbox fidelity and broader
+staff/stadium/all-mode coverage remain unfinished.
