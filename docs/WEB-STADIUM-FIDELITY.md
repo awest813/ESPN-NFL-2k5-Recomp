@@ -4365,3 +4365,47 @@ renderer suites and the existing generated VP/module/position/edge checks
 also pass. These additions change tests only; they establish no additional
 retail scene, audio-continuity or frame-rate result. Arbitrary eye-boundary
 precision, other depth formats and polygon-offset combinations remain open.
+
+### Polygon-fill offset leaking into standalone lines (2026-11-20)
+
+Enabling polygon-fill offset with constant bias 32 and slope factor 16 exposes
+211 failed native GPU line probes. The same independent reference still passes
+in software. The shared SDL GPU shade builder was copying fill-offset values
+for every primitive, including standalone lines expanded into host triangles.
+Those triangles are an implementation detail; they do not make the guest
+primitive a filled polygon.
+
+The shade builder now limits fill-offset values to guest polygon primitives
+(triangles through polygons), matching the existing D3D11 scope. The
+[OpenGL polygon-offset specification](https://registry.khronos.org/OpenGL/specs/gl/glspec21.pdf)
+distinguishes polygon rasterization modes from standalone line primitives;
+this is supporting semantic evidence, not a matched Xbox framebuffer capture.
+The shared builder supplies CPU-prepared and GPU vertex-program browser lines.
+
+All 600 native GPU and 600 software line probes pass with fill offset toggled
+on and off. Two additional GPU control draws verify that a real filled
+triangle still receives constant bias: depth 2.25 fails equality against 34
+without offset and passes with bias 32. The complete native renderer suite,
+optimized game build and launcher/static-host browser checks pass. Broader
+polygon-offset precision and software polygon bias remain outside this fix.
+
+The frozen `line-offset-retail` browser run inspects Lions at 49ers team
+selection, coach matchup, a close-up of crowd clothing/faces/hats, coin-toss
+players and referee, stadium tiers, sideline figures, field markings and text.
+The kickoff advances to 1st-and-10 DET40 at Q1 5:00; the opening defensive
+sequence reaches 2nd-and-10 DET40 at Q1 4:58, 0–0. The VIP quit confirmation
+returns to the inspected neutral main menu. Seventeen screenshots and fourteen
+unchanged artifact hashes are retained privately; the owned browser and server
+are closed. Initial kick attempts included an incorrect right-stick sequence;
+individual A-meter presses subsequently advance the kick. This input mistake
+is not counted as a game failure.
+
+The run is **partial**: the first nine cumulative audio samples report zero
+underruns, while the final sample after quit reports one underrun and 128
+missing frames. Sampling does not locate its exact onset or establish a cause.
+The diagnostic classifier reports no FLAGS, unresolved-call, browser, GPU or
+DSP failures; expected startup TODO sites remain. Its zero failure count and
+process exit zero do not override the audio observation. Presentation logs
+include sub-30 FPS intervals. This run establishes neither continuous audio,
+a sustained 30 FPS floor, matched Xbox pixels nor retail use of the corrected
+offset-state combination.

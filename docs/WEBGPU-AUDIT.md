@@ -112,3 +112,8 @@ references pass across software, native GPU and all three browser line paths.
 The [vertical/steep extension](WEB-STADIUM-FIDELITY.md#vertical-and-steep-line-depth-2026-11-20)
 raises the matrix to 25 cases and checks depth at off-center pixels through
 an independent double-precision projection. All five paths pass.
+
+The [fill-offset scope fix](WEB-STADIUM-FIDELITY.md#polygon-fill-offset-leaking-into-standalone-lines-2026-11-20)
+prevents standalone lines from inheriting polygon-fill depth bias. A native
+GPU regression reproduces 211 failures before the fix; all 600 line probes
+pass afterward, and filled-polygon control draws retain their bias.

@@ -6261,7 +6261,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +228,1436 @@
+@@ -231,34 +228,1457 @@
      return bad == 0;
  }
 
@@ -7467,13 +7467,17 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +{
 +    unsigned char saved[sizeof s_vp];memcpy(saved,&s_vp,sizeof s_vp);
 +    uint32_t old_format=s_gpu.format,old_width=s_gpu.line_width,old_mask=g_color_mask;
++    uint32_t old_prim=s_gpu.prim,old_count=s_gpu.idx_count;
++    uint16_t old_indices[3];memcpy(old_indices,s_gpu.idx,sizeof old_indices);
 +    s_gpu.format=0x128;s_gpu.line_width=8;s_gpu.shade_mode=0x1D01;
 +    s_vp.depth_test=s_vp.depth_mask=1;s_vp.stencil_test=s_vp.poly_offset_fill=0;
 +    s_vp.depth_func=0x202;s_vp.cull=0;s_vp.color_mask=g_color_mask=0x01010101u;
 +    const unsigned probes[]={20,32,44};
 +    for(unsigned n=0;n<sizeof depth_line_cases/sizeof *depth_line_cases;n++)
-+    for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++) {
++    for(unsigned w_buffer=0;w_buffer<2;w_buffer++)for(unsigned clip=0;clip<2;clip++)
++    for(unsigned offset=0;offset<2;offset++) {
 +        const DepthLineCase *c=&depth_line_cases[n];
++        s_vp.poly_offset_fill=offset;s_vp.poly_offset_bias=32;s_vp.poly_offset_scale=16;
 +        s_vp.control0=w_buffer<<16;s_vp.zminmax=clip?0:0x10;
 +        s_vp.clip_min=c->minimum;s_vp.clip_max=c->maximum;
 +        for(unsigned k=0;k<2;k++) {
@@ -7487,15 +7491,32 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +            s_gpu.clear_color=0xFF000000u;s_vp.zclear=integer<<8;
 +            CHECK(sg_clear(0xF3) && sg_draw_batch(0),"integer D24 line GPU draw rejected");download_frame();
 +            uint32_t pixel;memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
-+            CHECK(pixel==expected,"D24 GPU line case %u W=%u clip=%u x=%u: %08X expected %08X",n,w_buffer,clip,x,pixel,expected);
++            CHECK(pixel==expected,"D24 GPU line case %u W=%u clip=%u fill-offset=%u x=%u: %08X expected %08X",n,w_buffer,clip,offset,x,pixel,expected);
 +            memcpy(g_ram+0x400000+y*256+x*4,&s_gpu.clear_color,4);s_zbuf[y*ZB_W+x]=(float)integer;
 +            surface_stage_reset();batch_lines_xf(raster_line_xf_cb,NULL);
 +            CHECK(surface_stage_flush(g_ram),"D24 software line flush");surface_stage_reset();
 +            memcpy(&pixel,g_ram+0x400000+y*256+x*4,4);
-+            CHECK(pixel==expected,"D24 software line case %u W=%u clip=%u x=%u: %08X expected %08X",n,w_buffer,clip,x,pixel,expected);
++            CHECK(pixel==expected,"D24 software line case %u W=%u clip=%u fill-offset=%u x=%u: %08X expected %08X",n,w_buffer,clip,offset,x,pixel,expected);
 +            sg_surface_current()->owner=SG_OWNER_GUEST;
 +        }
 +    }
++    /* A real polygon must still receive fill bias after the line draw. */
++    s_gpu.prim=NV_PRIM_TRIANGLES;s_gpu.idx_count=3;
++    s_gpu.idx[0]=0;s_gpu.idx[1]=1;s_gpu.idx[2]=2;
++    const float polygon[3][2]={{8.5f,8.5f},{56.5f,8.5f},{8.5f,56.5f}};
++    for(unsigned k=0;k<3;k++) {
++        float *v=(float *)(g_ram+0x600000)+k*16;memset(v,0,64);
++        v[0]=polygon[k][0];v[1]=polygon[k][1];v[2]=2.25f;v[3]=1;v[5]=v[7]=1;
++    }
++    s_vp.control0=0;s_vp.zminmax=0;s_vp.clip_min=0;s_vp.clip_max=16777215;
++    s_vp.zclear=34u<<8;
++    for(unsigned offset=0;offset<2;offset++) {
++        s_vp.poly_offset_fill=offset;
++        CHECK(sg_clear(0xF3) && sg_draw_batch(0),"polygon fill-offset control draw rejected");download_frame();
++        uint32_t pixel;memcpy(&pixel,g_ram+0x400000+20*256+20*4,4);
++        CHECK(pixel==(offset?0xFF00FF00u:0xFF000000u),"polygon fill-offset control enabled=%u: %08X",offset,pixel);
++    }
++    s_gpu.prim=old_prim;s_gpu.idx_count=old_count;memcpy(s_gpu.idx,old_indices,sizeof old_indices);
 +    s_gpu.format=old_format;s_gpu.line_width=old_width;g_color_mask=old_mask;memcpy(&s_vp,saved,sizeof s_vp);
 +}
 +
@@ -7702,7 +7723,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1666,25 @@
+@@ -267,10 +1687,25 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -7731,7 +7752,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1722,48 @@
+@@ -308,12 +1743,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -7781,7 +7802,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1772,40 @@
+@@ -322,6 +1793,40 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -30119,7 +30140,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
      memcpy(sh->factor0, s_comb.factor0, sizeof sh->factor0);
      memcpy(sh->factor1, s_comb.factor1, sizeof sh->factor1);
-@@ -316,19 +396,33 @@
+@@ -316,19 +396,35 @@
      sh->fog[0] = s_fog.color;
      for (st = 0; st < 4; st++) {
          sh->mode[st] = sg_stage_mode(st);
@@ -30151,13 +30172,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          memcpy(&sh->depth[2], &cmin, sizeof cmin);
          memcpy(&sh->depth[3], &cmax, sizeof cmax);
 +    }
-+    if (s_vp.poly_offset_fill) {
++    /* Conservative line candidates are host triangles, but guest standalone
++     * lines must not inherit polygon-fill offset from a preceding draw. */
++    if (s_gpu.prim >= NV_PRIM_TRIANGLES && s_gpu.prim <= NV_PRIM_POLYGON && s_vp.poly_offset_fill) {
 +        sh->depth_offset[0] = s_vp.poly_offset_bias;
 +        sh->depth_offset[1] = s_vp.poly_offset_scale;
      }
  }
 
-@@ -339,13 +433,39 @@
+@@ -339,13 +435,39 @@
   * D3D11 path (gpu_vp_build). */
 
  static struct {
@@ -30199,7 +30222,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  /* RECOMP_SDLGPU_NOVP=1 keeps vertex programs on the CPU (comparison). */
  static int sg_vp_wanted(void) {
-@@ -359,17 +479,15 @@
+@@ -359,17 +481,15 @@
  static uint32_t sg_vp_vertex(uint32_t index) {
      uint32_t a, k;
      index &= 0xFFFF;
@@ -30223,7 +30246,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -377,15 +495,101 @@
+@@ -377,15 +497,101 @@
  }
 
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
@@ -30328,7 +30351,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
          case NV_PRIM_TRIANGLE_STRIP:
-@@ -395,20 +599,45 @@
+@@ -395,20 +601,45 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
@@ -30382,7 +30405,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +650,15 @@
+@@ -421,7 +652,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -30399,7 +30422,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -466,35 +703,19 @@
+@@ -466,35 +705,19 @@
      {
          static SgVpUniforms u; /* 3 KB: not on the stack */
          SgXfShade shade;
@@ -30438,7 +30461,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,13 +729,13 @@
+@@ -508,13 +731,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -30454,7 +30477,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +753,43 @@
+@@ -532,31 +755,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -30504,7 +30527,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -564,20 +797,48 @@
+@@ -564,20 +799,48 @@
 
      {
          SgXfShade shade;
