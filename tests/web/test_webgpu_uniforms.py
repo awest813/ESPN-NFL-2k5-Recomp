@@ -14,6 +14,10 @@ args=parser.parse_args();out=args.build_dir.resolve();out.mkdir(parents=True,exi
 if args.benchmark and (args.native or args.asan):parser.error('Benchmark requires unsanitized Wasm')
 runtime=root/'external/xboxrecomp/src/kernel/sdlgpu/webgpu'
 text=(runtime/'sdl_gpu_webgpu.c').read_text(encoding='utf-8')
+uniform_constants = '\n'.join(
+    next(line for line in text.splitlines() if line.startswith(f'#define {name} '))
+    for name in ('WG_VS_UNIFORM_BYTES', 'WG_FS_UNIFORM_BYTES', 'WG_UNIFORM_ALIGN', 'WG_UNIFORM_TAIL')
+)
 def function(signature):
     start=text.index(signature);opening=text.index('{',start);depth=1;end=opening+1
     while depth:
@@ -46,9 +50,8 @@ typedef uint32_t Uint32;
 typedef enum {OP_UNIFORM=1} OpKind;
 typedef struct {OpKind kind;struct {int fragment;uint32_t off;} uniform;} Op;
 typedef struct SDL_GPUCommandBuffer SDL_GPUCommandBuffer;
-#define WG_VS_UNIFORM_BYTES 4096u
-#define WG_FS_UNIFORM_BYTES 4096u
-#define WG_UNIFORM_ALIGN 256u
+#define SDL_max(a, b) (((a) > (b)) ? (a) : (b))
+/* UNIFORM CONSTANTS */
 static unsigned errors;
 static int SDL_SetError(const char *format,...){(void)format;errors++;return -1;}
 static const char *environment;
@@ -74,6 +77,11 @@ static uint8_t payload[256][4096];
 static unsigned checks,seed=0x6e69666f;
 static unsigned random32(void){seed=seed*1664525u+1013904223u;return seed;}
 static void verify(SDL_GPUCommandBuffer *c){
+ if(c->ubytes){
+   size_t reserved=0;
+   for(unsigned i=0;i<128;i++)if(allocations[i].p==c->uniforms)reserved=allocations[i].n;
+   assert(reserved >= (((size_t)c->ubytes+3u)&~(size_t)3u) + WG_UNIFORM_TAIL);
+ }
  for(unsigned i=0;i<c->n;i++){
    Op *o=c->ops+i;assert(o->kind==OP_UNIFORM && o->uniform.fragment==expected[i].stage);
    assert(!(o->uniform.off&255u) && o->uniform.off<=c->ubytes && expected[i].len<=c->ubytes-o->uniform.off);
@@ -193,7 +201,7 @@ int main(int argc,char **argv){(void)argv;tests();
  (void)argc;
 #endif
  return 0;}
-'''.replace('/* PRODUCTION */',production)
+'''.replace('/* UNIFORM CONSTANTS */', uniform_constants).replace('/* PRODUCTION */',production)
 (out/'test.c').write_bytes(source.encode('utf-8'))
 if args.native:
     cc=shutil.which('cc') or shutil.which('clang')
