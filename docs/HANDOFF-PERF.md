@@ -13,9 +13,9 @@ Windows job now applies the same cross-platform fixes before building. The
 submodule remains pinned to `9a31daa67c22893f5b0ebed8f3f7b01970d364ef`.
 
 Local optimized Windows runtime and tools build successfully with MSVC
-19.44.35228 and SDL 3.2.20. This is a runtime/tools build with the game target
-off; it does not verify a full native retail executable or its FPS. Compiler
-warnings, including existing NV2A macro redefinitions, remain in the log.
+19.44.35228 and SDL 3.2.20. The initial runtime/tools check disabled the game
+target. The full executable was linked and exercised later in this checkpoint.
+Compiler warnings, including existing NV2A macro redefinitions, remain in the log.
 
 `tests/native-dsp` reuses the production-core DSP fixtures for native builds.
 Optimized MSVC passes 141,664 cold/warm full-state dispatch comparisons,
@@ -93,6 +93,53 @@ ranges. A fresh analysis of the local retail disc found 33,055 ranges, omitting
 481 translated entries and giving different ends for 427 shared starts. Using
 the compiled source keeps the interpreter table tied to the actual build even
 when the available analysis came from a different conversion run.
+
+### Linear render-target snapshots
+
+The SDL GPU renderer previously generated every mip level whenever a draw
+sampled a GPU-owned linear render target. Both formats accepted by that path
+use level zero, even when the guest filter requests mipmapping. The snapshot
+now allocates and copies one level. The surface is still copied before
+sampling, including when the guest reads its current draw target.
+
+All 16 measured Superdome drive windows recorded one GPU snapshot per frame.
+The Vulkan fixture checks exact ARGB and XRGB pixels with stale guest RAM and
+minification enabled. On the old renderer the pixels match and the fixture
+fails on the two unused mip chains. The saved logs use the `linear-rtt` prefix.
+The complete Vulkan and Chromium GPU suites pass with this change.
+
+An isolated hardware WebGPU benchmark runs the two production snapshot
+functions against a synthetic 720×480 source. It checks both base-level
+pixels and measures seven alternating pairs of 64 copies, including a queue
+fence at the end of each batch. Median time falls from 13.73 ms to 6.76 ms.
+This isolates snapshot work from gameplay, texture uploads and draw batching.
+The raw output is in `build-web-tests/linear-rtt-bench/run-final.log`.
+
+### Windows executable link and vertex programs
+
+The complete optimized MSVC link exposed two GCC intrinsics in the APU that
+the earlier static library build could leave unresolved. The environment
+cache now uses acquire/release publication with Windows SDK primitives on
+Windows and C atomics elsewhere. The MMIO decoder computes low-byte parity
+without a compiler intrinsic. A Windows CI executable links the real APU
+objects and checks all 256 byte results through the decoder. The Linux MMIO
+CPU differential fixture also passes.
+
+The linked Windows game mounted the local retail disc, loaded through
+Direct3D 11 and completed kickoff and scrimmage plays. During this initial
+run, five raw vertex programs failed with an undeclared `vmax`. The raw
+path copied HLSL helpers starting after the new comparison functions.
+Both input layouts now include the complete shared helper block. The real
+D3D compiler rejected MIN, MAX, SLT and SGE with raw inputs before the fix;
+all four now compile with both raw and classic inputs. CI runs this check.
+
+The rebuilt executable ran Jaguars at 49ers through kickoff and into the
+first quarter at second and eight. The intro showed the Deon Grant graphic,
+sideline staff and crowd. Five vertex programs compiled, including two that
+failed in the first run. The retest logged no vertex-program compile failures.
+After the stadium loaded, the one-second FPS samples printed every ten seconds
+were 50–60, with a 20 FPS sample during a mode transition. The two runs used
+different teams. Captures and logs are in `build-web-tests/native-retail-vp-fixed`.
 
 ## Historical measurements
 

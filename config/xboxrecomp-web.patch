@@ -33,13 +33,23 @@ diff --git a/src/apu/CMakeLists.txt b/src/apu/CMakeLists.txt
  target_include_directories(xbox_apu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 diff --git a/src/apu/apu_mmio_hook.c b/src/apu/apu_mmio_hook.c
-index 9a38a07..37e78bc 100644
 --- a/src/apu/apu_mmio_hook.c
 +++ b/src/apu/apu_mmio_hook.c
-@@ -416,4 +416,27 @@ bool apu_hook_handle_mmio(void *raw_ctx, uintptr_t fault_addr,
+@@ -131,7 +131,9 @@
+     r &= size_mask(size);
+     if (r == 0) f |= EF_ZF;
+     if (r >> (size * 8 - 1) & 1) f |= EF_SF;
+-    if (!(__builtin_popcount((unsigned)(r & 0xFF)) & 1)) f |= EF_PF;
++    /* Fold the low byte to a nibble, then look up even parity. */
++    unsigned parity = (unsigned)(r ^ (r >> 4)) & 0xFu;
++    if ((0x9669u >> parity) & 1u) f |= EF_PF;
+     return f;
+ }
+
+@@ -416,4 +418,27 @@
      return ok;
  }
- 
+
 -#endif
 \ No newline at end of file
 +#endif
@@ -5118,7 +5128,7 @@ index 0000000..148b856
 diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_surface.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_surface.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_surface.inc.c
-@@ -17,11 +17,44 @@
+@@ -17,11 +17,41 @@
  }
 
  static void sg_surface_release(SgSurface *s) {
@@ -5134,18 +5144,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
      memset(s, 0, sizeof *s);
 +}
 +
-+/* Snapshot the surface before a draw samples it. A separate texture also
-+ * handles sampling the current target without a framebuffer feedback loop.
++/* Snapshot level zero for the linear A8/X8R8G8B8 textures that can sample a
++ * render target directly. A separate texture avoids framebuffer feedback.
 + * Flush before replacing the snapshot, so earlier queued readers finish. */
 +static SDL_GPUTexture *sg_surface_sample_copy(SgSurface *s) {
 +    sg_queue_flush();
 +    if (!s->sample_copy) {
-+        uint32_t levels = 1, big = s->w > s->h ? s->w : s->h;
-+        while (big > 1) { big >>= 1; levels++; }
 +        SDL_GPUTextureCreateInfo info = {
 +            .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
 +            .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-+            .width = s->w, .height = s->h, .layer_count_or_depth = 1, .num_levels = levels,
++            .width = s->w, .height = s->h, .layer_count_or_depth = 1, .num_levels = 1,
 +        };
 +        s->sample_copy = SDL_CreateGPUTexture(s_sg.dev, &info);
 +        if (!s->sample_copy) return NULL;
@@ -5156,14 +5164,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
 +    SDL_GPUTextureLocation from = { .texture = s->color }, to = { .texture = s->sample_copy };
 +    SDL_CopyGPUTextureToTexture(pass, &from, &to, s->w, s->h, 1, false);
 +    SDL_EndGPUCopyPass(pass);
-+    SDL_GenerateMipmapsForGPUTexture(cmd, s->sample_copy);
 +    if (!SDL_SubmitGPUCommandBuffer(cmd)) return NULL;
 +    s_sg_stats.texture_gpu_copies++;
 +    return s->sample_copy;
  }
 
  /* Colour and depth-stencil textures for a new w x h surface. */
-@@ -137,7 +170,11 @@
+@@ -137,7 +167,11 @@
          sg_gpu_error("download: submit");
          return;
      }
@@ -5176,7 +5183,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
      SDL_ReleaseGPUFence(s_sg.dev, done);
 
      src = (const uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.download, false);
-@@ -183,7 +220,13 @@
+@@ -183,7 +217,13 @@
      };
      if (clear_depth) {
          t.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -5191,7 +5198,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_surface.inc.c b/src/kernel/sdlgpu/sdlgpu_s
      }
      if (clear_stencil) {
          t.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
-@@ -235,7 +278,10 @@
+@@ -235,7 +275,10 @@
          return 0; /* software clears instead */
      }
      SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &color, 1, &depth));
@@ -6230,7 +6237,7 @@ diff --git a/tests/sdlgpu_posix/CMakeLists.txt b/tests/sdlgpu_posix/CMakeLists.t
 diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 --- a/tests/sdlgpu_posix/test_main.c
 +++ b/tests/sdlgpu_posix/test_main.c
-@@ -10,87 +10,83 @@
+@@ -10,87 +10,92 @@
   *    in float (and draws a quad's shared diagonal twice), a GPU snaps
   *    vertices to a 1/256 px grid; those pixels are not compared
   *
@@ -6265,14 +6272,23 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +/* Exercise the actual executor state and decoding, so renderer changes
 + * cannot silently outgrow a duplicate test-only layout. */
 +static int fail_next_submit, fail_next_wait;
++static unsigned generated_mip_chains;
 +static uint32_t *rewrite_texture_on_submit;
 +static bool checked_submit(SDL_GPUCommandBuffer *command);
 +static bool checked_wait(SDL_GPUDevice *device, bool all, SDL_GPUFence *const *fences, Uint32 count);
++static void counted_generate_mipmaps(SDL_GPUCommandBuffer *command, SDL_GPUTexture *texture);
 +#define SDL_SubmitGPUCommandBuffer checked_submit
 +#define SDL_WaitForGPUFences checked_wait
++#define SDL_GenerateMipmapsForGPUTexture counted_generate_mipmaps
 +#include "kernel/nv2a_pb_exec.c"
 +#undef SDL_SubmitGPUCommandBuffer
 +#undef SDL_WaitForGPUFences
++#undef SDL_GenerateMipmapsForGPUTexture
++static void counted_generate_mipmaps(SDL_GPUCommandBuffer *command, SDL_GPUTexture *texture)
++{
++    generated_mip_chains++;
++    SDL_GenerateMipmapsForGPUTexture(command, texture);
++}
 +static bool checked_submit(SDL_GPUCommandBuffer *command)
 +{
 +    if (fail_next_submit) {
@@ -6380,7 +6396,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
  {
      uint32_t out = 0;
      for (int sh = 0; sh < 32; sh += 8)
-@@ -162,10 +158,10 @@
+@@ -162,10 +167,10 @@
                      float su = (w1 * uv[0][0] + w2 * uv[1][0] + w0 * uv[2][0]) / area;
                      float sv = (w1 * uv[0][1] + w2 * uv[1][1] + w0 * uv[2][1]) / area;
                      uint32_t texel;
@@ -6394,7 +6410,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
                          continue;
                      }
                  }
-@@ -180,6 +176,7 @@
+@@ -180,6 +185,7 @@
 
  static void target(uint32_t off, uint32_t w, uint32_t h, uint32_t pitch)
  {
@@ -6402,7 +6418,50 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.color_offset = off; s_gpu.pitch = pitch;
      s_gpu.clip_x = 0; s_gpu.clip_w = w; s_gpu.clip_y = 0; s_gpu.clip_h = h;
  }
-@@ -208,9 +205,9 @@
+@@ -190,6 +196,42 @@
+     Tri a = { { {x0, y0}, {x1, y0}, {x1, y1} }, { {u0, v0}, {u1, v0}, {u1, v1} }, argb, textured };
+     Tri b = { { {x0, y0}, {x1, y1}, {x0, y1} }, { {u0, v0}, {u1, v1}, {u0, v1} }, argb, textured };
+     g_tris[t] = a; g_tris[t + 1] = b;
++}
++
++static void test_linear_rtt_snapshot(void)
++{
++    const uint32_t source = 0x900000, dest = 0x910000, color = 0x7123B5D7;
++    const uint32_t formats[] = {0x12, 0x1E};
++    unsigned mip_chains = generated_mip_chains;
++
++    for (unsigned i = 0; i < sizeof formats / sizeof formats[0]; i++) {
++        target(source, 32, 32, 128);
++        memset(g_ram + source, 0xA5, 32 * 128);
++        s_gpu.clear_color = color;
++        CHECK(sg_clear(0xF0), "clear linear RTT source");
++
++        target(dest, 16, 16, 64);
++        s_gpu.clear_color = 0;
++        CHECK(sg_clear(0xF0), "clear linear RTT destination");
++        s_gpu.tex = (Texture){.offset=source, .width=32, .height=32, .pitch=128,
++            .color=formats[i], .addr_u=3, .addr_v=3, .enabled=1, .valid=1};
++        /* A minified linear texture still uses only the base level. */
++        record_tex_reg(0x1B14, 0x02060000u);
++        g_ntris = 2;
++        quad(0, 0, 0, 8, 8, 0, 0, 32, 32, 0xFFFFFFFFu, 1);
++        uint32_t copies = s_sg_stats.texture_gpu_copies;
++        upload_scene();
++        CHECK(sg_draw_batch(1), "draw using a GPU-owned linear RTT");
++        CHECK(s_sg_stats.texture_gpu_copies == copies + 1, "draw used a GPU snapshot");
++        download_frame();
++
++        uint32_t pixel, expected = i ? (color | 0xFF000000u) : color;
++        memcpy(&pixel, g_ram + dest + 64 + 4, sizeof pixel);
++        CHECK(pixel == expected, "linear RTT %02X: %08X expected %08X", formats[i], pixel, expected);
++    }
++    CHECK(generated_mip_chains == mip_chains, "linear RTT snapshots generated unused mip levels");
++    s_gpu.tex = (Texture){0};
++    record_tex_reg(0x1B14, 0);
+ }
+
+ /* Fill the surface (guest and reference) with a gradient, draw the scene on
+@@ -208,9 +250,9 @@
      for (int i = 0; i < SG_MAX_SURFACES; i++)        /* the title wrote the surface */
          if (s_sg.surf[i].color) s_sg.surf[i].owner = SG_OWNER_GUEST;
 
@@ -6414,7 +6473,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +228,1514 @@
+@@ -231,34 +273,1515 @@
      return bad == 0;
  }
 
@@ -7907,6 +7966,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      CHECK(sg_clear(0xF0) == 0, "partial-rectangle clear should fall back");
      g_clear_rx = 0x0FFF0000u;
 
++    test_linear_rtt_snapshot();
 +    test_instanced_draw_queue();
 +    test_passthru_clamp();
 +    test_alpha_depth_order();
@@ -7933,7 +7993,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1744,25 @@
+@@ -267,10 +1790,25 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -7962,7 +8022,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1800,48 @@
+@@ -308,12 +1846,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -8012,7 +8072,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1850,40 @@
+@@ -322,6 +1896,40 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -8068,10 +8128,15 @@ diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
 diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
 --- a/src/kernel/nv2a_gpu_vp.inc.c
 +++ b/src/kernel/nv2a_gpu_vp.inc.c
-@@ -85,10 +85,19 @@
+@@ -84,11 +84,23 @@
+     "struct PIn { float4 pos:SV_Position; float4 d0:COLOR0; float4 d1:COLOR1;\n"
      "  float4 t0:TEXCOORD0; float4 t1:TEXCOORD1; float4 t2:TEXCOORD2; float4 t3:TEXCOORD3; float4 wz:TEXCOORD4; float4 rawscreen:TEXCOORD5;\n"
      "  nointerpolation float4 tri0:TEXCOORD6; nointerpolation float4 tri1:TEXCOORD7; nointerpolation float4 tri2:TEXCOORD8;\n"
-     "  nointerpolation float2 depthmeta:TEXCOORD9; };\n"
+-    "  nointerpolation float2 depthmeta:TEXCOORD9; };\n"
++    "  nointerpolation float2 depthmeta:TEXCOORD9; };\n";
++
++/* Both input layouts execute the same NV2A arithmetic. */
++static const char *k_vp_helpers =
 +    "uint vcompare_key(float x) { uint b=asuint(x); if ((b&0x7fffffffu)>0x7f800000u) b=(b&0x80000000u)|0x7fc00000u; return (b&0x80000000u)!=0u ? ~b : b^0x80000000u; }\n"
 +    "bool4 vlt(float4 a,float4 b) { return bool4(vcompare_key(a.x)<vcompare_key(b.x),vcompare_key(a.y)<vcompare_key(b.y),vcompare_key(a.z)<vcompare_key(b.z),vcompare_key(a.w)<vcompare_key(b.w)); }\n"
 +    "bool4 vge(float4 a,float4 b) { return bool4(vcompare_key(a.x)>=vcompare_key(b.x),vcompare_key(a.y)>=vcompare_key(b.y),vcompare_key(a.z)>=vcompare_key(b.z),vcompare_key(a.w)>=vcompare_key(b.w)); }\n"
@@ -8090,18 +8155,52 @@ diff --git a/src/kernel/nv2a_gpu_vp.inc.c b/src/kernel/nv2a_gpu_vp.inc.c
      "float vclampw(float w) {\n"
      "  if (w > 0.0 || asuint(w) == 0u) return clamp(w, asfloat(0x1F800000u), asfloat(0x5F800000u));\n"
      "  return clamp(w, asfloat(0xDF800000u), asfloat(0x9F800000u));\n"
-@@ -96,8 +105,8 @@
+@@ -96,8 +108,10 @@
      "float4 vexp(float x) { float f = floor(x); return float4(exp2(f), x - f, exp2(x), 1.0); }\n"
      "float4 vlog(float x) { x = abs(x); if (x == 0.0) return float4(-asfloat(0x7F800000u), 1.0, -asfloat(0x7F800000u), 1.0);\n"
      "  float e = floor(log2(x)); return float4(e, x / exp2(e), log2(x), 1.0); }\n"
 -    "float4 vlit(float4 s) { float sx = max(s.x, 0.0), sy = max(s.y, 0.0), sw = clamp(s.w, -127.996, 127.996);\n"
 -    "  return float4(1.0, sx, sx > 0 ? exp2(sw * log2(sy)) : 0.0, 1.0); }\n"
 +    "float4 vlit(float4 s) { float sx = s.x < 0.0 ? 0.0 : s.x, sy = s.y < 0.0 ? 0.0 : s.y, sw = clamp(s.w, -127.99609375, 127.99609375);\n"
-+    "  return float4(1.0, sx, sx > 0 ? exp2(vmul1(sw,log2(sy))) : 0.0, 1.0); }\n"
++    "  return float4(1.0, sx, sx > 0 ? exp2(vmul1(sw,log2(sy))) : 0.0, 1.0); }\n";
++
++static const char *k_vp_classic_inputs =
      "PIn vs_main(VSIn i) {\n"
      "  float4 v[16] = { i.a0, i.a1, i.a2, i.a3, i.a4, i.a5, i.a6, i.a7, i.a8, i.a9, i.a10, i.a11, i.a12, i.a13, i.a14, i.a15 };\n"
      "  float4 R[13]; float4 O[16]; int a0 = 0; int k;\n"
-@@ -302,17 +311,17 @@
+@@ -247,15 +261,11 @@
+ {
+     VpBuf b = { 0 };
+     uint32_t slot;
+-    if (gpu_vp_raw_on()) {
+-        /* Raw inputs: same helpers as the classic prelude, then fetch only
+-         * the inputs the program reads. */
+-        const char *h0 = strstr(k_vp_prelude, "float vrcp");
+-        const char *h1 = strstr(k_vp_prelude, "PIn vs_main(VSIn i)");
++    int raw = gpu_vp_raw_on();
++    vpb(&b, "%s%s", raw ? k_vp_prelude_raw : k_vp_prelude, k_vp_helpers);
++    if (raw) {
++        /* Fetch only the raw inputs the program reads. */
+         uint32_t mask = gpu_vp_input_mask(start), k;
+-        vpb(&b, "%s", k_vp_prelude_raw);
+-        if (h0 && h1 && h1 > h0)
+-            vpb(&b, "%.*s", (int)(h1 - h0), h0);
+         vpb(&b, "PIn vs_main(uint vid : SV_VertexID) {\n"
+                 "  float4 v[16]; float4 R[13]; float4 O[16]; int a0 = 0; int k;\n"
+                 "  [unroll] for (k = 0; k < 16; k++) v[k] = float4(0, 0, 0, 1);\n"
+@@ -264,8 +274,9 @@
+         for (k = 0; k < 16; k++)
+             if (mask >> k & 1)
+                 vpb(&b, "  v[%u] = vfetch(%u, vid);\n", k, k);
+-    } else
+-    vpb(&b, "%s", k_vp_prelude);
++    } else {
++        vpb(&b, "%s", k_vp_classic_inputs);
++    }
+     for (slot = start; slot < VP_PROG_LEN; slot++) {
+         const uint32_t *t = s_vp.prog[slot];
+         uint32_t ilu = vp_field(t, 1, 25, 3), mac = vp_field(t, 1, 21, 4);
+@@ -302,17 +313,17 @@
              A, B, C);
          switch (mac) {
          case 1:  vpb(&b, "    m = A;\n"); break;
@@ -29836,6 +29935,80 @@ index 0000000..b60389a
 +static inline void apu_schedule_trace_record(unsigned kind,int64_t start,int64_t end,unsigned detail)
 +{ (void)kind;(void)start;(void)end;(void)detail; }
 +#endif
+diff --git a/src/apu/apu_env.h b/src/apu/apu_env.h
+--- a/src/apu/apu_env.h
++++ b/src/apu/apu_env.h
+@@ -13,13 +13,42 @@
+ #include <windows.h>
+ #else
+ #include <pthread.h>
++#include <stdatomic.h>
+ #endif
+ #include <stdlib.h>
+ #include <stdint.h>
+
++typedef struct {
++#ifdef _WIN32
++    volatile ULONG_PTR key;
++#else
++    _Atomic uintptr_t key;
++#endif
++    const char *value;
++} ApuEnvEntry;
++
++/* Publish the value before making its key visible to lock-free readers. */
++static inline uintptr_t apu_env_key(const ApuEnvEntry *entry)
++{
++#ifdef _WIN32
++    return ReadULongPtrAcquire(&entry->key);
++#else
++    return atomic_load_explicit(&entry->key, memory_order_acquire);
++#endif
++}
++
++static inline void apu_env_publish(ApuEnvEntry *entry, uintptr_t key)
++{
++#ifdef _WIN32
++    WriteULongPtrRelease(&entry->key, key);
++#else
++    atomic_store_explicit(&entry->key, key, memory_order_release);
++#endif
++}
++
+ static const char *apu_env_cached(const char *name)
+ {
+-    static struct { const char *volatile name; const char *value; } tab[256];
++    static ApuEnvEntry tab[256];
+ #ifdef _WIN32
+     static SRWLOCK lock = SRWLOCK_INIT;
+ #else
+@@ -28,8 +57,8 @@
+     uintptr_t k = (uintptr_t)name;
+     unsigned start = (unsigned)(((k >> 3) * 2654435761u) >> 8) & 255u, h, i;
+     for (i = 0, h = start; i < 256; i++, h = (h + 1) & 255u) {
+-        const char *n = tab[h].name;
+-        if (n == name) return tab[h].value;
++        uintptr_t n = apu_env_key(&tab[h]);
++        if (n == k) return tab[h].value;
+         if (!n) break;
+     }
+ #ifdef _WIN32
+@@ -38,11 +67,11 @@
+     pthread_mutex_lock(&lock);
+ #endif
+     for (i = 0, h = start; i < 256; i++, h = (h + 1) & 255u) {
+-        if (tab[h].name == name) break;
+-        if (!tab[h].name) {
++        uintptr_t n = apu_env_key(&tab[h]);
++        if (n == k) break;
++        if (!n) {
+             tab[h].value = getenv(name);
+-            __sync_synchronize();
+-            tab[h].name = name;
++            apu_env_publish(&tab[h], k);
+             break;
+         }
+     }
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c

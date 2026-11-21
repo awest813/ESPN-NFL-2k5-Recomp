@@ -50,6 +50,18 @@ jobs:
       - name: Build Windows runtime and tools (no game)
         run: cmake --build build --config Release --parallel
 
+      - name: Link and check Windows APU runtime
+        run: |
+          cmake --build build --config Release --target NFL2K5_apu_link_check
+          $env:PATH = "${{ github.workspace }}/dependencies/sdl3-sdk/bin;$env:PATH"
+          & ./build/Release/NFL2K5_apu_link_check.exe
+
+      - name: Compile native D3D11 vertex program comparisons
+        run: |
+          cmake -S tests/native-gpu -B build-native-vp -G "Visual Studio 17 2022" -A x64
+          cmake --build build-native-vp --config Release --parallel
+          ctest --test-dir build-native-vp -C Release --output-on-failure
+
       - name: Check native DSP dispatch, firmware and DMA (optimized MSVC)
         run: |
           cmake -S tests/native-dsp -B build-dsp -G "Visual Studio 17 2022" -A x64
