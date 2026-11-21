@@ -218,10 +218,22 @@ title-mode transition 42.8 seconds after guest entry. It loaded VIP1 from
 the virtual hard disk. The timer/DPC thread held the guest lock for 155 ms
 in the first 40.4 seconds, compared with 1,218 ms in the earlier yield
 control. Six startup windows ranged from 29.4 to 30.1 FPS. The audit still
-recorded audio underruns. It covered startup, with no live-drive FPS
-measurement for this build. See `build-web-tests/ack-idle-inline-final`.
-The rebuilt Windows executable passed retail-disc validation, and both
-native and Wasm acknowledgement regressions passed.
+recorded audio underruns. See `build-web-tests/ack-idle-inline-final`. The
+rebuilt Windows executable passed retail-disc validation, and both native
+and Wasm acknowledgement regressions passed.
+
+The same default retail WebGPU build (`6825d54`) completed a Rams–49ers
+kickoff and the first scrimmage play, a one-yard loss by Kevan Barlow. The
+final capture shows 2nd and 11 at the SF 19, Q1 4:44, 0–0. There were 18
+complete presentation windows between the kick-return selection and that
+capture, ranging from 10.2 to 29.6 FPS at a 20.6 FPS median. This interval
+includes play selection and between-play cameras. No draw fell back to
+software. The worklet missed 76,800 source frames in 95.2 seconds. The
+timer/DPC thread held the guest lock for another 13–40 ms per statistics
+interval across those samples. Neither the 30 FPS floor nor continuous
+audio passed. The short initial harness title timeout recovered with a
+60-second timeout. Logs, screenshots and the exact Wasm hash are under
+`build-web-tests/ack-default-opening-drive`.
 
 ## Historical measurements
 
