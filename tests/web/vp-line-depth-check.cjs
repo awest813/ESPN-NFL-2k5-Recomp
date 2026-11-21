@@ -52,7 +52,7 @@ module.exports=async function checkLineDepth(page,dir,triangle=false) {
         uniforms.set([64,64,range,0],info);
         uniforms.set([c.minimum,c.maximum,1,0],info+4);
         uniforms[info+14]=c.clip?0:1; // lightp.z: near-depth clip versus clamp
-        uniforms.set([1,1,0,0],info+16); // line width and depth-enabled state
+        if (!triangle) uniforms.set([1,1,0,0],info+16); // line width and depth-enabled state
         const fragmentBytes=new ArrayBuffer(data.shadeBytes+16);
         const floats=new Float32Array(fragmentBytes),words=new Uint32Array(fragmentBytes),at=data.depthOffset/4;
         words[at]=(c.bits===16?8:4)|c.w|(c.clip?2:0);floats[at+1]=range;

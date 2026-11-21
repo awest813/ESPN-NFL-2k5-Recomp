@@ -80,7 +80,7 @@ const server = http.createServer((req, res) => { res.end('<!doctype html><title>
         };
         const input = buffer(inputs, GPUBufferUsage.STORAGE, 0, true);
         const output = buffer([], GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, expected.length * 4);
-        const uniform = buffer(constants, GPUBufferUsage.UNIFORM, 3136, true);
+        const uniform = buffer(constants, GPUBufferUsage.UNIFORM, 0, true);
         const read = device.createBuffer({size: expected.length * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
         const io = device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: [
           {binding: 0, resource: {buffer: input}}, {binding: 1, resource: {buffer: output}}]});

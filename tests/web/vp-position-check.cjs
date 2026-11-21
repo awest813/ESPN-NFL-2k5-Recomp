@@ -1,7 +1,7 @@
 // Execute the entire production VP epilogue; arithmetic-only tests omit it.
 'use strict';
 module.exports = async function checkPosition(page, source, layout) {
-  const count = await page.evaluate(async source => {
+  const count = await page.evaluate(async ({source, layout}) => {
     const values = [-640.999, -16.063, -16.0625, -16.0624, -0.063,
       -0.0625, -0.0624, -0.001, 0, 0.001, 0.0624, 0.0625, 0.063,
       16.0624, 16.0625, 16.063, 319.999, 640.999];
@@ -29,7 +29,7 @@ module.exports = async function checkPosition(page, source, layout) {
     const input = device.createBuffer({size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
     const output = device.createBuffer({size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
     const read = device.createBuffer({size: data.byteLength, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
-    const uniform = device.createBuffer({size: 3136, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+    const uniform = device.createBuffer({size: layout.vertexUniformBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
     const io = device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: [
       {binding: 0, resource: {buffer: input}}, {binding: 1, resource: {buffer: output}}]});
     const u = device.createBindGroup({layout: pipeline.getBindGroupLayout(1), entries: [
@@ -38,8 +38,8 @@ module.exports = async function checkPosition(page, source, layout) {
     let checks = 0;
     try {
       for (const [width, height, offset] of [[640,480,0], [854,480,107], [1920,1080,320]]) {
-        const uniforms = new Float32Array(784);
-        uniforms.set([width,height,65535,offset], 768);
+        const uniforms = new Float32Array(layout.vertexUniformBytes / 4);
+        uniforms.set([width,height,65535,offset], layout.infoOffset / 4);
         device.queue.writeBuffer(uniform, 0, uniforms);
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setPipeline(pipeline);pass.setBindGroup(0, io);pass.setBindGroup(1, u);
@@ -68,7 +68,7 @@ module.exports = async function checkPosition(page, source, layout) {
     } finally { [input,output,read,uniform].forEach(b => b.destroy()); }
     if (window.gpuError) throw Error(window.gpuError);
     return checks;
-  }, source);
+  }, {source, layout});
   console.log(`PASS ${count} production VP position checks: signed subpixel grid, non-unit W and widescreen offsets`);
   const pixels = await page.evaluate(async ({source, layout}) => {
     const module = device.createShaderModule({code: source + `
@@ -77,7 +77,7 @@ module.exports = async function checkPosition(page, source, layout) {
       vertex: {module, entryPoint: 'main', buffers: [{arrayStride: layout.stride, attributes: layout.attributes}]},
       fragment: {module, entryPoint: 'fragment', targets: [{format: 'rgba8unorm'}]}});
     const vb = device.createBuffer({size: 6*layout.stride, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST});
-    const ub = device.createBuffer({size: 3136, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+    const ub = device.createBuffer({size: layout.vertexUniformBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
     const io = device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: []});
     const uniform = device.createBindGroup({layout: pipeline.getBindGroupLayout(1), entries: [{binding:0,resource:{buffer:ub}}]});
     let checked = 0;
@@ -88,7 +88,8 @@ module.exports = async function checkPosition(page, source, layout) {
         const xy = [[16.559,8.559],[48.559,8.559],[48.559,40.559],
           [16.559,8.559],[48.559,40.559],[16.559,40.559]];
         for (let k=0;k<6;k++) values.set([...xy[k],.25,w,1,1,1,1,0,0,0,1],k*12);
-        const uniforms = new Float32Array(784);uniforms.set([width,height,1,offset],768);
+        const uniforms = new Float32Array(layout.vertexUniformBytes / 4);
+        uniforms.set([width,height,1,offset], layout.infoOffset / 4);
         device.queue.writeBuffer(vb,0,values);device.queue.writeBuffer(ub,0,uniforms);
         const target = device.createTexture({size:[width,height],format:'rgba8unorm',
           usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_SRC});

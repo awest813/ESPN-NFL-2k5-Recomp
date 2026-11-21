@@ -71,7 +71,9 @@ int main(void){
         t[3]=(15u<<12)|(1u<<11)|(attrs[i]<<3)|(i==7);
     }
     for(unsigned a=0;a<16;a++)s_gpu.attr[a]=(VertexAttr){16+a*16,2,4,256};
-    uint32_t mask=vp_input_mask(0);char*source=sg_vp_translate_line_wgsl(0,mask);if(!source)return 1;
+    SgVpConstants constants;
+    sg_vp_constant_layout(0, &constants, 0);
+    uint32_t mask=vp_input_mask(0);char*source=sg_vp_translate_line_wgsl(0,mask,&constants);if(!source)return 1;
     save("line.wgsl",source,strlen(source));free(source);
     save("line.frag.wgsl",k_sg_xf_linevp_frag_wgsl,strlen(k_sg_xf_linevp_frag_wgsl));
     save("baseline.vert.wgsl",k_sg_lines_vert_wgsl,strlen(k_sg_lines_vert_wgsl));
@@ -91,7 +93,8 @@ int main(void){
             t=s_vp.prog[9];t[1]=(7u<<21)|0x1bu;t[2]=(2u<<26)|(3u<<11)|(1u<<21)|(2u<<19)|(3u<<17);t[3]=(8u<<24)|(2u<<20)|2u;
             t=s_vp.prog[10];t[1]=(4u<<21)|(3u<<13)|0x1bu;t[2]=(2u<<26)|(3u<<11)|(1u<<21)|(2u<<19)|(3u<<17);t[3]=(2u<<30)|(1u<<28)|(12u<<12)|(1u<<11)|1u;
             memcpy(s_vp.c[0],(float[]){1,0,0,0},16);memcpy(s_vp.c[1],(float[]){0,1,0,0},16);memcpy(s_vp.c[3],(float[]){.5f,.5f,1,1},16);
-            char*matrix=sg_vp_translate_line_wgsl(0,mask);if(!matrix)abort();save("matrix-line.wgsl",matrix,strlen(matrix));free(matrix);
+            sg_vp_constant_layout(0, &constants, 0);
+            char*matrix=sg_vp_translate_line_wgsl(0,mask,&constants);if(!matrix)abort();save("matrix-line.wgsl",matrix,strlen(matrix));free(matrix);
         }
         unsigned local=test-golden;float width=test<golden?line_width_references[test].expected_width/8.0f:1.0f;
         s_gpu.prim=NV_PRIM_LINES;s_gpu.provoking_vertex=0;s_gpu.shade_mode=0x1d01;s_vp.depth_test=1;s_vp.zminmax=0;s_vp.specular_enable=1;s_vp.light_control=1u<<17;s_fog.enable=0;
@@ -133,12 +136,16 @@ int main(void){
         if(test>=golden && local==43)((float*)(memory+16))[3]=-INFINITY;
         s_gpu.provoking_vertex=provoking;s_gpu.idx_count=vertices;for(unsigned i=0;i<vertices;i++)s_gpu.idx[i]=i;
         vertex_inputs_prepare(&s_linevp.inputs,mask,vertices-1);s_linevp.count=0;batch_lines(sg_pack_line_vp,NULL);lines=s_linevp.count;
-        float uniforms[788]={0};memcpy(uniforms,s_vp.c,sizeof s_vp.c);
-        uniforms[768]=640;uniforms[769]=480;uniforms[770]=1;
-        uniforms[776]=s_fog.enable;memcpy(uniforms+777,&s_fog.mode,4);uniforms[778]=s_fog.p[0];uniforms[779]=s_fog.p[1];
-        uniforms[780]=s_vp.specular_enable;uniforms[781]=(s_vp.light_control>>17)&1;uniforms[782]=((s_vp.zminmax>>4)&15)!=0;
-        uniforms[784]=width;uniforms[785]=s_vp.depth_test;uniforms[786]=flat;uniforms[787]=provoking;
-        char name[96];snprintf(name,sizeof name,"case-%03u.uniforms.bin",test);save(name,uniforms,sizeof uniforms);
+        float uniforms[VP_CONSTS + 5][4] = {0};
+        sg_vp_pack_constants(uniforms, &constants);
+        unsigned slots = sg_vp_constant_slots(&constants);
+        float (*params)[4] = uniforms + slots;
+        params[0][0]=640;params[0][1]=480;params[0][2]=1;
+        params[2][0]=s_fog.enable;memcpy(&params[2][1],&s_fog.mode,4);params[2][2]=s_fog.p[0];params[2][3]=s_fog.p[1];
+        params[3][0]=s_vp.specular_enable;params[3][1]=(s_vp.light_control>>17)&1;params[3][2]=((s_vp.zminmax>>4)&15)!=0;
+        params[4][0]=width;params[4][1]=s_vp.depth_test;params[4][2]=flat;params[4][3]=provoking;
+        char name[96];snprintf(name,sizeof name,"case-%03u.uniforms.bin",test);
+        save(name,uniforms,(slots + 5) * sizeof uniforms[0]);
         snprintf(name,sizeof name,"case-%03u.inputs.bin",test);save(name,s_linevp.data,lines*2*s_linevp.stride);
         SgXfShade shade={0};shade.depth[1]=shade.depth[3]=0x3f800000u;
         if(texture){shade.misc[2]=1;shade.mode[0]=1;shade.tex[0][0]=shade.tex[0][1]=2;shade.misc[3]=1u<<16;}
@@ -162,11 +169,11 @@ int main(void){
         }
     }
     fprintf(manifest,"]");fclose(manifest);
-    if(sg_vp_translate_line_wgsl(VP_PROG_LEN,mask) || sg_vp_translate_line_wgsl(0,mask^1u))abort();
+    if(sg_vp_translate_line_wgsl(VP_PROG_LEN,mask,&constants) || sg_vp_translate_line_wgsl(0,mask^1u,&constants))abort();
     s_vp.prog[7][3]&=~1u;s_vp.prog[8][1]=(1u<<21)|(13u<<9)|0x1bu;s_vp.prog[8][2]=2u<<26;
     s_vp.prog[8][3]=(15u<<12)|(1u<<11)|(6u<<3)|1u;
-    if(sg_vp_translate_line_wgsl(0,vp_input_mask(0)))abort();
-    s_vp.prog[0][3]=(15u<<12)|1u;if(sg_vp_translate_line_wgsl(0,vp_input_mask(0)))abort();
+    if(sg_vp_translate_line_wgsl(0,vp_input_mask(0),&constants))abort();
+    s_vp.prog[0][3]=(15u<<12)|1u;if(sg_vp_translate_line_wgsl(0,vp_input_mask(0),&constants))abort();
     free(s_linevp.data);
     puts("Generated GPU line shaders and actual CPU VP/clipping baselines");
     return 0;

@@ -141,6 +141,43 @@ After the stadium loaded, the one-second FPS samples printed every ten seconds
 were 50–60, with a 20 FPS sample during a mode transition. The two runs used
 different teams. Captures and logs are in `build-web-tests/native-retail-vp-fixed`.
 
+### WebGPU vertex program constants
+
+The WebGPU vertex translator now packs the constant registers actually read by
+each program. Its triangle and line shaders share the layout stored with the
+shader cache entry. A relative operand can use that layout while the address
+register is known to be zero, before the first ARL takes effect.
+Programs with a live relative operand after an ARL keep the full 192-register
+bank. The Linux Vulkan shader continues to use the original bank layout.
+
+The sparse-register fixture reduces the vertex uniform block from 3,136 to
+112 bytes. Browser checks run 2,880 GPU vertex executions against the CPU
+interpreter, including an out-of-range static index and relative reads before
+and after an ARL. The position, coverage, D16/D24, GPU line and native Vulkan
+fixtures pass. The packaged launcher smoke test also passes.
+
+Set `RECOMP_WEBGPU_UNIFORM_PROFILE=1` to report the constant bytes eliminated
+per five-second renderer window. The count covers queued draws before
+deduplication and merging. `RECOMP_SDLGPU_FULL_VP_CONSTANTS=1` selects the
+full-bank layout for comparison.
+
+In Raiders at 49ers, the first conservative implementation saved 0.41%
+of requested constant bytes across seven complete stadium intro windows.
+The revised analysis saved 0.46% across six intro windows. Both menu runs
+showed zero savings. These counters quantify the packed data before upload
+caching. The two captures had different scene timing, and a separate host
+compiler competed for CPU time during the revised run. Raw evidence is in
+`build-web-tests/vp-constant-compact-retail` and
+`build-web-tests/vp-constant-address-retail`.
+
+The revised run reached second and inches at 4:44 in the first quarter.
+Four complete opening-drive windows ranged from 21.3 to 28.8 FPS with a
+26.8 FPS median and no software draws. Packing saved 4,617,600 of
+813,594,624 requested constant bytes (0.57%). The worklet missed 27,264
+source frames during the 26.4-second sample interval, with larger
+starvation earlier in the session. The 30 FPS floor and continuous audio
+remain unmet.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

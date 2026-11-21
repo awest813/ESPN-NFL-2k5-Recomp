@@ -31,10 +31,16 @@ static void sg_gpu_error(const char *message) {(void)message;}
 static unsigned compiled;
 static int reject_shader;
 static SDL_GPUShader shaders[16];
-static char *sg_vp_translate_wgsl(uint32_t start) {
-    (void)start; char *text=malloc(2);memcpy(text,"x",2);return text;
+typedef struct { uint32_t count; } SgVpConstants;
+static void sg_vp_constant_layout(uint32_t start, SgVpConstants *constants, int full_bank) {
+    (void)start; (void)full_bank; constants->count = 0;
 }
-static char *sg_vp_translate_line_wgsl(uint32_t start,uint32_t mask) {(void)mask;return sg_vp_translate_wgsl(start);}
+static char *sg_vp_translate_wgsl(uint32_t start, const SgVpConstants *constants) {
+    (void)start; (void)constants; char *text=malloc(2);memcpy(text,"x",2);return text;
+}
+static char *sg_vp_translate_line_wgsl(uint32_t start, uint32_t mask, const SgVpConstants *constants) {
+    (void)mask; return sg_vp_translate_wgsl(start, constants);
+}
 static SDL_GPUShader *SDL_CreateGPUShader(void *device,const SDL_GPUShaderCreateInfo *info) {
     (void)device;(void)info;
     if(reject_shader)return NULL;

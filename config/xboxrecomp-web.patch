@@ -2866,7 +2866,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +195,30 @@
+@@ -185,9 +195,33 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
@@ -2875,6 +2875,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    uint64_t texture_decode_ticks;
 +    uint64_t texture_hash_bytes, texture_compare_bytes;
 +    uint64_t vertex_upload_bytes;
++#ifdef __EMSCRIPTEN__
++    uint64_t vp_constant_bytes_saved;
++#endif
 +    uint32_t merged_draws;
 +    uint32_t texture_decodes, texture_downloads, texture_gpu_copies;
 +    uint32_t vp_affine, vp_program_pending, vp_pipeline_failed;
@@ -2897,7 +2900,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -206,12 +237,46 @@
+@@ -206,12 +240,52 @@
          s_sg_stats.since_ms = now;
      if (now - s_sg_stats.since_ms < 5000)
          return;
@@ -2929,6 +2932,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +                s_sg_stats.vp_lines, (unsigned long long)s_sg_stats.vp_line_indices, s_sg_stats.vp_points);
 +        fprintf(stderr," | lines %u segments / %u draws",s_sg_stats.line_segments,s_sg_stats.line_draws);
 +    }
++#ifdef __EMSCRIPTEN__
++    if (s_sg_stats.gpuvp && getenv("RECOMP_WEBGPU_UNIFORM_PROFILE"))
++        fprintf(stderr, " | VP constant bytes saved %llu of %llu",
++                (unsigned long long)s_sg_stats.vp_constant_bytes_saved,
++                (unsigned long long)s_sg_stats.gpuvp * VP_CONSTS * sizeof(float[4]));
++#endif
      fprintf(stderr, "\n");
 +    if(s_sg_stats.stage_batches) {
 +        fprintf(stderr,"  [SDLGPU STAGES] batches %u",s_sg_stats.stage_batches);
@@ -2945,7 +2954,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
  }
-@@ -246,7 +311,11 @@
+@@ -246,7 +320,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -2957,7 +2966,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +337,12 @@
+@@ -268,7 +346,12 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -2970,7 +2979,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +380,17 @@
+@@ -306,12 +389,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
@@ -4827,20 +4836,84 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vp.inc.c b/src/kernel/sdlgpu/sdlgpu_vp.inc
 +}
 diff --git a/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
 new file mode 100644
-index 0000000..5dfe5bc
+index 0000000..d13e5e0
 --- /dev/null
 +++ b/src/kernel/sdlgpu/sdlgpu_vp_wgsl.inc.c
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,210 @@
 +/* NV2A vertex programs -> WGSL. Shares the native decoder's register and
 + * paired-MAC/ILU rules, with scalar component writes (WGSL forbids assigning
 + * to multi-component swizzles). Constant-writing programs stay on the CPU. */
 +#include "webgpu/sg_wgsl.h"
 +
++typedef struct {
++    uint8_t registers[VP_CONSTS];
++    uint32_t count;
++} SgVpConstants;
++
++/* All three source operands of a slot share its encoded constant index.
++ * The address register starts at zero and ARL updates it after reading the
++ * slot's operands. A relative read after an ARL can address the whole bank. */
++static void sg_vp_constant_layout(uint32_t start, SgVpConstants *layout, int full_bank)
++{
++    uint8_t used[VP_CONSTS] = {0};
++    int address_written = 0;
++    for (uint32_t slot = start; !full_bank && slot < VP_PROG_LEN; slot++) {
++        const uint32_t *t = s_vp.prog[slot];
++        uint32_t mac = vp_field(t, 1, 21, 4);
++        uint32_t sources = vp_sources_used(mac, vp_field(t, 1, 25, 3));
++        if (((sources & 1u) && vp_field(t, 2, 26, 2) == 3) ||
++            ((sources & 2u) && vp_field(t, 2, 11, 2) == 3) ||
++            ((sources & 4u) && vp_field(t, 3, 28, 2) == 3)) {
++            uint32_t index = vp_field(t, 1, 13, 8);
++            used[index < VP_CONSTS ? index : VP_CONSTS - 1] = 1;
++            full_bank = address_written && vp_field(t, 3, 1, 1) != 0;
++        }
++        address_written |= mac == 13;
++        if (vp_field(t, 3, 0, 1))
++            break;
++    }
++    layout->count = 0;
++    for (uint32_t index = 0; index < VP_CONSTS; index++)
++        if (full_bank || used[index])
++            layout->registers[layout->count++] = (uint8_t)index;
++}
++
++static uint32_t sg_vp_constant_slots(const SgVpConstants *layout)
++{
++    /* WGSL requires a positive array length even with no constant reads. */
++    return layout->count ? layout->count : 1;
++}
++
++static void sg_vp_pack_constants(float (*out)[4], const SgVpConstants *layout)
++{
++    if (layout->count == VP_CONSTS) {
++        memcpy(out, s_vp.c, sizeof s_vp.c);
++    } else if (!layout->count) {
++        memset(out, 0, sizeof *out);
++    } else {
++        for (uint32_t i = 0; i < layout->count; i++)
++            memcpy(out[i], s_vp.c[layout->registers[i]], sizeof out[i]);
++    }
++}
++
 +static void sg_wgsl_src(char *out, size_t n, const uint32_t *t, int mux, int reg,
-+                        int neg, const int swz[4], int scalar)
++                        int neg, const int swz[4], int scalar, const SgVpConstants *layout)
 +{
 +    char source[96];
-+    sg_vp_src(source, sizeof source, t, mux, reg, 0, swz, scalar);
++    /* A packed bank can only have relative reads while a0 is still zero. */
++    if (mux == 3 && layout->count < VP_CONSTS) {
++        static const char comp[] = "xyzw";
++        uint32_t index = vp_field(t, 1, 13, 8);
++        if (index >= VP_CONSTS) index = VP_CONSTS - 1;
++        uint32_t packed = 0;
++        while (packed < layout->count && layout->registers[packed] != index)
++            packed++;
++        snprintf(source, sizeof source, "c[%u].%c%c%c%c", packed, comp[swz[0]],
++                 comp[scalar ? swz[0] : swz[1]], comp[scalar ? swz[0] : swz[2]],
++                 comp[scalar ? swz[0] : swz[3]]);
++    } else {
++        sg_vp_src(source, sizeof source, t, mux, reg, 0, swz, scalar);
++    }
 +    /* Qualify constants and apply negation as a sign-bit flip. Floating-point
 +     * unary minus may canonicalize NaNs on some browser GPU backends. */
 +    const char *c = strstr(source, "c[");
@@ -4858,11 +4931,12 @@ index 0000000..5dfe5bc
 +            sg_text(b, "      %s.%c = %s.%c;\n", dst, xyzw[k], src, xyzw[k]);
 +}
 +
-+static char *sg_vp_translate_wgsl_parts(uint32_t start, const char *prelude, const char *epilogue)
++static char *sg_vp_translate_wgsl_parts(uint32_t start, const char *prelude, const char *epilogue,
++                                        const SgVpConstants *layout)
 +{
 +    SgText b = {0};
 +    if (start >= VP_PROG_LEN) return NULL;
-+    sg_text(&b, "%s", prelude);
++    sg_text(&b, "const vp_constant_count = %uu;\n%s", sg_vp_constant_slots(layout), prelude);
 +    for (uint32_t slot = start; slot < VP_PROG_LEN; slot++) {
 +        const uint32_t *t = s_vp.prog[slot];
 +        uint32_t ilu = vp_field(t, 1, 25, 3), mac = vp_field(t, 1, 21, 4);
@@ -4887,9 +4961,20 @@ index 0000000..5dfe5bc
 +            sb[k] = (int)vp_field(t, 2, 23 - k * 2, 2);
 +            sc[k] = (int)vp_field(t, 2, 8 - k * 2, 2);
 +        }
-+        sg_wgsl_src(A, sizeof A, t, mux_a, reg_a, (int)vp_field(t, 1, 8, 1), sa, 0);
-+        sg_wgsl_src(B, sizeof B, t, mux_b, reg_b, (int)vp_field(t, 2, 25, 1), sb, 0);
-+        sg_wgsl_src(C, sizeof C, t, mux_c, reg_c, (int)vp_field(t, 2, 10, 1), sc, ilu >= 2 && ilu <= 6);
++        uint32_t sources = vp_sources_used(mac, ilu);
++        if (sources & 1u)
++            sg_wgsl_src(A, sizeof A, t, mux_a, reg_a, (int)vp_field(t, 1, 8, 1), sa, 0, layout);
++        else
++            strcpy(A, "vec4f(0.0)");
++        if (sources & 2u)
++            sg_wgsl_src(B, sizeof B, t, mux_b, reg_b, (int)vp_field(t, 2, 25, 1), sb, 0, layout);
++        else
++            strcpy(B, "vec4f(0.0)");
++        if (sources & 4u)
++            sg_wgsl_src(C, sizeof C, t, mux_c, reg_c, (int)vp_field(t, 2, 10, 1), sc,
++                        ilu >= 2 && ilu <= 6, layout);
++        else
++            strcpy(C, "vec4f(0.0)");
 +        sg_text(&b, "    { let A = %s; let B = %s; let C = %s; var m = vec4f(0.0); var il = vec4f(0.0); var na0 = a0;\n", A, B, C);
 +        switch (mac) {
 +        case 1: sg_text(&b, "      m = A;\n"); break;
@@ -4937,14 +5022,15 @@ index 0000000..5dfe5bc
 +    return b.p;
 +}
 +
-+static char *sg_vp_translate_wgsl(uint32_t start) {
-+    return sg_vp_translate_wgsl_parts(start,k_sg_vp_prelude_wgsl,k_sg_vp_epilogue_wgsl);
++static char *sg_vp_translate_wgsl(uint32_t start, const SgVpConstants *layout) {
++    return sg_vp_translate_wgsl_parts(start, k_sg_vp_prelude_wgsl, k_sg_vp_epilogue_wgsl, layout);
 +}
 +
-+static char *sg_vp_translate_line_wgsl(uint32_t start,uint32_t mask) {
++static char *sg_vp_translate_line_wgsl(uint32_t start, uint32_t mask, const SgVpConstants *layout) {
 +    unsigned count=0;for(uint32_t bits=mask;bits;bits&=bits-1u)count++;
 +    if(start>=VP_PROG_LEN || mask!=vp_input_mask(start) || count>8)return NULL;
-+    char *program=sg_vp_translate_wgsl_parts(start,k_sg_linevp_prelude_wgsl,k_sg_linevp_epilogue_wgsl);
++    char *program = sg_vp_translate_wgsl_parts(start, k_sg_linevp_prelude_wgsl,
++                                               k_sg_linevp_epilogue_wgsl, layout);
 +    if(!program)return NULL;
 +    SgText b={0};sg_text(&b,"%s\n%s\n",program,k_sg_linevp_support_wgsl);free(program);
 +    if(mask) {
@@ -4966,14 +5052,14 @@ index 0000000..5dfe5bc
 +}
 diff --git a/src/kernel/sdlgpu/shaders/vp.wgsl b/src/kernel/sdlgpu/shaders/vp.wgsl
 new file mode 100644
-index 0000000..148b856
+index 0000000..97380f9
 --- /dev/null
 +++ b/src/kernel/sdlgpu/shaders/vp.wgsl
 @@ -0,0 +1,155 @@
 +// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the
 +// two halves; the C translator inserts straight-line instructions between them.
 +struct VpUniforms {
-+    c: array<vec4f, 192>,
++    c: array<vec4f, vp_constant_count>,
 +    info: vec4f,
 +    clipr: vec4f,
 +    fogp: vec4f,
@@ -6473,7 +6559,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +273,1515 @@
+@@ -231,34 +273,1517 @@
      return bad == 0;
  }
 
@@ -6646,8 +6732,9 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        SgXfShade shade;sg_xf_shade_fill(&shade,0);
 +        CHECK((shade.depth[0]&8u)!=0 && !(shade.depth[0]&4u),"D16 uniform encoding missing");
 +        CHECK(view.depth_scale==1.0f/65536.0f && shade.depth[1]==0x47800000u,"D16 projection range disagrees");
-+        SgVpUniforms vp_uniforms;sg_vp_uniforms_fill(&vp_uniforms,sg_surface_current());
-+        CHECK(vp_uniforms.info[2]==65536.0f,"GPU vertex-program D16 projection range disagrees");
++        SgVpUniforms vp_uniforms;
++        uint32_t vp_offset = sg_vp_uniforms_fill(&vp_uniforms, sg_surface_current(), 0);
++        CHECK(vp_offset == 0 && vp_uniforms.info[2] == 65536.0f, "GPU vertex-program D16 projection range disagrees");
 +        SgDraw draw={.surface=sg_surface_current(),.pipe=sg_pipeline_current(1,0),
 +            .vertices=vertices,.vertex_bytes=sizeof vertices,.vertex_count=3,.tex=textures,.tex_count=8,
 +            .vs_uniform=&view,.vs_uniform_size=sizeof view,.fs_uniform=&shade,.fs_uniform_size=sizeof shade};
@@ -6714,8 +6801,9 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        SgXfShade shade;sg_xf_shade_fill(&shade,0);
 +        CHECK((shade.depth[0]&4u)!=0,"integer D24 uniform missing for W mode %u",w_buffer);
 +        CHECK(shade.depth[1]==0x4B800000u && view.depth_scale==1.0f/16777216.0f,"D24 vertex/fragment projection range disagrees");
-+        SgVpUniforms vp_uniforms;sg_vp_uniforms_fill(&vp_uniforms,sg_surface_current());
-+        CHECK(vp_uniforms.info[2]==16777216.0f,"GPU vertex-program D24 projection range disagrees");
++        SgVpUniforms vp_uniforms;
++        uint32_t vp_offset = sg_vp_uniforms_fill(&vp_uniforms, sg_surface_current(), 0);
++        CHECK(vp_offset == 0 && vp_uniforms.info[2] == 16777216.0f, "GPU vertex-program D24 projection range disagrees");
 +        SgDraw draw={.surface=sg_surface_current(),.pipe=sg_pipeline_current(1,0),
 +            .vertices=vertices,.vertex_bytes=sizeof vertices,.vertex_count=3,
 +            .tex=textures,.tex_count=8,.vs_uniform=&view,.vs_uniform_size=sizeof view,
@@ -7993,7 +8081,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1790,25 @@
+@@ -267,10 +1792,25 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -8022,7 +8110,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1846,48 @@
+@@ -308,12 +1848,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -8072,7 +8160,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1896,40 @@
+@@ -322,6 +1898,40 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -30188,13 +30276,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c
-@@ -18,15 +18,28 @@
+@@ -18,15 +18,31 @@
 
  typedef struct {
      uint32_t       key, start;         /* written by the draw thread before publishing */
 +    uint32_t       length;
 +    uint32_t       program[VP_PROG_LEN][4]; /* exact identity through FINAL; hash is only a hint */
      uint32_t       inmask;             /* inputs v0..v15 the program reads */
++#ifdef __EMSCRIPTEN__
++    SgVpConstants  constants;          /* uniform layout shared by triangles and lines */
++#endif
      SDL_AtomicInt  state;
      char          *src;                /* GLSL, handed to the worker */
      uint32_t      *spirv;              /* the worker's result */
@@ -30217,7 +30308,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
  static struct {
      SDL_Thread    *thread;
-@@ -38,10 +51,12 @@
+@@ -38,10 +54,12 @@
  } s_sg_vpq;
 
  /* FNV-1a over the program's words, as gpu_vp_hash. */
@@ -30231,7 +30322,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
          for (k = 0; k < 4; k++)
              h = (h ^ s_vp.prog[slot][k]) * 16777619u;
          if (vp_field(s_vp.prog[slot], 3, 0, 1))
-@@ -50,21 +65,8 @@
+@@ -50,21 +68,8 @@
      return h;
  }
 
@@ -30255,7 +30346,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
  static int SDLCALL sg_vp_worker(void *arg)
  {
      (void)arg;
-@@ -99,6 +101,7 @@
+@@ -99,6 +104,7 @@
      }
      return 0;
  }
@@ -30263,7 +30354,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
  static int sg_vp_worker_start(void)
  {
-@@ -126,7 +129,20 @@
+@@ -126,7 +132,20 @@
   * the cache is full. *slot_out receives the cache slot. */
  static SDL_GPUShader *sg_vp_program(uint32_t *slot_out)
  {
@@ -30285,7 +30376,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
      for (i = 0; i < SG_VP_CACHE; i++) {
          uint32_t at = (key + i) & (SG_VP_CACHE - 1);
-@@ -134,13 +150,37 @@
+@@ -134,13 +153,39 @@
          int st = SDL_GetAtomicInt(&p->state);
 
          if (st == SG_VP_EMPTY) {
@@ -30295,7 +30386,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 +            memcpy(p->program, s_vp.prog + s_vp.start, length * sizeof p->program[0]);
 +#ifdef __EMSCRIPTEN__
 +            p->inmask = vp_input_mask(s_vp.start);
-+            char *src = sg_vp_translate_wgsl(s_vp.start);
++            sg_vp_constant_layout(s_vp.start, &p->constants,
++                                  getenv("RECOMP_SDLGPU_FULL_VP_CONSTANTS") != NULL);
++            char *src = sg_vp_translate_wgsl(s_vp.start, &p->constants);
 +            if (!src) {
 +                SDL_SetAtomicInt(&p->state, SG_VP_FAILED);
 +                return NULL;
@@ -30326,7 +30419,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
              src = sg_vp_translate(s_vp.start, NULL);
              if (!src) {
                  SDL_SetAtomicInt(&p->state, SG_VP_FAILED);
-@@ -153,9 +193,17 @@
+@@ -153,9 +198,17 @@
              SDL_SignalCondition(s_sg_vpq.wake);
              SDL_UnlockMutex(s_sg_vpq.lock);
              return NULL;
@@ -30344,7 +30437,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 
          if (st == SG_VP_SPIRV) {
              /* Compiled: make the SDL shader here, on the draw thread. */
-@@ -174,8 +222,24 @@
+@@ -174,8 +227,24 @@
          }
          if (st != SG_VP_READY)
              return NULL;
@@ -30362,7 +30455,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_vpcache.inc.c b/src/kernel/sdlgpu/sdlgpu_v
 +    if(!sg_vp_program(slot_out))return NULL;
 +    SgVpProg *p=&s_sg_vp[*slot_out];
 +    if(p->line_vs || p->line_failed)return p->line_vs;
-+    char *source=sg_vp_translate_line_wgsl(s_vp.start,p->inmask);
++    char *source = sg_vp_translate_line_wgsl(s_vp.start, p->inmask, &p->constants);
 +    if(!source){p->line_failed=1;return NULL;}
 +    SDL_GPUShaderCreateInfo info={.code=(const Uint8*)source,.code_size=strlen(source),.entrypoint="main",
 +        .format=SDL_GPU_SHADERFORMAT_WGSL,.stage=SDL_GPU_SHADERSTAGE_VERTEX,.num_uniform_buffers=1};
@@ -30711,7 +30804,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -377,15 +497,101 @@
+@@ -377,15 +497,117 @@
  }
 
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
@@ -30720,8 +30813,19 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 -static int sg_draw_vp(SgSurface *s, SgTextureUse tex[4], uint32_t sampled) {
 + * CPU path instead: program still compiling or not translatable, points,
 + * flat colours, or out of memory. */
-+static void sg_vp_uniforms_fill(SgVpUniforms *u,SgSurface *s) {
++/* Store a compact bank immediately before the fixed parameters, so the
++ * submission can take one contiguous suffix for triangles or lines. */
++static uint32_t sg_vp_uniforms_fill(SgVpUniforms *u, SgSurface *s, uint32_t slot)
++{
++    uint32_t skipped = 0;
++#ifdef __EMSCRIPTEN__
++    const SgVpConstants *layout = &s_sg_vp[slot].constants;
++    skipped = VP_CONSTS - sg_vp_constant_slots(layout);
++    sg_vp_pack_constants(u->c + skipped, layout);
++#else
++    (void)slot;
 +    memcpy(u->c, s_vp.c, sizeof u->c);
++#endif
 +    u->info[0] = (float) s->w;
 +    u->info[1] = (float) s->h;
 +    u->info[2] = sg_depth_projection_range();
@@ -30738,13 +30842,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +    u->lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
 +    u->lightp[2] = ((s_vp.zminmax >> 4) & 0xFu) != 0 ? 1.0f : 0.0f;
 +    u->lightp[3] = 0.0f;
-+
++    return skipped * sizeof u->c[0];
 +}
 +
 +#ifdef __EMSCRIPTEN__
 +typedef struct {SgVpUniforms base;float line[4];} SgLineVpUniforms;
 +typedef struct {SgXfShade base;float params[4];} SgLineVpShade;
 +_Static_assert(sizeof(SgLineVpUniforms)<=4096,"line vertex constants fit");
++_Static_assert(offsetof(SgLineVpUniforms, line) == sizeof(SgVpUniforms), "line uniforms follow vertex uniforms");
 +static struct {float *data;uint32_t capacity,count,stride;VertexInputs inputs;} s_linevp;
 +static void sg_pack_line_vp(void *context,uint32_t a,uint32_t b,uint32_t provoking) {
 +    (void)context;(void)provoking;
@@ -30776,16 +30881,20 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +    vertex_inputs_prepare(&s_linevp.inputs,s_sg_vp[slot].inmask,max_index);
 +    s_linevp.count=0;batch_lines(sg_pack_line_vp,NULL);
 +    if(!s_linevp.count)return 1;
-+    SgLineVpUniforms uniforms={0};sg_vp_uniforms_fill(&uniforms.base,surface);
++    SgLineVpUniforms uniforms;
++    uint32_t uniform_offset = sg_vp_uniforms_fill(&uniforms.base, surface, slot);
 +    uniforms.line[0]=s_gpu.line_width/8.0f;uniforms.line[1]=s_vp.depth_test!=0;
 +    uniforms.line[2]=s_gpu.shade_mode==0x1D00;uniforms.line[3]=s_gpu.provoking_vertex!=0;
 +    SgLineVpShade shade={0};sg_xf_shade_fill(&shade.base,sampled);
 +    shade.params[0]=1.0f/sg_depth_projection_range();shade.params[1]=s_gpu.line_width/8.0f;
 +    SgDraw draw={.surface=surface,.pipe=pipe,.vertices=s_linevp.data,
 +        .vertex_bytes=s_linevp.count*2*s_linevp.stride,.vertex_count=6,.instance_count=s_linevp.count,
-+        .tex=tex,.tex_count=8,.vs_uniform=&uniforms,.vs_uniform_size=sizeof uniforms,
++        .tex=tex,.tex_count=8,
++        .vs_uniform=(const uint8_t *)&uniforms + uniform_offset,
++        .vs_uniform_size=sizeof uniforms - uniform_offset,
 +        .fs_uniform=&shade,.fs_uniform_size=sizeof shade};
 +    if(!sg_queue_draw(&draw))return 0;
++    s_sg_stats.vp_constant_bytes_saved += uniform_offset;
 +    s_sg_stats.gpuvp++;s_sg_stats.line_draws++;s_sg_stats.line_segments+=s_linevp.count;
 +    return 1;
 +}
@@ -30816,7 +30925,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
          case NV_PRIM_TRIANGLE_STRIP:
-@@ -395,20 +601,45 @@
+@@ -395,20 +617,45 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
@@ -30870,7 +30979,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +652,15 @@
+@@ -421,7 +668,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -30887,11 +30996,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -466,35 +705,19 @@
+@@ -466,39 +721,24 @@
      {
          static SgVpUniforms u; /* 3 KB: not on the stack */
          SgXfShade shade;
 -        float zmax = SG_DEPTH_MAX;
++        uint32_t uniform_offset = sg_vp_uniforms_fill(&u, s, slot);
          SgDraw d = {
              .surface = s, .pipe = pipe,
 -            .vertices = s_sgvp.in, .vertex_bytes = s_sgvp.nv * (uint32_t) sizeof *s_sgvp.in,
@@ -30899,13 +31009,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              .vertex_count = s_sgvp.nv,
              .indices = s_sgvp.ix, .index_count = ni,
 -            .tex = tex, .tex_count = 4,
+-            .vs_uniform = &u, .vs_uniform_size = sizeof u,
 +            .tex = tex, .tex_count = 8,
-             .vs_uniform = &u, .vs_uniform_size = sizeof u,
++            .vs_uniform = (const uint8_t *)&u + uniform_offset,
++            .vs_uniform_size = sizeof u - uniform_offset,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
-
-         /* The program's constants and the epilogue's parameters (as
-          * gpu_vp_bind fills them; our surfaces have no x offset). */
+-
+-        /* The program's constants and the epilogue's parameters (as
+-         * gpu_vp_bind fills them; our surfaces have no x offset). */
 -        memcpy(u.c, s_vp.c, sizeof u.c);
 -        u.info[0] = (float) s->w;
 -        u.info[1] = (float) s->h;
@@ -30922,11 +31034,17 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 -        u.lightp[0] = s_vp.specular_enable ? 1.0f : 0.0f;
 -        u.lightp[1] = (s_vp.light_control & (1u << 17)) ? 1.0f : 0.0f;
 -        u.lightp[2] = u.lightp[3] = 0.0f;
-+        sg_vp_uniforms_fill(&u,s);
 
          sg_xf_shade_fill(&shade, sampled);
          if (!sg_queue_draw(&d))
-@@ -508,13 +731,13 @@
+             return 0;
++#ifdef __EMSCRIPTEN__
++        s_sg_stats.vp_constant_bytes_saved += uniform_offset;
++#endif
+         s_sg_stats.gpuvp++;
+         return 1;
+     }
+@@ -508,13 +748,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -30942,7 +31060,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +755,43 @@
+@@ -532,31 +772,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -30992,7 +31110,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -564,20 +799,48 @@
+@@ -564,20 +816,48 @@
 
      {
          SgXfShade shade;
@@ -33660,7 +33778,7 @@ index 0000000..b6d2e75
 +#endif
 diff --git a/src/kernel/sdlgpu/webgpu/sg_wgsl.h b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 new file mode 100644
-index 0000000..9292c3e
+index 0000000..1ea3e2c
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sg_wgsl.h
 @@ -0,0 +1,9681 @@
@@ -42945,7 +43063,7 @@ index 0000000..9292c3e
 +    "// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the\n"
 +    "// two halves; the C translator inserts straight-line instructions between them.\n"
 +    "struct VpUniforms {\n"
-+    "    c: array<vec4f, 192>,\n"
++    "    c: array<vec4f, vp_constant_count>,\n"
 +    "    info: vec4f,\n"
 +    "    clipr: vec4f,\n"
 +    "    fogp: vec4f,\n"
@@ -43103,7 +43221,7 @@ index 0000000..9292c3e
 +    "// Runtime-specialized NV2A vertex programs. tools/gen-wgsl.py embeds the\n"
 +    "// two halves; the C translator inserts straight-line instructions between them.\n"
 +    "struct VpUniforms {\n"
-+    "    c: array<vec4f, 192>,\n"
++    "    c: array<vec4f, vp_constant_count>,\n"
 +    "    info: vec4f,\n"
 +    "    clipr: vec4f,\n"
 +    "    fogp: vec4f,\n"
