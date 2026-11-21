@@ -49,6 +49,12 @@ built from source.
 git clone --branch main --recurse-submodules https://github.com/awest813/ESPN-NFL-2k5-Recomp.git
 cd ESPN-NFL-2k5-Recomp
 git -c core.whitespace=cr-at-eol apply --ignore-space-change --directory=external/xboxrecomp config/xboxrecomp-web.patch
+.\tools\get-webview2-sdk.ps1
+$minizPath = "external/xemu-src/util/miniz"
+New-Item -ItemType Directory -Force $minizPath | Out-Null
+foreach ($file in "miniz.c", "miniz.h") {
+    Invoke-WebRequest "https://raw.githubusercontent.com/xemu-project/xemu/master/util/miniz/$file" -OutFile "$minizPath/$file"
+}
 $env:NFL2K5_CMAKE_EXTRA = "-DCMAKE_PREFIX_PATH=C:/SDKs/SDL3"
 .\tools\build.ps1 -Configuration Release -Game
 ```
