@@ -31738,10 +31738,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..a5e2d0c
+index 0000000..076a9fc
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1872 @@
+@@ -0,0 +1,1923 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -31768,6 +31768,7 @@ index 0000000..a5e2d0c
 +
 +#define WG_VS_UNIFORM_BYTES 4096u   /* binding size of vertex uniforms (group 1) */
 +#define WG_FS_UNIFORM_BYTES 4096u   /* binding size of fragment uniforms (group 3) */
++#define WG_UNIFORM_TAIL     SDL_max(WG_VS_UNIFORM_BYTES, WG_FS_UNIFORM_BYTES)
 +#define WG_UNIFORM_ALIGN    256u    /* minUniformBufferOffsetAlignment */
 +#define WG_MAX_SAMPLERS     8u      /* 2D stages 0..3, cube stages 4..7; samplers at 8 + i */
 +
@@ -31837,6 +31838,7 @@ index 0000000..a5e2d0c
 +    uint64_t uniform_pushed;
 +    uint64_t uniform_uncached_bytes;
 +    uint32_t uniform_last_hits, uniform_cache_hits;
++    int has_draw;
 +    int has_download;
 +    int failed;                     /* never replay an incomplete recording */
 +};
@@ -31858,6 +31860,14 @@ index 0000000..a5e2d0c
 +/* Shared binding layout of every pipeline (SDL's set convention). */
 +static WGPUBindGroupLayout s_bgl[4];
 +static WGPUPipelineLayout s_layout;
++static WGPUBindGroup s_empty_group;
++static struct {
++    WGPUBuffer buffer;
++    WGPUBindGroup vs_group, fs_group;
++    uint64_t capacity;
++    uint32_t dirty_end;
++} s_draw_uniforms;
++static uint64_t s_max_buffer_size = 256u << 20; /* WebGPU's default limit */
 +static WGPUTexture s_dummy_tex;
 +static WGPUTextureView s_dummy_view;
 +static WGPUTexture s_dummy_cube;
@@ -31989,6 +31999,8 @@ index 0000000..a5e2d0c
 +    s_bgl[3] = make_bgl(&fs_u, 1);
 +    WGPUPipelineLayoutDescriptor pl = { .bindGroupLayoutCount = 4, .bindGroupLayouts = s_bgl };
 +    s_layout = wgpuDeviceCreatePipelineLayout(s_dev, &pl);
++    WGPUBindGroupDescriptor empty = { .layout = s_bgl[0] };
++    s_empty_group = wgpuDeviceCreateBindGroup(s_dev, &empty);
 +
 +    WGPUTextureDescriptor td = { .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
 +        .dimension = WGPUTextureDimension_2D, .size = { 1, 1, 1 }, .format = WGPUTextureFormat_RGBA8Unorm,
@@ -32026,6 +32038,9 @@ index 0000000..a5e2d0c
 +    }
 +    s_dev = d;
 +    s_queue = wgpuDeviceGetQueue(d);
++    WGPULimits limits = {0};
++    if (wgpuDeviceGetLimits(d, &limits) == WGPUStatus_Success)
++        s_max_buffer_size = limits.maxBufferSize;
 +    create_fixed_objects();
 +
 +    WGPUEmscriptenSurfaceSourceCanvasHTMLSelector sel = {
@@ -32982,8 +32997,7 @@ index 0000000..a5e2d0c
 +{
 +    if (!c || c->failed || !len) return;
 +    uint32_t limit = fragment ? WG_FS_UNIFORM_BYTES : WG_VS_UNIFORM_BYTES;
-+    uint32_t binding = WG_VS_UNIFORM_BYTES > WG_FS_UNIFORM_BYTES ? WG_VS_UNIFORM_BYTES : WG_FS_UNIFORM_BYTES;
-+    if (!data || len > limit || c->ubytes > UINT32_MAX - WG_UNIFORM_ALIGN - len - binding - 4) {
++    if (!data || len > limit || c->ubytes > UINT32_MAX - WG_UNIFORM_ALIGN - len - WG_UNIFORM_TAIL - 4) {
 +        cmd_fail(c, "invalid uniform data or size"); return;
 +    }
 +    c->uniform_pushed += len;
@@ -33020,7 +33034,8 @@ index 0000000..a5e2d0c
 +            if (cap > UINT32_MAX / 2) { cap = cap_needed; break; }
 +            cap *= 2;
 +        }
-+        uint8_t *u = (uint8_t *)realloc(c->uniforms, cap);
++        /* Leave room to append a zero-filled binding tail in the same upload. */
++        uint8_t *u = (uint8_t *)realloc(c->uniforms, cap + WG_UNIFORM_TAIL);
 +        if (!u) { cmd_fail(c, "out of memory"); return; }
 +        c->uniforms = u;
 +        c->ucap = cap;
@@ -33040,13 +33055,21 @@ index 0000000..a5e2d0c
 +void WG_PushGPUFragmentUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 1, d, len); }
 +void WG_DrawGPUPrimitives(SDL_GPURenderPass *p, Uint32 n, Uint32 inst, Uint32 first_v, Uint32 first_i)
 +{
-+    Op *o = push(CMD(p), OP_DRAW);
-+    if (o) o->draw = (typeof(o->draw)){ n, inst, first_v, first_i, 0 };
++    SDL_GPUCommandBuffer *c = CMD(p);
++    Op *o = push(c, OP_DRAW);
++    if (o) {
++        o->draw = (typeof(o->draw)){ n, inst, first_v, first_i, 0 };
++        c->has_draw = 1;
++    }
 +}
 +void WG_DrawGPUIndexedPrimitives(SDL_GPURenderPass *p, Uint32 n, Uint32 inst, Uint32 first_idx, Sint32 voff, Uint32 first_i)
 +{
-+    Op *o = push(CMD(p), OP_DRAW_INDEXED);
-+    if (o) o->draw = (typeof(o->draw)){ n, inst, first_idx, first_i, voff };
++    SDL_GPUCommandBuffer *c = CMD(p);
++    Op *o = push(c, OP_DRAW_INDEXED);
++    if (o) {
++        o->draw = (typeof(o->draw)){ n, inst, first_idx, first_i, voff };
++        c->has_draw = 1;
++    }
 +}
 +
 +/* ── Replay (server thread) ───────────────────────────────────────────── */
@@ -33063,8 +33086,6 @@ index 0000000..a5e2d0c
 +    WGPUTexture swap_tex;      /* the canvas's current texture, once resolved */
 +    WGPUTextureView swap_view;
 +    Readback *rb; uint32_t nrb, caprb;
-+    WGPUBuffer ubuf;           /* this submission's uniforms */
-+    WGPUBindGroup vs_group, fs_group, empty_group;
 +    em_proxying_ctx *ctx;
 +    atomic_int pending;
 +    atomic_int failed;
@@ -33176,7 +33197,7 @@ index 0000000..a5e2d0c
 +    uint32_t vs_off = 0, fs_off = 0;
 +    int samplers_dirty = 1;
 +    int vs_dirty = 1, fs_dirty = 1;
-+    wgpuRenderPassEncoderSetBindGroup(pe, 0, r->empty_group, 0, NULL);
++    if (c->has_draw) wgpuRenderPassEncoderSetBindGroup(pe, 0, s_empty_group, 0, NULL);
 +
 +    for ((*ip)++; *ip < c->n && c->ops[*ip].kind != OP_END_PASS; (*ip)++) {
 +        const Op *o = &c->ops[*ip];
@@ -33233,11 +33254,11 @@ index 0000000..a5e2d0c
 +                samplers_dirty = 0;
 +            }
 +            if (vs_dirty) {
-+                wgpuRenderPassEncoderSetBindGroup(pe, 1, r->vs_group, 1, &vs_off);
++                wgpuRenderPassEncoderSetBindGroup(pe, 1, s_draw_uniforms.vs_group, 1, &vs_off);
 +                vs_dirty = 0;
 +            }
 +            if (fs_dirty) {
-+                wgpuRenderPassEncoderSetBindGroup(pe, 3, r->fs_group, 1, &fs_off);
++                wgpuRenderPassEncoderSetBindGroup(pe, 3, s_draw_uniforms.fs_group, 1, &fs_off);
 +                fs_dirty = 0;
 +            }
 +            if (o->kind == OP_DRAW)
@@ -33295,30 +33316,64 @@ index 0000000..a5e2d0c
 +        since = now; pushed = stored = uncached = last_hits = cache_hits = commands = 0;
 +    }
 +}
++static int prepare_draw_uniforms(SDL_GPUCommandBuffer *c)
++{
++    uint32_t bytes = (c->ubytes + 3u) & ~3u;
++    uint32_t required = bytes + WG_UNIFORM_TAIL;
++    if (required > s_draw_uniforms.capacity) {
++        if (required > s_max_buffer_size) return 0;
++        uint64_t capacity = s_draw_uniforms.capacity ? s_draw_uniforms.capacity : WG_UNIFORM_TAIL;
++        while (capacity < required) capacity *= 2;
++        if (capacity > s_max_buffer_size) capacity = s_max_buffer_size & ~UINT64_C(3);
++        WGPUBufferDescriptor bd = { .usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = capacity };
++        WGPUBuffer buffer = wgpuDeviceCreateBuffer(s_dev, &bd);
++        if (!buffer) return 0;
++        WGPUBindGroupEntry ve = { .binding = 0, .buffer = buffer, .size = WG_VS_UNIFORM_BYTES };
++        WGPUBindGroupEntry fe = { .binding = 0, .buffer = buffer, .size = WG_FS_UNIFORM_BYTES };
++        WGPUBindGroupDescriptor vd = { .layout = s_bgl[1], .entryCount = 1, .entries = &ve };
++        WGPUBindGroupDescriptor fd = { .layout = s_bgl[3], .entryCount = 1, .entries = &fe };
++        WGPUBindGroup vs_group = wgpuDeviceCreateBindGroup(s_dev, &vd);
++        WGPUBindGroup fs_group = wgpuDeviceCreateBindGroup(s_dev, &fd);
++        if (!vs_group || !fs_group) {
++            if (vs_group) wgpuBindGroupRelease(vs_group);
++            if (fs_group) wgpuBindGroupRelease(fs_group);
++            wgpuBufferRelease(buffer);
++            return 0;
++        }
++        /* Release the handles without destroying storage still in flight. */
++        if (s_draw_uniforms.buffer) {
++            wgpuBindGroupRelease(s_draw_uniforms.vs_group);
++            wgpuBindGroupRelease(s_draw_uniforms.fs_group);
++            wgpuBufferRelease(s_draw_uniforms.buffer);
++        }
++        s_draw_uniforms = (typeof(s_draw_uniforms)){ buffer, vs_group, fs_group, capacity, 0 };
++    }
++
++    /* A shader can bind the full block at the last dynamic offset. Clear any
++     * reachable bytes left by an earlier, larger upload, like a fresh buffer. */
++    uint32_t upload_bytes = SDL_max(bytes, SDL_min(s_draw_uniforms.dirty_end, required));
++    if (c->ubytes) {
++        memset(c->uniforms + bytes, 0, upload_bytes - bytes);
++        wgpuQueueWriteBuffer(s_queue, s_draw_uniforms.buffer, 0, c->uniforms, upload_bytes);
++    } else if (upload_bytes) {
++        static const uint8_t zero[WG_UNIFORM_TAIL];
++        wgpuQueueWriteBuffer(s_queue, s_draw_uniforms.buffer, 0, zero, upload_bytes);
++    }
++    if (upload_bytes >= s_draw_uniforms.dirty_end) s_draw_uniforms.dirty_end = bytes;
++    return 1;
++}
++
 +static void replay(Replay *r)
 +{
 +    SDL_GPUCommandBuffer *c = r->c;
 +    uniform_profile(c);
-+    r->enc = wgpuDeviceCreateCommandEncoder(s_dev, NULL);
-+
-+    /* Uniforms of the whole submission in one buffer; each draw binds its
-+     * own offsets. Room past the end for a full binding at the last offset. */
-+    {
-+        uint32_t size = c->ubytes + (WG_VS_UNIFORM_BYTES > WG_FS_UNIFORM_BYTES ? WG_VS_UNIFORM_BYTES : WG_FS_UNIFORM_BYTES);
-+        size = (size + 3u) & ~3u;
-+        WGPUBufferDescriptor bd = { .usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = size };
-+        r->ubuf = wgpuDeviceCreateBuffer(s_dev, &bd);
-+        if (c->ubytes)
-+            wgpuQueueWriteBuffer(s_queue, r->ubuf, 0, c->uniforms, (c->ubytes + 3u) & ~3u);
-+        WGPUBindGroupEntry ve = { .binding = 0, .buffer = r->ubuf, .offset = 0, .size = WG_VS_UNIFORM_BYTES };
-+        WGPUBindGroupEntry fe = { .binding = 0, .buffer = r->ubuf, .offset = 0, .size = WG_FS_UNIFORM_BYTES };
-+        WGPUBindGroupDescriptor vd = { .layout = s_bgl[1], .entryCount = 1, .entries = &ve };
-+        WGPUBindGroupDescriptor fd = { .layout = s_bgl[3], .entryCount = 1, .entries = &fe };
-+        WGPUBindGroupDescriptor ed = { .layout = s_bgl[0], .entryCount = 0 };
-+        r->vs_group = wgpuDeviceCreateBindGroup(s_dev, &vd);
-+        r->fs_group = wgpuDeviceCreateBindGroup(s_dev, &fd);
-+        r->empty_group = wgpuDeviceCreateBindGroup(s_dev, &ed);
++    /* Replay is serial on the server. The uniform write is ordered after
++     * the preceding submissions and before this command buffer's draws. */
++    if (c->has_draw && !prepare_draw_uniforms(c)) {
++        atomic_store(&r->failed, 1);
++        return;
 +    }
++    r->enc = wgpuDeviceCreateCommandEncoder(s_dev, NULL);
 +
 +    for (uint32_t i = 0; i < c->n; i++) {
 +        const Op *o = &c->ops[i];
@@ -33417,10 +33472,6 @@ index 0000000..a5e2d0c
 +    wgpuQueueSubmit(s_queue, 1, &cb);
 +    wgpuCommandBufferRelease(cb);
 +    wgpuCommandEncoderRelease(r->enc);
-+    wgpuBindGroupRelease(r->vs_group);
-+    wgpuBindGroupRelease(r->fs_group);
-+    wgpuBindGroupRelease(r->empty_group);
-+    wgpuBufferRelease(r->ubuf);
 +    if (r->swap_view) wgpuTextureViewRelease(r->swap_view);
 +    if (r->swap_tex) wgpuTextureRelease(r->swap_tex);
 +}
@@ -33430,7 +33481,7 @@ index 0000000..a5e2d0c
 +{
 +    Replay *r = (Replay *)p;
 +    replay(r);
-+    if (r->fence) track_fence(r->fence);
++    if (r->fence && !atomic_load(&r->failed)) track_fence(r->fence);
 +}
 +
 +static void do_submit_download(em_proxying_ctx *ctx, void *p)
@@ -33440,7 +33491,7 @@ index 0000000..a5e2d0c
 +    replay(r);
 +    /* Register completion before starting asynchronous readbacks, so their
 +     * waiter does not need a second proxy/promise round trip afterwards. */
-+    if (r->fence) track_fence(r->fence);
++    if (r->fence && !atomic_load(&r->failed)) track_fence(r->fence);
 +    atomic_store(&r->pending, (int)r->nrb);
 +    if (!r->nrb) { emscripten_proxy_finish(ctx); return; }
 +    for (uint32_t i = 0; i < r->nrb; i++) {
@@ -33459,7 +33510,7 @@ index 0000000..a5e2d0c
 +    else run_sync(do_submit, &r);
 +    free(r.rb);
 +    cmd_free(c);
-+    if (atomic_load(&r.failed)) { SDL_SetError("WebGPU texture readback failed"); return false; }
++    if (atomic_load(&r.failed)) { SDL_SetError("WebGPU command replay failed"); return false; }
 +    return true;
 +}
 +
@@ -45218,10 +45269,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..758c54d
+index 0000000..df2ef0b
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2389 @@
+@@ -0,0 +1,2456 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -45776,6 +45827,72 @@ index 0000000..758c54d
 +    SDL_ReleaseGPUShader(dev,vs);
 +}
 +
++static void test_uniform_submission_order(void)
++{
++    const char *vertex =
++        "@vertex fn main(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {"
++        "  let p = array(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));"
++        "  return vec4f(p[i],0,1); }";
++    const char *fragment =
++        "struct U { values: array<vec4f,256>, };"
++        "@group(3) @binding(0) var<uniform> u:U;"
++        "@fragment fn main()->@location(0) vec4f {"
++        "  return vec4f(u.values[0].rgb+u.values[255].rgb,1); }";
++    SDL_GPUShader *vs = shader(vertex, SDL_GPU_SHADERSTAGE_VERTEX, 0);
++    SDL_GPUShader *fs = shader(fragment, SDL_GPU_SHADERSTAGE_FRAGMENT, 0);
++    SDL_GPUColorTargetDescription format = { .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM };
++    SDL_GPUGraphicsPipelineCreateInfo info = { .vertex_shader = vs, .fragment_shader = fs,
++        .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
++        .target_info = { .num_color_targets = 1, .color_target_descriptions = &format } };
++    SDL_GPUGraphicsPipeline *pipe = SDL_CreateGPUGraphicsPipeline(dev, &info);
++    const uint32_t expected[] = {0xFFFF0000, 0xFF0000FF, 0xFF00FF00, 0xFF000000, 0xFFFF0000, 0xFF0000FF};
++    SDL_GPUTexture *targets[SDL_arraysize(expected)];
++    float uniforms[1024] = {0};
++
++    /* Submit all of these before reading any results. The sequence grows the
++     * backing buffer, shrinks it, and then reads a tail beyond the last clear. */
++    for (unsigned i = 0; i < SDL_arraysize(expected); i++) {
++        targets[i] = make_tex(format.format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 1, 1, 1);
++        SDL_GPUColorTargetInfo color = { .texture = targets[i], .load_op = SDL_GPU_LOADOP_CLEAR,
++            .store_op = SDL_GPU_STOREOP_STORE };
++        SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(dev);
++        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
++        SDL_BindGPUGraphicsPipeline(pass, pipe);
++        if (i == 0) {
++            uniforms[1020] = 1.0f;
++            SDL_PushGPUFragmentUniformData(command, 0, uniforms, sizeof uniforms);
++        } else if (i == 1 || i == 5) {
++            const float blue[4] = {0,0,1,0};
++            SDL_PushGPUFragmentUniformData(command, 0, blue, sizeof blue);
++        } else if (i == 2) {
++            for (unsigned float_index = 0; float_index < SDL_arraysize(uniforms); float_index += 4)
++                uniforms[float_index] = 1.0f;
++            SDL_PushGPUFragmentUniformData(command, 0, uniforms, sizeof uniforms);
++            uniforms[0] = 0.5f;
++            SDL_PushGPUFragmentUniformData(command, 0, uniforms, sizeof uniforms);
++            memset(uniforms, 0, sizeof uniforms);
++            uniforms[1] = 1.0f;
++            SDL_PushGPUFragmentUniformData(command, 0, uniforms, sizeof uniforms);
++        } else if (i == 4) {
++            const float colors[3][4] = {{0,0,0,0},{0,1,0,0},{1,0,0,0}};
++            for (unsigned j = 0; j < SDL_arraysize(colors); j++)
++                SDL_PushGPUFragmentUniformData(command, 0, colors[j], sizeof colors[j]);
++        }
++        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
++        SDL_EndGPURenderPass(pass);
++        CHECK(SDL_SubmitGPUCommandBuffer(command), "uniform submission %u", i);
++    }
++    for (unsigned i = 0; i < SDL_arraysize(expected); i++) {
++        uint32_t actual = 0;
++        download(targets[i], 0, 1, 1, &actual);
++        CHECK(actual == expected[i], "uniform submission %u exact color %08X (expected %08X)", i, actual, expected[i]);
++        SDL_ReleaseGPUTexture(dev, targets[i]);
++    }
++    SDL_ReleaseGPUGraphicsPipeline(dev, pipe);
++    SDL_ReleaseGPUShader(dev, fs);
++    SDL_ReleaseGPUShader(dev, vs);
++}
++
 +int main(void)
 +{
 +    setenv("RECOMP_WEBGPU_UNIFORM_CACHE","1",1);
@@ -45785,6 +45902,7 @@ index 0000000..758c54d
 +
 +    dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_WGSL, false, NULL);
 +    CHECK(dev != NULL, "device (driver %s)", dev ? SDL_GetGPUDeviceDriver(dev) : "none");
++    test_uniform_submission_order();
 +    /* A malformed recording must fail atomically; it must not submit the
 +     * valid prefix or manufacture a signalled fence for dropped commands. */
 +    {

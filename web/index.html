@@ -1,30 +1,161 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#101820">
-<title>ESPN NFL 2K5 · Web launcher</title><link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101820">
+  <title>ESPN NFL 2K5 · Web launcher</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<a class="skip" href="#main">Skip to launcher</a>
-<header class="masthead"><a class="brand" href="#main" aria-label="NFL 2K5 launcher"><b>2K5</b><span>NFL FOOTBALL<small>WEB EDITION</small></span></a><nav aria-label="Main navigation"><a href="#library">Game files</a><a href="#controls">Controls</a><a href="#diagnostics">Diagnostics</a></nav><span class="preview">Experimental build</span></header>
-<main id="main">
-<div class="hero">
-<div><p class="eyebrow"><i class="live-dot"></i> ORIGINAL XBOX · IN YOUR BROWSER</p><h1>ESPN NFL <span>2K5</span></h1><p class="intro">Back on the field.<br>Bring your own disc and pick up the playbook.</p>
-<div class="launch-card"><div class="launch-heading"><strong id="launch-label">Getting ready</strong><span id="launch-badge" class="badge">Checking browser</span></div><p id="launch-status" role="status" aria-live="polite">Checking your browser and game files…</p><div class="frame-option"><label for="fps-limit">Frame rate</label><select id="fps-limit" aria-describedby="fps-help"><option value="30">30 FPS lock</option><option value="0">Uncapped</option></select></div><p id="fps-help" class="note">Change before or during play. The cap targets steady pacing; demanding scenes can still run slower.</p><button id="play" class="primary play-button" disabled>▶ &nbsp; Play game</button><button id="reload" hidden>Reload launcher</button><p class="privacy">Your game files stay on this device. No account needed.</p></div></div>
-<div class="cover" aria-hidden="true"><div class="cover-top"><span>ESPN</span><span>NFL FOOTBALL</span></div><div class="cover-title">2K<span>5</span></div><div class="field"><i></i><i></i><i></i><i></i><i></i><span>50</span><b></b></div><div class="cover-bottom"><span>THE 2004 SEASON</span><span>WEB EDITION ↗</span></div></div>
-</div>
-<div id="stage" hidden><div class="game-toolbar"><strong id="game-status">Starting game</strong><div class="row"><button id="fullscreen">Fullscreen</button><button id="restart">Restart game</button></div></div><div id="screen"><canvas id="canvas" tabindex="0" aria-label="NFL 2K5 game. Click to use keyboard controls."></canvas><canvas id="gpucanvas" hidden aria-hidden="true"></canvas></div><button id="sound" hidden>Enable game sound</button><p class="note">Click the game for keyboard controls. Press a controller button to connect.</p></div>
-<div class="content-grid">
-<section id="library" class="panel"><div class="section-heading"><div><p class="eyebrow">01 / YOUR LIBRARY</p><h2>Bring your game.</h2></div><span id="disc-badge" class="badge">Not imported</span></div>
-<div id="disc-none"><p>Import your Xbox disc image or an extracted game folder once. It will be ready here next time.</p></div><div id="disc-installed" hidden><p id="disc-summary"></p><p id="disc-xbe" class="note"></p></div>
-<div id="drop-zone" class="drop-zone"><span class="import-icon" aria-hidden="true">↓</span><p>Drop an ISO here, or choose your files.</p><div class="row"><button id="import-image" class="secondary">Choose disc image</button><button id="import-folder">Choose folder</button></div><p class="note">ISO / XISO · Folder with <code>default.xbe</code> and <code>vc_53450030</code></p></div>
-<input id="file-image" type="file" accept=".iso,.xiso,.img,application/octet-stream" hidden><input id="file-folder" type="file" webkitdirectory hidden>
-<div id="progress" hidden><div class="progress-heading"><strong>Importing game</strong><span id="progress-percent">0%</span></div><progress id="progress-bar" value="0" max="1" aria-label="Game import progress"></progress><p id="progress-text"></p></div><p id="library-message" role="alert" hidden></p><div class="library-footer"><p class="note">Allow several GB of browser storage. Saves and settings are kept separately.</p><button id="remove" class="text-button" disabled>Remove game files</button></div></section>
-<section id="controls" class="panel"><p class="eyebrow">02 / TAKE CONTROL</p><h2>Ready at kickoff.</h2><p>Use a controller, or play with your keyboard. Click the game first to give it focus.</p><dl class="key-list"><div><dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dd></div><div><dt>Look / right stick</dt><dd><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dd></div><div><dt>D-pad / menus</dt><dd><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dd></div><div><dt>A / B / X / Y</dt><dd><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd><kbd>V</kbd></dd></div><div><dt>Start / Back</dt><dd><kbd>Enter</kbd><kbd>Backspace</kbd></dd></div><div><dt>Left / right trigger</dt><dd><kbd>Q</kbd><kbd>E</kbd></dd></div><div><dt>White / Black</dt><dd><kbd>R</kbd><kbd>F</kbd></dd></div><div><dt>Left / right stick click</dt><dd><kbd>T</kbd><kbd>G</kbd></dd></div></dl><p class="note">Default bindings. Use A / D to assign your controller to a team on the team selection screen. In-game settings can change these controls.</p><div class="controller-state" id="controller-status" role="status">No controller detected. Press a button on your controller to connect.</div><details id="controller-test"><summary>Test controller</summary><pre id="controller-readout">Press a controller button to connect.</pre></details></section>
-</div>
-<section id="save-data" class="panel"><p class="eyebrow">03 / SAVE DATA</p><h2>Keep your season.</h2><p>Use Save and Load inside the game as usual. Saves stay in this browser across visits. Download a backup to carry them to another browser or device.</p><p id="save-summary" role="status">Checking save storage…</p><div class="row"><button id="export-saves" class="secondary" disabled>Download save backup</button><button id="import-saves" disabled>Restore backup</button><button id="refresh-saves" disabled>Refresh</button><button id="persist-storage">Keep storage on this device</button></div><input id="file-saves" type="file" accept=".json,application/json" hidden><p id="save-message" role="status" hidden></p><p class="note" id="save-help">Backup includes saves and control/video settings, and excludes the game disc. Finish saving in-game, then reload the launcher to manage backups. Restore merges files and replaces matching names.</p></section>
-<details id="diagnostics" class="panel diagnostics"><summary>Browser &amp; diagnostics <span class="note">Compatibility checks and game log</span></summary><div class="checks">
-<div class="check" id="chk-wasm"><span class="label">WebAssembly</span><span class="value">Checking…</span></div><div class="check" id="chk-isolation"><span class="label">Shared memory</span><span class="value">Checking…</span></div><div class="check" id="chk-opfs"><span class="label">Game storage</span><span class="value">Checking…</span></div><div class="check" id="chk-gpu"><span class="label">Hardware graphics</span><span class="value">Checking…</span></div><div class="check" id="chk-build"><span class="label">Game runtime</span><span class="value">Checking…</span></div><div class="check" id="chk-storage"><span class="label">Storage usage</span><span class="value">Checking…</span></div></div><div class="log-heading"><h3>Game log</h3><button id="download-log">Download log</button></div><div id="log" role="log" aria-label="Game log"></div></details>
-<footer>ESPN NFL 2K5 · Experimental web port. Requires your own Xbox game files.<br>Game data is stored locally and is never uploaded. · <a href="third-party-notices.txt">Third-party notices</a></footer>
-</main><script src="launch.js"></script><script src="storage.js"></script><script src="app.js"></script>
-</body></html>
+  <a class="skip" href="#main">Skip to launcher</a>
+  <header class="masthead">
+    <a class="brand" href="#main"><b>2K5</b><span>NFL 2K5<span class="brand-platform">Browser launcher</span></span></a>
+    <nav aria-label="Launcher navigation">
+      <a href="#library">Game files</a>
+      <a href="#controls">Controls</a>
+      <a href="#save-data">Saves</a>
+      <a href="#diagnostics" id="open-diagnostics">Diagnostics</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section id="stage" aria-label="Game session" hidden>
+      <div class="game-toolbar">
+        <div class="game-metrics">
+          <strong id="game-status" role="status">Starting game</strong>
+          <output id="game-fps" aria-label="Measured WebGPU frame rate" aria-live="off" hidden></output>
+        </div>
+        <div class="row">
+          <div id="stage-frame-rate"></div>
+          <button id="focus-game">Focus game</button>
+          <button id="fullscreen">Fullscreen</button>
+          <button id="restart">Exit to launcher</button>
+        </div>
+      </div>
+      <div id="screen">
+        <canvas id="canvas" tabindex="0" aria-label="NFL 2K5 game. Click to use keyboard controls."></canvas>
+        <canvas id="gpucanvas" hidden aria-hidden="true"></canvas>
+      </div>
+      <button id="sound" hidden>Enable game sound</button>
+    </section>
+
+    <div class="launch-grid">
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">Original Xbox · Browser preview</p>
+        <h1 id="title">ESPN NFL <span>2K5</span></h1>
+        <p class="intro">Import your own USA Xbox disc to play. Game files and saves are stored in this browser.</p>
+        <div class="launch-card">
+          <div class="launch-heading">
+            <strong id="launch-label">Getting ready</strong>
+            <span id="launch-badge" class="badge">Checking browser</span>
+          </div>
+          <p id="launch-status" role="status">Checking your browser and game files…</p>
+          <p id="launch-notice" role="alert" hidden></p>
+          <div id="launch-frame-rate">
+            <div class="frame-option">
+              <label for="fps-limit">Frame rate cap</label>
+              <select id="fps-limit" aria-describedby="fps-help">
+                <option value="30">30 FPS lock</option>
+                <option value="0">Uncapped</option>
+              </select>
+            </div>
+          </div>
+          <p id="fps-help" class="note">The 30 FPS lock limits the maximum. Demanding scenes can still run slower.</p>
+          <button id="play" class="primary play-button" disabled>Play game</button>
+          <button id="reload" hidden>Reload launcher</button>
+        </div>
+      </section>
+
+      <section id="library" class="panel">
+        <div class="section-heading">
+          <h2>Game files</h2>
+          <span id="disc-badge" class="badge">Not imported</span>
+        </div>
+        <div id="disc-none"><p>Import an ISO or an extracted game folder. You only need to do this once per browser profile.</p></div>
+        <div id="disc-installed" hidden><p id="disc-summary"></p><p id="disc-xbe" class="note"></p></div>
+        <div id="drop-zone" class="drop-zone">
+          <p>Drop an ISO here or choose your files.</p>
+          <div class="row">
+            <button id="import-image" class="secondary" disabled>Choose disc image</button>
+            <button id="import-folder" disabled>Choose folder</button>
+          </div>
+          <p class="note">ISO / XISO or a folder with <code>default.xbe</code> and <code>vc_53450030</code></p>
+        </div>
+        <input id="file-image" type="file" accept=".iso,.xiso,.img,application/octet-stream" hidden>
+        <input id="file-folder" type="file" webkitdirectory hidden>
+        <div id="progress" hidden>
+          <div class="progress-heading"><strong>Importing game</strong><span id="progress-percent">0%</span></div>
+          <progress id="progress-bar" value="0" max="1" aria-label="Game import progress"></progress>
+          <p id="progress-text"></p>
+        </div>
+        <p id="library-message" role="alert" hidden></p>
+        <div class="library-footer">
+          <p class="note">Allow several GB of storage.</p>
+          <button id="remove" class="text-button" disabled>Remove game files</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="support-grid">
+      <section id="controls" class="panel">
+        <h2>Controls</h2>
+        <p>Click the game for keyboard input or press a button on your controller to connect.</p>
+        <div class="controller-state" id="controller-status" role="status">No controller detected. Press a button on your controller to connect.</div>
+        <details id="controller-test">
+          <summary>Test controller</summary>
+          <pre id="controller-readout">Press a controller button to connect.</pre>
+        </details>
+        <dl class="key-list">
+          <div><dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dd></div>
+          <div><dt>Look / right stick</dt><dd><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dd></div>
+          <div><dt>D-pad / menus</dt><dd><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dd></div>
+          <div><dt>A / B / X / Y</dt><dd><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd><kbd>V</kbd></dd></div>
+          <div><dt>Start / Back</dt><dd><kbd>Enter</kbd><kbd>Backspace</kbd></dd></div>
+          <div><dt>Left / right trigger</dt><dd><kbd>Q</kbd><kbd>E</kbd></dd></div>
+          <div><dt>White / Black</dt><dd><kbd>R</kbd><kbd>F</kbd></dd></div>
+          <div><dt>Left / right stick click</dt><dd><kbd>T</kbd><kbd>G</kbd></dd></div>
+        </dl>
+        <p class="note">On Team Select, use A or D to assign your controller to a side. Open the in-game settings to change bindings.</p>
+      </section>
+
+      <section id="save-data" class="panel">
+        <h2>Saves</h2>
+        <p>Use Save and Load inside the game. When you finish saving, exit to the launcher to download or restore a backup.</p>
+        <p id="save-summary" role="status">Checking save storage…</p>
+        <div class="row">
+          <button id="export-saves" class="secondary" disabled>Download backup</button>
+          <button id="import-saves" disabled>Restore backup</button>
+          <button id="refresh-saves" disabled>Refresh</button>
+          <button id="persist-storage" disabled>Keep storage on this device</button>
+        </div>
+        <input id="file-saves" type="file" accept=".json,application/json" hidden>
+        <p id="save-message" role="status" hidden></p>
+        <p class="note" id="save-help">Backups contain saves and settings. Restoring replaces files with matching names.</p>
+      </section>
+    </div>
+
+    <details id="diagnostics" class="panel diagnostics">
+      <summary>Browser &amp; diagnostics <span class="note">Compatibility checks and game log</span></summary>
+      <div class="checks">
+        <div class="check" id="chk-wasm"><span class="label">WebAssembly</span><span class="value">Checking…</span></div>
+        <div class="check" id="chk-isolation"><span class="label">Shared memory</span><span class="value">Checking…</span></div>
+        <div class="check" id="chk-opfs"><span class="label">Game storage</span><span class="value">Checking…</span></div>
+        <div class="check" id="chk-gpu"><span class="label">Hardware graphics</span><span class="value">Checking…</span></div>
+        <div class="check" id="chk-build"><span class="label">Game runtime</span><span class="value">Checking…</span></div>
+        <div class="check" id="chk-storage"><span class="label">Storage usage</span><span class="value">Checking…</span></div>
+      </div>
+      <div class="log-heading"><h3>Game log</h3><button id="download-log">Download log</button></div>
+      <div id="log" role="log" aria-label="Game log"></div>
+    </details>
+
+    <footer>
+      <a href="https://github.com/awest813/ESPN-NFL-2k5-Recomp/tree/main">Project and help</a>
+      <a href="third-party-notices.txt">Third-party notices</a>
+    </footer>
+  </main>
+  <script src="launch.js"></script>
+  <script src="storage.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

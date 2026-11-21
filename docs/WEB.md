@@ -110,8 +110,9 @@ The launcher supports drag-and-drop disc images, checks disc compatibility
 and runtime availability before enabling Play, and keeps technical checks
 and the downloadable log under **Browser & diagnostics**. It shows import
 progress and recoverable worker errors, connected controllers and default
-keyboard bindings. The game toolbar provides fullscreen and restart.
-Restart reloads the page to reset the runtime; unsaved progress is lost.
+keyboard bindings. The game toolbar shows measured WebGPU FPS and provides
+the frame-rate cap, fullscreen, keyboard focus and **Exit to launcher**.
+Exiting reloads the page to reset the runtime and discards unsaved progress.
 Removing game files preserves the separate save/settings storage.
 
 The launcher's **Frame rate** choice defaults to **30 FPS lock** and also
@@ -125,7 +126,7 @@ Development `?env=NFL2K5_FPS_LIMIT=0` or `=30` overrides the launcher choice.
 
 **Save data** shows the local save/settings count and offers portable JSON
 backup and restore. Use the game's normal Save/Load menus; finish saving and
-reload the launcher before managing backups. Restore merges files, replacing
+exit to the launcher before managing backups. Restore merges files, replacing
 matching names and keeping unrelated files. Backups include `saves/` plus
 `controls.ini`, `nfl2k5_game.ini` and `nfl2k5_video.ini`, excluding the disc.
 Limits are 4096 files, 32 MiB per file and 128 MiB total decoded data. Each file

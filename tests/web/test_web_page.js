@@ -145,6 +145,15 @@ async function playAndCheckXbe(page, want, label) {
       check(gpuLayout.gpuOnTop, 'GPU canvas paints above the SDL input canvas');
       check(await page.$eval('#play', (b) => b.disabled), 'Play disabled before a disc is imported');
       check(await page.inputValue('#fps-limit') === '30', 'launcher defaults to the 30 FPS lock');
+      await page.evaluate(() => {
+        for (let i = 0; i < 2002; i++) log('launcher log fixture ' + i, 'stderr');
+      });
+      check(await page.locator('#log > div').count() === 0, 'closed diagnostics keep logs outside the DOM');
+      await page.click('#open-diagnostics');
+      await page.waitForFunction(() => document.querySelector('#log').lastChild?.textContent === 'launcher log fixture 2001');
+      check(await page.locator('#log > div').count() === 2000 &&
+            await page.locator('#log > div').last().getAttribute('class') === 'stderr',
+            'opened diagnostics render the most recent 2,000 log entries with their severity');
       await page.setInputFiles('#file-image', path.join(TMP, 'test.xiso'));
       check(!!(await waitLog(page, /^Imported 7 files/, 60000)), 'image import finished');
       check(sameDisc(await opfsDisc(page), want, true), 'image: every file in OPFS matches the disc, empty dirs kept');
@@ -333,14 +342,47 @@ async function playAndCheckXbe(page, want, label) {
         state.installed={version:1,xbeSha256:Object.keys(KNOWN_XBE)[0],files:1,bytes:1,
           source:{kind:'folder',name:'synthetic runtime'},importedAt:new Date().toISOString(),hasVc53450030:true};
         window.capChanges=[];window.runtimeStarts=0;
-        NFL2K5Launch.start=async()=>{runtimeStarts++;window.nfl2k5Module={_xbox_WebSetFpsLimit:v=>{capChanges.push(v);return 1;}};return nfl2k5Module;};
+        NFL2K5Launch.start=async(options)=>{
+          runtimeStarts++;
+          window.testSessionOptions=options;
+          window.nfl2k5Module={_xbox_WebSetFpsLimit:v=>{capChanges.push(v);return !window.rejectCap;}};
+          return nfl2k5Module;
+        };
         renderDisc();
       });
+      await page.evaluate(async()=>{window.releaseTestSession=await NFL2K5Storage.acquireSession();});
+      await page.click('#play');
+      await page.waitForFunction(()=>document.querySelector('#launch-notice').textContent.includes('Another NFL 2K5 tab'));
+      check(await page.isVisible('#launch-notice') && await page.locator('#play').isEnabled(),
+        'a storage lock conflict explains how to retry beside Play');
+      await page.evaluate(()=>releaseTestSession());
       await page.click('#play');
       await page.waitForFunction(()=>state.running && !document.querySelector('#fps-limit').disabled);
+      check(await page.locator('#stage #fps-limit').count()===1 && await page.locator('#play').isHidden() &&
+            await page.locator('#launch-notice').isHidden(),
+        'running game puts the cap beside the canvas and clears the launch notice');
       await page.selectOption('#fps-limit','0'); await page.selectOption('#fps-limit','30');
       check(await page.evaluate(()=>runtimeStarts===1 && JSON.stringify(capChanges)==='[0,30]'),
         'frame cap can switch during play without restarting the runtime');
+      await page.evaluate(()=>{window.rejectCap=true;});
+      await page.selectOption('#fps-limit','0');
+      check(await page.inputValue('#fps-limit')==='30', 'a rejected cap change restores the applied setting');
+      await page.evaluate(()=>{
+        testSessionOptions.onGpuPresent(true);
+        testSessionOptions.printErr('  [SDLGPU] 5s: frames 132 26.4 fps | 2D gpu 0 sw 0');
+      });
+      check(await page.isVisible('#game-fps') && await page.textContent('#game-fps')==='26.4 FPS',
+        'game toolbar distinguishes measured WebGPU FPS from the configured cap');
+      await page.evaluate(()=>testSessionOptions.onGpuPresent(false));
+      check(await page.isHidden('#game-fps'), 'renderer handoff clears the old WebGPU sample');
+      await page.click('#focus-game');
+      check(await page.evaluate(()=>document.activeElement.id)==='canvas', 'game toolbar can restore keyboard focus');
+      await page.evaluate(()=>history.replaceState(null,'','?autoplay=1&env=TEST=1'));
+      page.once('dialog', dialog=>dialog.accept());
+      await Promise.all([page.waitForURL(url=>!url.searchParams.has('autoplay')),page.click('#restart')]);
+      await page.waitForSelector('body[data-ready="1"]');
+      check(await page.locator('#stage').isHidden() && new URL(page.url()).searchParams.get('env')==='TEST=1',
+        'exit reloads the launcher with autoplay cleared and other settings intact');
       await context.close();
     }
     {
