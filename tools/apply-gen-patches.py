@@ -29,8 +29,16 @@ if "--gen" in sys.argv:
     GEN = os.path.abspath(sys.argv[sys.argv.index("--gen") + 1])
 LENIENT = "--lenient" in sys.argv
 
-# (id, function, anchor line (stripped match), insert 'before' or 'after', code)
+# (id, function, anchor line (stripped match), 'before', 'after' or 'replace', code)
 PATCHES = [
+    ("NV2A_VBLANK_ACK_SERVICE", "sub_0042D5E0", "MEM32(edi + 0x600100) = ecx;", "replace", """\
+    { extern int xbox_Nv2aAckVblank(uint32_t, uint32_t);
+      if (!xbox_Nv2aAckVblank(edi, ecx)) MEM32(edi + 0x600100) = ecx; }
+"""),
+    ("NV2A_VBLANK_ACK_DPC", "sub_0042DDB0", "MEM32(edi + 0x600100) = 1;", "replace", """\
+    { extern int xbox_Nv2aAckVblank(uint32_t, uint32_t);
+      if (!xbox_Nv2aAckVblank(edi, 1)) MEM32(edi + 0x600100) = 1; }
+"""),
     ("WEB_GPU_FENCE_WAIT", "sub_004262F0", "loc_00426427: ;", "after", """\
 #ifdef __EMSCRIPTEN__
     /* Block on actual GPU progress without holding the guest CPU. */
@@ -796,7 +804,7 @@ def main():
         # 'before' a label: keep the label's preceding blank line above the patch.
         if where == "before" and lines[hit].strip().endswith(": ;") and lines[hit - 1].strip() == "":
             at = hit - 1
-        lines[at:at] = block
+        lines[at:at + (where == "replace")] = block
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write("\n".join(lines))
         applied.append("%s -> %s" % (pid, os.path.basename(path)))

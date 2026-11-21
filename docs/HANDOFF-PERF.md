@@ -178,6 +178,51 @@ source frames during the 26.4-second sample interval, with larger
 starvation earlier in the session. The 30 FPS floor and continuous audio
 remain unmet.
 
+### NV2A completion mirrors and vblank acknowledgement
+
+The poller now takes one shared completion lock when a mirror is registered.
+It publishes the fence and frame counter from the same completed submission.
+The executor publishes directly from the submission it just retired. Guest
+device pointers are still followed on every poll, and a late poll cannot
+replace a newer completion while the lock is held.
+
+A Web idle-wait trial on the same binary spent 32.6 of the first 40.3 seconds
+holding the guest lock in the timer/DPC thread. The zero-duration yield
+control spent 1.2 of the first 40.4 seconds there. The timed trial took
+longer to reach the title screen, and its later startup windows ranged from
+1.5 to 2.6 FPS. The captures used Chrome 157 and the private retail disc.
+
+Two generated handlers write PCRTC's vblank acknowledgement and then wait
+for PMC's summary bit to clear. They now route the write to the NV2A handler,
+which clears the selected PCRTC bit and the summary when no bits remain.
+The generated fallback still handles other addresses or values through
+the poller. Both hooks survive regeneration. Tests exercise pending and
+completed snapshots, remapped fences, register acknowledgement, and
+preservation of unrelated interrupt bits.
+
+With both handlers in place, the timed trial recorded 155 ms of timer/DPC
+lock holds in the first 40.4 seconds. It reached the first title-mode
+transition 45.3 seconds after the guest entry, against 42.4 seconds in the
+earlier yield control. These startup captures establish the change in lock
+behavior. Their scene timing differed.
+
+The timed trial with inline handlers reached the Bears at 49ers opening
+drive. One presentation window averaged 2.4 FPS and the worklet's longest
+gap was 49,920 frames. Timer/DPC lock holds stayed low during that stall.
+The change retains the inline handlers and zero-duration poll yield.
+Capture logs and CPU counters are under `build-web-tests/ack-idle-park`,
+`build-web-tests/ack-idle-yield` and `build-web-tests/ack-idle-inline-park`.
+
+The final build used the default launcher settings and reached the first
+title-mode transition 42.8 seconds after guest entry. It loaded VIP1 from
+the virtual hard disk. The timer/DPC thread held the guest lock for 155 ms
+in the first 40.4 seconds, compared with 1,218 ms in the earlier yield
+control. Six startup windows ranged from 29.4 to 30.1 FPS. The audit still
+recorded audio underruns. It covered startup, with no live-drive FPS
+measurement for this build. See `build-web-tests/ack-idle-inline-final`.
+The rebuilt Windows executable passed retail-disc validation, and both
+native and Wasm acknowledgement regressions passed.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

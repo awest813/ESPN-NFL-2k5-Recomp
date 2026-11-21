@@ -29481,6 +29481,15 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
  }
 
  /* The GPU's vertical blank, delivered rather than merely enabled.
+@@ -2532,7 +2565,7 @@
+
+     /* Only the PMC summary bit is raised. PCRTC_INTR_0 stays 0 so that a
+      * nonzero value there can only be D3D's write-1-to-clear acknowledgement,
+-     * which the ack thread (xbox_memory_layout.c) completes by dropping the
++     * which the register handler or ack thread completes by dropping the
+      * summary bit. Raising PCRTC_INTR_0 too made the two indistinguishable,
+      * and any flag telling them apart had to be held across guest code (the
+      * ISR), where a blocking host call can hand the guest lock to a thread
 @@ -2821,6 +2854,8 @@
       * elsewhere -- one DPC queue, not two). Started unconditionally from
       * xbox_kernel_bridge_init. */
@@ -43478,7 +43487,31 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
  #if !defined(_WIN32)
  #include <unistd.h>   /* _exit */
  #if defined(__linux__) && defined(__x86_64__)
-@@ -494,6 +499,15 @@
+@@ -231,6 +236,23 @@
+ #define NV2A_PMC_INTR_PCRTC    0x01000000u
+ #define NV2A_PCRTC_INTR_0_OFS  0x600100u
+
++/* Honour the title's vblank W1C store directly. The synthetic interrupt
++ * raises PMC's summary bit while PCRTC stays zero until the guest write.
++ * Other apertures and values continue through the original store/poller. */
++int xbox_Nv2aAckVblank(uint32_t nv2a_base, uint32_t value)
++{
++    if (nv2a_base != XBOX_NV2A_BASE || value != 1 || !g_nv2a_memory)
++        return 0;
++    volatile char *regs = (volatile char *)g_nv2a_memory;
++    volatile uint32_t *pcrtc = (volatile uint32_t *)(regs + NV2A_PCRTC_INTR_0_OFS);
++    volatile uint32_t *pmc = (volatile uint32_t *)(regs + NV2A_PMC_INTR_0_OFS);
++    uint32_t pending = *pcrtc & ~value;
++    *pcrtc = pending;
++    if (!pending)
++        *pmc &= ~NV2A_PMC_INTR_PCRTC;
++    return 1;
++}
++
+
+ /*
+  * Bits that must always read as SET. The mirror image of the table above:
+@@ -494,6 +516,15 @@
                          " a channel reset will spin\n");
          return FALSE;
      }
@@ -43494,10 +43527,32 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
  #else
  #if defined(__linux__) && defined(__x86_64__)
      if (!g_ac97_posix_handler_ready || mprotect(g_ac97_page, AC97_TRAP_BYTES, PROT_READ) != 0) {
-@@ -642,6 +656,42 @@
+@@ -629,8 +660,8 @@
+ } PbSnap;
+ static int s_async = -1;
+ static SRWLOCK s_snap_lock = SRWLOCK_INIT;
+-static PbSnap s_snap_pending, s_snap_done;
+-static volatile LONG s_snap_pending_valid, s_snap_done_valid;
++static PbSnap s_snap_done;
++static int s_snap_done_valid;
+ static HANDLE s_async_ev;
+
+ static int pb_async_on(void)
+@@ -642,17 +673,41 @@
      return s_async;
  }
 
+-/* The snapshot published for one mirror, or 0 when nothing is published
+- * yet (the tick then leaves the guest value alone). */
+-static int pb_async_done(PbSnap *out)
+-{
+-    int ok;
+-    AcquireSRWLockShared(&s_snap_lock);
+-    ok = s_snap_done_valid != 0;
+-    if (ok) *out = s_snap_done;
+-    ReleaseSRWLockShared(&s_snap_lock);
+-    return ok;
+-}
 +#ifdef __EMSCRIPTEN__
 +/* Browser fence handoff. Old completed-kick snapshots must not overwrite a
 + * newer semaphore release from the render thread. Fence numbers wrap at 32
@@ -43533,11 +43588,68 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 +    return 1;
 +}
 +#endif
-+
- /* The snapshot published for one mirror, or 0 when nothing is published
-  * yet (the tick then leaves the guest value alone). */
- static int pb_async_done(PbSnap *out)
-@@ -776,9 +826,8 @@
+
+ int xbox_Nv2aMirrorCounter(uint32_t device_ptr_va,
+                            uint32_t src_off, uint32_t dst_off)
+@@ -668,41 +723,28 @@
+     return 0;
+ }
+
+-static void counter_mirrors_tick(void)
+-{
+-    PbSnap done;
+-    int async = pb_async_on();
+-    if (async && !pb_async_done(&done))
+-        return;                   /* nothing consumed yet: completed stays as is */
++static void counter_mirrors_tick(const PbSnap *done)
++{
+     for (int i = 0; i < g_counter_mirror_count; i++) {
+-        uint32_t dev;
+-
+-        if (async) {               /* completed = submitted as of the last consumed kick */
+-            if (!fence_readable(g_counter_mirrors[i].device_ptr_va, 4))
+-                continue;
+-            dev = *(volatile uint32_t *)((uintptr_t)g_counter_mirrors[i].device_ptr_va + g_memory_offset);
+-            if (!fence_readable(dev + g_counter_mirrors[i].dst_off, 4))
+-                continue;
+-            *(volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].dst_off) + g_memory_offset) = done.cnt[i];
+-            continue;
+-        }
++        uint32_t dev, src;
+         if (!fence_readable(g_counter_mirrors[i].device_ptr_va, 4))
+             continue;
+         dev = *(volatile uint32_t *)((uintptr_t)g_counter_mirrors[i].device_ptr_va
+                                      + g_memory_offset);
+-        if (!fence_readable(dev + g_counter_mirrors[i].src_off, 4)
+-                || !fence_readable(dev + g_counter_mirrors[i].dst_off, 4))
++        if (!fence_readable(dev + g_counter_mirrors[i].dst_off, 4))
+             continue;
+-        {
+-            volatile uint32_t *dst =
+-                (volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].dst_off)
+-                                      + g_memory_offset);
+-            uint32_t src =
+-                *(volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].src_off)
+-                                       + g_memory_offset);
+-            if (*dst != src)
+-                *dst = src;
+-        }
++        if (done) {
++            src = done->cnt[i]; /* submitted as of the last consumed kick */
++        } else {
++            if (!fence_readable(dev + g_counter_mirrors[i].src_off, 4))
++                continue;
++            src = *(volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].src_off)
++                                         + g_memory_offset);
++        }
++        volatile uint32_t *dst = (volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].dst_off)
++                                                      + g_memory_offset);
++        if (*dst != src)
++            *dst = src;
+     }
+ }
+
+@@ -776,9 +818,8 @@
      }
  }
 
@@ -43549,19 +43661,97 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      int i;
 
      if (!g_frame_counter_count)
-@@ -827,7 +876,11 @@
-             get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
-             if (!fence_readable(get_ptr, 4))
-                 continue;
-+#ifdef __EMSCRIPTEN__
-+            web_fence_publish((volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset), done.fput[i]);
-+#else
-             *(volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset) = done.fput[i];
-+#endif
-             continue;
-         }
+@@ -809,49 +850,57 @@
+     }
+ }
 
-@@ -886,11 +939,10 @@
+-static void fence_mirrors_tick(void)
+-{
+-    PbSnap done;
+-    int async = pb_async_on();
+-    if (async && !pb_async_done(&done))
+-        return;
++static void fence_mirrors_tick(const PbSnap *done)
++{
+     for (int i = 0; i < g_fence_mirror_count; i++) {
+         uint32_t dev, get_ptr;
+-
+-        if (async) {               /* GET pointer = PUT as of the last consumed kick */
+-            if (!fence_readable(g_fence_mirrors[i].device_ptr_va, 4))
+-                continue;
+-            dev = *(volatile uint32_t *)((uintptr_t)g_fence_mirrors[i].device_ptr_va + g_memory_offset);
+-            if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4))
+-                continue;
+-            get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
+-            if (!fence_readable(get_ptr, 4))
+-                continue;
+-            *(volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset) = done.fput[i];
+-            continue;
+-        }
+-
+         if (!fence_readable(g_fence_mirrors[i].device_ptr_va, 4))
+             continue;
+         dev = *(volatile uint32_t *)((uintptr_t)g_fence_mirrors[i].device_ptr_va
+                                      + g_memory_offset);
+-        if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4)
+-                || !fence_readable(dev + g_fence_mirrors[i].put_off, 4))
++        if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4))
+             continue;
+         get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off)
+                                          + g_memory_offset);
+         if (!fence_readable(get_ptr, 4))
+             continue;
+-        {
+-            volatile uint32_t *fence =
+-                (volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset);
+-            uint32_t put =
+-                *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].put_off)
+-                                       + g_memory_offset);
+-            if (*fence != put)
+-                *fence = put;
+-        }
+-    }
++        volatile uint32_t *fence = (volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset);
++        if (done) {
++#ifdef __EMSCRIPTEN__
++            web_fence_publish(fence, done->fput[i]);
++#else
++            *fence = done->fput[i];
++#endif
++            continue;
++        }
++        if (!fence_readable(dev + g_fence_mirrors[i].put_off, 4))
++            continue;
++        uint32_t put = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].put_off)
++                                             + g_memory_offset);
++        if (*fence != put)
++            *fence = put;
++    }
++}
++
++static void pb_mirrors_tick(void)
++{
++    if (!g_fence_mirror_count && !g_counter_mirror_count)
++        return;
++    if (!pb_async_on()) {
++        fence_mirrors_tick(NULL);
++        counter_mirrors_tick(NULL);
++        return;
++    }
++
++    /* Keep the two guest mirrors on the same completion. Holding the lock
++     * through the writes prevents a poll based on this completion from
++     * overwriting a newer completion published by the executor. */
++    AcquireSRWLockShared(&s_snap_lock);
++    if (s_snap_done_valid) {
++        fence_mirrors_tick(&s_snap_done);
++        counter_mirrors_tick(&s_snap_done);
++    }
++    ReleaseSRWLockShared(&s_snap_lock);
+ }
+
+ static int s_nv2a_trace = 0;
+@@ -886,11 +935,10 @@
      return s_fb_va;
  }
 
@@ -43574,7 +43764,19 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      uint32_t sum = 0, nonzero = 0, i, n;
      const uint32_t *p;
 
-@@ -1185,8 +1237,13 @@
+@@ -1160,8 +1208,9 @@
+         InterlockedExchange(&s_q_busy, 0);
+         ReleaseSRWLockExclusive(&s_q_lock);
+         WakeAllConditionVariable(&s_q_space);
+-        fence_mirrors_tick();      /* publish at once rather than at the next ack tick */
+-        counter_mirrors_tick();
++        /* The executor already owns these completed values. */
++        fence_mirrors_tick(&r->snap);
++        counter_mirrors_tick(&r->snap);
+         free(r->w);
+         free(r);
+     }
+@@ -1185,8 +1234,13 @@
          if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4))
              continue;
          sem = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off) + g_memory_offset);
@@ -43589,7 +43791,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      }
  }
 
-@@ -1275,6 +1332,81 @@
+@@ -1275,56 +1329,122 @@
      }
  }
 
@@ -43668,19 +43870,97 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 +#endif
 +}
 +
++static void nv2a_ack_registers_tick(volatile uint32_t *regs, int exec_on)
++{
++    volatile char *base = (volatile char *)regs;
++    volatile uint32_t *pcrtc = (volatile uint32_t *)(base + NV2A_PCRTC_INTR_0_OFS);
++    volatile uint32_t *pmc = (volatile uint32_t *)(base + NV2A_PMC_INTR_0_OFS);
++    if (*pcrtc) { /* The handler wrote its acknowledgement. */
++        *pcrtc = 0;
++        *pmc &= ~NV2A_PMC_INTR_PCRTC;
++    }
++    for (size_t i = 0; i < sizeof NV2A_ACK / sizeof NV2A_ACK[0]; i++) {
++        volatile uint32_t *reg = (volatile uint32_t *)(base + NV2A_ACK[i].offset);
++        if (*reg & NV2A_ACK[i].busy_mask)
++            *reg &= ~NV2A_ACK[i].busy_mask;
++    }
++    const int behind = pb_async_behind();
++    for (size_t i = 0; i < sizeof NV2A_IDLE / sizeof NV2A_IDLE[0]; i++) {
++        volatile uint32_t *reg = (volatile uint32_t *)(base + NV2A_IDLE[i].offset);
++        uint32_t mask = NV2A_IDLE[i].idle_mask;
++        if (behind) {
++            if (*reg & mask)
++                *reg &= ~mask;
++        } else if ((*reg & mask) != mask) {
++            *reg |= mask;
++        }
++    }
++    /* The executor owns GET when enabled. */
++    volatile uint32_t *put = (volatile uint32_t *)(base + NV2A_USER_DMA_PUT);
++    volatile uint32_t *get = (volatile uint32_t *)(base + NV2A_USER_DMA_GET);
++    if (!exec_on && *get != *put)
++        *get = *put;
++}
++
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -1323,8 +1455,6 @@
-         }
-         fence_mirrors_tick();
-         counter_mirrors_tick();
+     while (!InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
+-        {
+-            volatile uint32_t *pcrtc =
+-                (volatile uint32_t *)((char *)regs + NV2A_PCRTC_INTR_0_OFS);
+-            volatile uint32_t *pmc =
+-                (volatile uint32_t *)((char *)regs + NV2A_PMC_INTR_0_OFS);
+-            if (*pcrtc) {          /* the handler wrote its ack */
+-                *pcrtc = 0;
+-                *pmc &= ~NV2A_PMC_INTR_PCRTC;
+-            }
+-        }
+-        for (size_t i = 0; i < sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]); i++) {
+-            volatile uint32_t *r =
+-                (volatile uint32_t *)((char *)regs + NV2A_ACK[i].offset);
+-            if (*r & NV2A_ACK[i].busy_mask) {
+-                *r &= ~NV2A_ACK[i].busy_mask;
+-            }
+-        }
+-        for (size_t i = 0; i < sizeof(NV2A_IDLE) / sizeof(NV2A_IDLE[0]); i++) {
+-            volatile uint32_t *r =
+-                (volatile uint32_t *)((char *)regs + NV2A_IDLE[i].offset);
+-            if (pb_async_behind()) {
+-                /* RECOMP_GPU_ASYNC: a submission is still being drawn. */
+-                if (*r & NV2A_IDLE[i].idle_mask)
+-                    *r &= ~NV2A_IDLE[i].idle_mask;
+-            } else if ((*r & NV2A_IDLE[i].idle_mask) != NV2A_IDLE[i].idle_mask) {
+-                *r |= NV2A_IDLE[i].idle_mask;
+-            }
+-        }
+-        {
+-            volatile uint32_t *put =
+-                (volatile uint32_t *)((char *)regs + NV2A_USER_DMA_PUT);
+-            volatile uint32_t *get =
+-                (volatile uint32_t *)((char *)regs + NV2A_USER_DMA_GET);
+-            /* With the executor running it owns GET (pb_exec_poll); without
+-             * it, report everything consumed at once as before. */
+-            static int exec_on = -1;
+-            if (exec_on < 0)
+-                exec_on = getenv("RECOMP_PB_EXEC") != NULL;
+-            if (!exec_on && *get != *put) {
+-                *get = *put;
+-            }
+-        }
+-        fence_mirrors_tick();
+-        counter_mirrors_tick();
 -        frame_counters_tick();
 -        framebuffer_probe_tick();
++        static int exec_on = -1;
++        if (exec_on < 0)
++            exec_on = getenv("RECOMP_PB_EXEC") != NULL;
++        nv2a_ack_registers_tick(regs, exec_on);
++        pb_mirrors_tick();
 
          /* Which framebuffer the display would be scanning out.
           *
-@@ -1357,15 +1487,8 @@
+@@ -1357,16 +1477,9 @@
              }
          }
 
@@ -43693,12 +43973,14 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 -        *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
 -                               + g_memory_offset) = GetTickCount();
 -
+-        Sleep(0);  /* yield; the waiter is spinning on another core */
 +        /* KeTickCount remains live even when no frame is presented. */
 +        nv2a_ack_clock_tick();
-         Sleep(0);  /* yield; the waiter is spinning on another core */
++        Sleep(0);
      }
      return 0;
-@@ -1863,8 +1986,12 @@
+ }
+@@ -1863,8 +1976,12 @@
          /* Reserve base + mirrors as one range, and map the base at its head.
           * VirtualFree releases just the slice about to be used, so each view
           * replaces our own reservation rather than racing for free space. */
@@ -43713,7 +43995,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
           * Windows MEM_RELEASE requires size zero and releases the whole
           * reservation; use the fixed-base views below on Windows. */
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
-@@ -2521,9 +2648,20 @@
+@@ -2521,9 +2638,20 @@
                      VirtualProtect((char *)g_mcpx_memory + 0x50000u, 0xF000u,
                                     PAGE_READWRITE, &old_protect);
                  }
@@ -43734,7 +44016,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
                  *(volatile uint32_t *)((char *)g_mcpx_memory
                                         + MCPX_AC97_CODEC_STATUS)
                      |= MCPX_AC97_CODEC_READY;
-@@ -2628,6 +2766,15 @@
+@@ -2628,6 +2756,15 @@
       * intervals. All views alias the same physical pages, so reads and
       * writes at any mirror address correctly access the base data.
       */
@@ -43750,7 +44032,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
      {
          int mirrors_ok = 0;
          /* The tiled aperture is a specific architectural alias -- physical RAM
-@@ -2679,6 +2826,7 @@
+@@ -2679,6 +2816,7 @@
                  mirrors_ok, XBOX_NUM_MIRRORS,
                  (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
      }
@@ -43758,7 +44040,7 @@ diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 
      /*
       * Tiled / write-combined aperture at 0xF0000000.
-@@ -2725,11 +2873,25 @@
+@@ -2725,11 +2863,25 @@
                  tiled_size,
                  (LPVOID)tiled_native)
              : NULL;

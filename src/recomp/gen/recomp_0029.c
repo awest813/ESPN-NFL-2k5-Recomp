@@ -413170,7 +413170,9 @@ loc_0042D689: ;
     edi = edi;
 
 loc_0042D690: ;
-    MEM32(edi + 0x600100) = ecx;
+    /* NFL2K5-GENPATCH:NV2A_VBLANK_ACK_SERVICE */
+    { extern int xbox_Nv2aAckVblank(uint32_t, uint32_t);
+      if (!xbox_Nv2aAckVblank(edi, ecx)) MEM32(edi + 0x600100) = ecx; }
     _fa = (uint32_t)(MEM32(edi + 0x100)) & 0xFFFFFFFFu; _fb = (uint32_t)(eax) & 0xFFFFFFFFu;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* test MEM32(edi + 0x100), eax (32-bit) */
     if (TEST_NZ(_fa, _fb)) goto loc_0042D690; /* jne: not equal / not zero */
@@ -414260,7 +414262,9 @@ loc_0042DE13: ;
     /* nop */
 
 loc_0042DE20: ;
-    MEM32(edi + 0x600100) = 1;
+    /* NFL2K5-GENPATCH:NV2A_VBLANK_ACK_DPC */
+    { extern int xbox_Nv2aAckVblank(uint32_t, uint32_t);
+      if (!xbox_Nv2aAckVblank(edi, 1)) MEM32(edi + 0x600100) = 1; }
     esi = MEM32(edi + 0x100);
     _fa = (uint32_t)(esi) & 0xFFFFFFFFu; _fb = (uint32_t)(0x1000000) & 0xFFFFFFFFu;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* test esi, 0x1000000 (32-bit) */
