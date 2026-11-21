@@ -19,22 +19,51 @@ const KNOWN_XBE = {
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const state = { installed: null, importing: false, running: false, launched: false,
-  checked: false, supported: false, build: false, gpu: false, launchError: '',
+  checked: false, supported: false, build: false, gpu: false, launchError: '', launchNotice: '',
+  presentingGpu: false,
   saveBusy: false, saveCount: 0, saveRecoveryError: false };
 
 // ---- log ---------------------------------------------------------------------
 
 const logLines = [];
-function log(text, kind) {
-  const line = document.createElement('div');
-  if (kind) line.className = kind;
-  line.textContent = text;
+const logKinds = [];
+let logCount = 0;
+let logShown = 0;
+let logFrame = 0;
+
+function renderLog() {
+  logFrame = 0;
+  if (!$('diagnostics').open) return;
   const box = $('log');
-  box.appendChild(line);
+  const fragment = document.createDocumentFragment();
+  const first = logCount - logLines.length;
+  for (let i = Math.max(logShown - first, 0); i < logLines.length; i++) {
+    const line = document.createElement('div');
+    if (logKinds[i]) line.className = logKinds[i];
+    line.textContent = logLines[i];
+    fragment.appendChild(line);
+  }
+  box.appendChild(fragment);
+  while (box.childNodes.length > logLines.length) box.removeChild(box.firstChild);
+  logShown = logCount;
+  box.scrollTop = box.scrollHeight;
+}
+
+function log(text, kind) {
   logLines.push(text);
-  if (logLines.length > 2000) logLines.shift();
-  while (box.childNodes.length > 2000) box.removeChild(box.firstChild);
-  if ($('diagnostics').open) box.scrollTop = box.scrollHeight;
+  logKinds.push(kind);
+  logCount++;
+  if (logLines.length > 2000) { logLines.shift(); logKinds.shift(); }
+  if ($('diagnostics').open && !logFrame) logFrame = requestAnimationFrame(renderLog);
+
+  if (state.presentingGpu && !state.launchError) {
+    const sample = /\[SDLGPU\] 5s: frames \d+ ([\d.]+) fps/.exec(text);
+    if (sample) {
+      const fps = $('game-fps');
+      fps.textContent = sample[1] + ' FPS';
+      fps.hidden = false;
+    }
+  }
 }
 window.nfl2k5Log = logLines;   // read by tests/web/test_web_page.js
 
@@ -144,11 +173,11 @@ function renderDisc() {
   } else if (state.importing) {
     label = 'Importing your game'; badge = 'Please wait'; message = 'Keep this tab open while the game files are copied into local storage.';
   } else if (state.checked && !info) {
-    label = 'Add your game to get started'; badge = 'Step 1 of 2'; status = '';
-    message = 'Choose your Xbox ISO or extracted game folder below. Import is only needed once.';
+    label = 'Add your game to get started'; badge = 'Disc required'; status = '';
+    message = 'Use Game files to choose your Xbox ISO or extracted game folder.';
   } else if (state.checked && !valid) {
     label = 'Check your game files'; badge = 'Unsupported disc'; status = 'error';
-    message = 'This build needs a complete retail USA disc or the supported widescreen-patched version. See your library below.';
+    message = 'This build needs a complete retail USA disc or the supported widescreen-patched version. See Game files for details.';
   } else if (ready) {
     label = 'Ready for kickoff'; badge = state.gpu ? 'WebGPU ready' : 'Software graphics'; status = state.gpu ? 'ready' : 'busy';
     message = state.gpu ? 'Your game is installed. Launch when you’re ready.' : 'Hardware graphics are unavailable. The software renderer may be very slow.';
@@ -157,6 +186,8 @@ function renderDisc() {
   $('launch-badge').textContent = badge;
   $('launch-badge').dataset.state = status;
   $('launch-status').textContent = message;
+  $('launch-notice').textContent = state.launchNotice;
+  $('launch-notice').hidden = !state.launchNotice;
   $('reload').hidden = !state.launchError && !(state.checked && !state.build);
 }
 
@@ -261,6 +292,7 @@ async function play() {
   if (typeof screen.requestFullscreen === 'function')
     canvas.requestFullscreen = (options) => screen.requestFullscreen(options);
   state.launched = true;
+  state.launchNotice = '';
   renderDisc();
   let release;
   try {
@@ -271,10 +303,12 @@ async function play() {
     audio?.close().catch(() => {});
     state.launched = false;
     if (e.code === 'RECOVERY') state.saveRecoveryError = true;
-    libraryMessage(e.message); renderDisc(); return;
+    state.launchNotice = e.message;
+    renderDisc(); return;
   }
   // Keep the session lock for this page's lifetime, even after a runtime abort.
-  $('save-summary').textContent = 'Game session active. Finish saving in-game, then reload the launcher to manage backups.';
+  $('save-summary').textContent = 'Game session active. Save in-game, then exit to the launcher to manage backups.';
+  $('stage-frame-rate').append($('launch-frame-rate').firstElementChild);
   $('stage').hidden = false;
   $('stage').scrollIntoView({ block: 'start' });
   NFL2K5Launch.watchSound(audio, $('sound'), (st) => log('Sound: ' + st));
@@ -291,12 +325,15 @@ async function play() {
     onAbort: (what) => launchFailed('Aborted: ' + what),
     onGpuPresent: (on) => {
       if (state.launchError) return;
+      state.presentingGpu = on;
+      $('game-fps').hidden = true;
       log(on ? 'Video: WebGPU' : 'Video: software');
       $('game-status').textContent = on ? 'Playing · WebGPU' : 'Playing · software graphics';
     },
   }).then(() => {
     if (!state.launchError) {
       state.running = true;
+      document.body.dataset.session = 'running';
       if (!$('game-status').textContent.startsWith('Playing')) $('game-status').textContent = 'Game running';
       renderDisc();
     }
@@ -310,6 +347,8 @@ function launchFailed(message) {
   if (state.launchError) return;
   state.running = false;
   state.launchError = message;
+  document.body.dataset.session = 'failed';
+  $('game-fps').hidden = true;
   $('game-status').textContent = 'Game stopped · reload to try again';
   renderDisc();
 }
@@ -420,14 +459,17 @@ async function main() {
   state.installed = opfs ? await readMarker() : null;
   state.checked = true;
   try { $('fps-limit').value = localStorage.getItem('nfl2k5-fps-limit') === '0' ? '0' : '30'; } catch {}
+  let fpsLimit = $('fps-limit').value;
   $('fps-limit').onchange = () => {
     if (state.running && window.nfl2k5Module?._xbox_WebSetFpsLimit) {
       if (!window.nfl2k5Module._xbox_WebSetFpsLimit(Number($('fps-limit').value))) {
+        $('fps-limit').value = fpsLimit;
         log('The runtime could not change its frame cap.', 'error'); return;
       }
       log($('fps-limit').value === '30' ? 'Frame rate: 30 FPS lock' : 'Frame rate: uncapped');
     }
-    try { localStorage.setItem('nfl2k5-fps-limit', $('fps-limit').value); } catch {}
+    fpsLimit = $('fps-limit').value;
+    try { localStorage.setItem('nfl2k5-fps-limit', fpsLimit); } catch {}
   };
   renderDisc();
   await refreshSaves();
@@ -463,12 +505,25 @@ async function main() {
   $('remove').onclick = removeDisc;
   $('play').onclick = play;
   $('reload').onclick = () => location.reload();
-  $('restart').onclick = () => { if (confirm('Restart the game? Unsaved progress will be lost.')) location.reload(); };
+  $('restart').onclick = () => {
+    if (!confirm('Exit to the launcher? Unsaved progress will be lost.')) return;
+    const url = new URL(location.href);
+    url.searchParams.delete('autoplay');
+    location.replace(url.href);
+  };
+  $('focus-game').onclick = () => $('canvas').focus();
   $('fullscreen').onclick = async () => {
     try { if (document.fullscreenElement) await document.exitFullscreen(); else await $('screen').requestFullscreen(); }
     catch (e) { log('Fullscreen unavailable: ' + e.message, 'error'); }
   };
-  document.addEventListener('fullscreenchange', () => { $('fullscreen').textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen'; });
+  document.addEventListener('fullscreenchange', () => {
+    $('fullscreen').textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+    if (state.running) $('canvas').focus({ preventScroll: true });
+  });
+  $('open-diagnostics').onclick = () => { $('diagnostics').open = true; };
+  $('diagnostics').addEventListener('toggle', () => {
+    if ($('diagnostics').open && !logFrame) logFrame = requestAnimationFrame(renderLog);
+  });
   $('download-log').onclick = () => {
     const url = URL.createObjectURL(new Blob([logLines.join('\n')], { type: 'text/plain' }));
     const link = document.createElement('a'); link.href = url; link.download = 'nfl2k5-web-log.txt'; link.click();
