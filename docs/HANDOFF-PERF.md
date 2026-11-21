@@ -235,6 +235,29 @@ audio passed. The short initial harness title timeout recovered with a
 60-second timeout. Logs, screenshots and the exact Wasm hash are under
 `build-web-tests/ack-default-opening-drive`.
 
+### WebGPU draw uniform buffer reuse
+
+The WebGPU server reuses a draw uniform buffer and its vertex and fragment
+bind groups. It allocates larger storage on demand and reuses one empty
+bind group. Copy, blit and readback submissions skip draw uniform setup.
+Queue ordering keeps earlier draws ahead of later writes. Shorter uploads
+clear reachable stale bytes so shaders see the same zero-filled binding
+tail as they would with a fresh buffer.
+
+The hardware Chrome fixture checks six exact pixel values after queuing
+all six draws before readback. It covers growth, shorter uploads, a draw
+without uniforms, and a binding whose tail extends beyond a previous
+clear. The full renderer pixel and presentation suite also passed.
+
+Seven alternating pairs ran both versions of the production driver in
+Chrome. Median CPU recording and submission time fell from 14.26 to
+10.83 ms for 300 copies, from 17.32 to 14.52 ms for 300 four-draw passes,
+and from 17.49 to 15.73 ms for 120 passes of 48 larger uploads. Median
+time through the final queue fence also improved, with a slow outlier on
+the reused version. These are isolated workloads. Sustained retail
+gameplay FPS and uninterrupted audio remain open. Raw samples are in
+`build-web-tests/uniform-buffer-replay/samples.json`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
