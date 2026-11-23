@@ -9304,10 +9304,10 @@ index 0000000..56c5da2
 +}
 diff --git a/src/apu/dsp/dsp_cpu.c b/src/apu/dsp/dsp_cpu.c
 new file mode 100644
-index 0000000..43733d5
+index 0000000..1bc25f8
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1454 @@
+@@ -0,0 +1,1481 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -9848,6 +9848,29 @@ index 0000000..43733d5
 +        dsp56k_read_memory(dsp, DSP_SPACE_X, address) & 0xffffffu;
 +}
 +
++/* MOVE A/B,X:(Rn)+ with no parallel ALU operation. */
++static void execute_pm5_store_x_postinc_accumulator(dsp_core_t *dsp)
++{
++    unsigned rn = (dsp->cur_inst >> 8) & 7u;
++    unsigned accumulator = (dsp->cur_inst >> 16) & 1u;
++    uint32_t address = dsp->registers[DSP_REG_R0 + rn];
++    uint32_t value;
++    emu_update_rn(dsp, rn, 1);
++    emu_pm_read_accu24(dsp, DSP_REG_A + accumulator, &value);
++    dsp56k_write_memory(dsp, DSP_SPACE_X, address, value);
++}
++
++/* MOVE X:(Rn),A/B with no parallel ALU operation. */
++static void execute_pm5_load_x_accumulator(dsp_core_t *dsp)
++{
++    unsigned rn = (dsp->cur_inst >> 8) & 7u;
++    unsigned accumulator = (dsp->cur_inst >> 16) & 1u;
++    uint32_t value = dsp56k_read_memory(dsp, DSP_SPACE_X, dsp->registers[DSP_REG_R0 + rn]);
++    dsp->registers[DSP_REG_A0 + accumulator] = 0;
++    dsp->registers[DSP_REG_A1 + accumulator] = value;
++    dsp->registers[DSP_REG_A2 + accumulator] = (value & 0x800000u) ? 0xffu : 0;
++}
++
 +static dsp_exec_func_t decode_executor(uint32_t instruction)
 +{
 +    if (instruction < 0x100000) {
@@ -9869,6 +9892,10 @@ index 0000000..43733d5
 +        if ((instruction & 0xf40000) == 0x400000) return emu_pm_4x;
 +        if ((instruction & 0xfcf8ffu) == 0x44d800u)
 +            return execute_pm5_read_x_postinc;
++        if ((instruction & 0xfef8ffu) == 0x565800u)
++            return execute_pm5_store_x_postinc_accumulator;
++        if ((instruction & 0xfef8ffu) == 0x56e000u)
++            return execute_pm5_load_x_accumulator;
 +        return (instruction & 255u) ? emu_pm_5 : execute_pm5_move;
 +    }
 +    return opcodes_parmove[(instruction >> 20) & 15u];

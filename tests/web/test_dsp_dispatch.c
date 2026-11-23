@@ -155,16 +155,27 @@ int main(int argc,char **argv) {
     memcpy(&expected,&actual,sizeof(expected));memset((void *)reference_cache,0,sizeof(reference_cache));
     dsp56k_add_interrupt(&actual,DSP_INTER_SWI);dsp56k_add_interrupt(&expected,DSP_INTER_SWI);
     for(unsigned i=0;i<12;i++){reference_step(&expected);dsp56k_execute_instruction(&actual);equal_state();}
-    /* The cached X:(Rn)+ load must preserve addressing and leave every other
-     * register alone. Check all operand encodings and non-linear M modes. */
+    /* Cached X-memory moves preserve addressing, saturation and sign extension.
+     * Check all operand encodings and non-linear M modes. */
     const uint32_t modifiers[] = {0xffff, 0, 7, 0x8000};
     const uint32_t addresses[] = {0x107, 0xc07, 0x1407};
+    const uint32_t signs[] = {0, 0xff, 0x80};
     for(unsigned m=0;m<ARRAY_SIZE(modifiers);m++) {
         for(unsigned a=0;a<ARRAY_SIZE(addresses);a++) {
             for(unsigned r=0;r<8;r++) {
                 initial.registers[DSP_REG_R0 + r] = addresses[a];
                 initial.registers[DSP_REG_M0 + r] = modifiers[m];
                 for(unsigned d=0;d<4;d++)one(0x44d800u | (d<<16) | (r<<8),0);
+                for (unsigned acc = 0; acc < 2; acc++) {
+                    unsigned operands = (acc << 16) | (r << 8);
+                    one(0x56e000u | operands, 0);
+                    for (unsigned extension = 0; extension < ARRAY_SIZE(signs); extension++) {
+                        initial.registers[DSP_REG_A2 + acc] = signs[extension];
+                        initial.registers[DSP_REG_A1 + acc] = extension ? 0x7fffff : 0x800000;
+                        initial.registers[DSP_REG_A0 + acc] = 0x800000;
+                        one(0x565800u | operands, 0);
+                    }
+                }
             }
         }
     }

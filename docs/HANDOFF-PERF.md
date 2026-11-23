@@ -287,6 +287,43 @@ A separate local link overlapped the capture, so the frame samples are
 unsuitable for a performance comparison. See
 `build-web-tests/retail-launch-stability`.
 
+### DSP accumulator moves and retail audio starvation
+
+A local Chrome 157 capture of the `5ae46f1` build used the default 30 FPS cap
+and APU timing diagnostics with no compiler running. Several title-screen
+windows processed roughly 950–1,230 of the 1,500 audio subframes required each
+second. One 32.9 ms subframe spent almost its entire measured duration in the
+DSP stage. That elapsed time includes any host scheduling delay. The worklet
+logged 381,440 missing 48 kHz frames by the first title sample. Underruns
+continued through the Baltimore–Washington attract game. The capture and
+timing summary are under `build-web-tests/retail-stability-apu-profile`.
+
+The dispatcher now caches dedicated handlers for X-memory loads into either
+accumulator and for accumulator stores with post-increment. These two moves
+accounted for 19.4% of the captured GP instructions and 7.2% of the EP
+instructions. The handlers use the existing memory access and address update
+rules, including accumulator saturation on stores and sign extension on loads.
+The full-state fixture covers all eight address registers, both accumulators,
+three X-memory ranges and four modifier settings, including bit-reversed and
+modulo addressing.
+
+In two optimized Wasm replay runs of seven alternating pairs with 1,000
+frames per round, GP median execution time fell 5.2–13.1% and EP median time
+fell 2.3–10.4%. Individual rounds varied. All runs matched the captured DSP
+state and DMA events. The replay logs are under `build-web-tests/dsp-accu-moves`.
+
+Optimized Windows and Linux DSP fixtures, Wasm UBSan dispatch and GP/EP MMIO,
+the Windows retail executable validation, and the static-host launcher checks
+passed. The new Chrome build reached Press START and the attract-mode stadium
+intro. At the first title sample the worklet had missed 115,072 frames, down
+from 381,440 in the preceding build's run. The browser reached the title about
+eight seconds sooner, and each build was sampled once. The retail difference
+cannot be attributed to the DSP change alone. The following 25 seconds missed
+another 120,704 frames, with a longest contiguous gap of 3,200 frames (66.7 ms).
+Renderer windows during the title-to-intro transition ranged from 2.7 to 29.8
+FPS. Audio underruns were the only audit failures. The report and screenshots
+are under `build-web-tests/dsp-accu-moves/retail`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
