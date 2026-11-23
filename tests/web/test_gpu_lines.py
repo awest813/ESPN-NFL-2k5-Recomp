@@ -30,7 +30,7 @@ def main():
     cache=(kernel/'sdlgpu/sdlgpu_vpcache.inc.c').read_text(encoding='utf-8')
     stride=cache[cache.index('static uint32_t sg_vp_input_stride('):cache.index('static struct {',cache.index('static uint32_t sg_vp_input_stride('))]
     pipeline=(kernel/'sdlgpu/sdlgpu_pipeline.inc.c').read_text(encoding='utf-8')
-    layout=pipeline[pipeline.index('static uint32_t sg_linevp_attributes('):pipeline.index('static SDL_GPUGraphicsPipeline *sg_pipeline_create(')]
+    layout=pipeline[pipeline.index('static uint32_t sg_linevp_attributes('):pipeline.index('static SDL_GPUGraphicsPipeline *sg_build_pipeline(')]
     harness=harness.replace('/* LIVE_CPU */',topology+'\n'+fetch+fog+cpu+lerp+clip+primitive+batch+packing+stride+layout)
     harness=harness.replace('/* LIVE_SHADER */',shade+text+f'\n#include "{(kernel/"sdlgpu/sdlgpu_vp_wgsl.inc.c").as_posix()}"\n')
     source=out/'generate.c';binary=out/'generate.js';source.write_bytes(harness.encode('utf-8'))

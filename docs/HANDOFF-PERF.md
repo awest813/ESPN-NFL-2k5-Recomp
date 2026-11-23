@@ -458,7 +458,7 @@ The private retail experiment compiled the exact line descriptor asynchronously
 before stadium entry and retained the resulting pipeline on the same device.
 It checked shader source, layout identity and pipeline state before returning
 the compiled object. The captured shader sources and altered browser bundle
-stay local. The released renderer still creates this pipeline on first use.
+stay local. The reference renderer created this pipeline on first use.
 
 | Intel hardware Chrome capture | Longest Dawn command batch | First stadium FPS window | Lowest stadium FPS window | Audio frames lost at final sample |
 | --- | ---: | ---: | ---: | ---: |
@@ -470,9 +470,27 @@ stay local. The released renderer still creates this pipeline on first use.
 Each row is a fresh launch through the title and 45 seconds of attract mode.
 The two private test runs both logged a matching pipeline at first use and
 passed the audio checks. The remaining long batches and sub-30 FPS windows
-still need work. A release implementation needs to obtain its pipeline
-description from the user's game at runtime. Captures and isolated timings
+still need work. Captures and isolated timings
 are in `build-web-tests/upload-stall/retail-{gpu-cpu-samples,pipeline-descriptors,warm-exact-line*}`.
+
+### First-launch stadium line preparation
+
+The title loads the vertex program used later for stadium lines. On the first
+transformed triangle draw, the WebGPU renderer translates the live program's
+line variant and requests asynchronous compilation with the stadium's blend and
+depth state. The first matching draw claims the result only if compilation
+has completed. Other states and an unfinished or failed preparation use the
+ordinary pipeline creation path. No captured shader or disc data is bundled.
+
+The browser pixel suite exercised both early release and rendering after
+asynchronous compilation and shader release. The native Vulkan suite also
+passed. The first retail capture matched the prepared pipeline at stadium
+entry, averaged 26.6 FPS in the opening window, and had zero audio underruns.
+Its longest traced Dawn command batch took 418 ms. A second capture on the
+final release build matched at first use and opened at 26.8 FPS. Its six
+stadium windows ranged from 26.6 to 30.0 FPS. The longest Dawn batch was
+415 ms and both audio samples reported zero frames lost. The private captures
+are under `build-web-tests/upload-stall/retail-live-line-{first,final}`.
 
 ## Historical measurements
 

@@ -3728,6 +3728,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      return 1;
  }
 
+-static SDL_GPUGraphicsPipeline *sg_pipeline_create(const SgPipeKey *key) {
 +static uint32_t sg_linevp_attributes(uint32_t mask,SDL_GPUVertexAttribute attributes[16]) {
 +    unsigned inputs=0;for(uint32_t bits=mask;bits;bits&=bits-1u)inputs++;
 +    if(inputs>8)return UINT32_MAX;
@@ -3739,7 +3740,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
 +    return count;
 +}
 +
- static SDL_GPUGraphicsPipeline *sg_pipeline_create(const SgPipeKey *key) {
++static SDL_GPUGraphicsPipeline *sg_build_pipeline(const SgPipeKey *key, int prepare) {
      const int xf = (key->color & SG_COLOR_XF) != 0;
      /* A vertex-program pipeline: its generated shader, 16 vec4 inputs. */
      const int vp = key->vs != 0;
@@ -3812,9 +3813,59 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
          },
          .depth_stencil_state = {
              .enable_depth_test = (key->depth & 1u) != 0,
-@@ -277,18 +307,29 @@
+@@ -273,22 +303,79 @@
+         info.depth_stencil_state.front_stencil_state = keep;
+         info.depth_stencil_state.back_stencil_state = keep;
+     }
++#ifdef __EMSCRIPTEN__
++    if (prepare) return wg_prepare_pipeline(&info);
++#else
++    (void)prepare;
++#endif
+     return SDL_CreateGPUGraphicsPipeline(s_sg.dev, &info);
  }
 
++#ifdef __EMSCRIPTEN__
++static SgPipeline s_intro_line;
++static void sg_prepare_intro_line(uint32_t slot)
++{
++    /* The title's first transformed program also draws alpha-blended stadium
++     * lines. Generate its endpoint variant while the guest program is live. */
++    uint32_t line_slot;
++    if (s_sg_vp[slot].line_failed) return;
++    if (!sg_vp_line_program(&line_slot)) {
++        /* A speculative allocation failure must allow the real draw to retry. */
++        s_sg_vp[slot].line_failed = 0;
++        return;
++    }
++    if (line_slot != slot) return;
++    s_intro_line.key = (SgPipeKey){
++        .color = SG_COLOR_VALID | SG_COLOR_XF | SG_COLOR_NVLINE | SG_COLOR_BLEND | (15u << 1)
++               | (SDL_GPU_BLENDFACTOR_SRC_ALPHA << 5) | (SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA << 10)
++               | (SDL_GPU_BLENDOP_ADD << 15),
++        .depth = 1u | (SDL_GPU_COMPAREOP_LESS_OR_EQUAL << 4) | (1u << 8),
++        .vs = slot + 1
++    };
++    s_intro_line.pipe = sg_build_pipeline(&s_intro_line.key, 1);
++}
++#endif
++
++static SDL_GPUGraphicsPipeline *sg_pipeline_create(const SgPipeKey *key)
++{
++#ifdef __EMSCRIPTEN__
++    if (s_intro_line.pipe && !memcmp(&s_intro_line.key, key, sizeof *key)) {
++        SDL_GPUGraphicsPipeline *prepared = s_intro_line.pipe;
++        s_intro_line.pipe = NULL;
++        if (wg_pipeline_ready(prepared)) {
++            fprintf(stderr, "  [SDLGPU] stadium line pipeline ready at first use\n");
++            return prepared;
++        }
++        SDL_ReleaseGPUGraphicsPipeline(s_sg.dev, prepared);
++    }
++#endif
++    return sg_build_pipeline(key, 0);
++}
++
  /* The pipeline for the current state; NULL when it cannot be drawn on the GPU. */
 +#define SG_PIPE_TABLE (SG_MAX_PIPELINES * 2u)
 +static uint32_t s_sg_pipe_table[SG_PIPE_TABLE]; /* pool index + 1, zero = empty */
@@ -3847,7 +3898,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_pipeline.inc.c b/src/kernel/sdlgpu/sdlgpu_
      p = &s_sg.pipes[s_sg.pipe_count];
      p->pipe = sg_pipeline_create(&key);
      if (!p->pipe) {
-@@ -297,6 +338,7 @@
+@@ -297,6 +384,7 @@
          return NULL;
      }
      p->key = key;
@@ -31145,7 +31196,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
          case NV_PRIM_TRIANGLE_STRIP:
-@@ -395,20 +617,45 @@
+@@ -395,20 +617,52 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
@@ -31186,6 +31237,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      /* Room for n unique vertices and up to 3n indices (fans, quads). */
 -    if (n > s_sgvp.in_cap) {
 -        void *g = realloc(s_sgvp.in, (size_t) n * sizeof *s_sgvp.in);
++#ifdef __EMSCRIPTEN__
++    static int prepared_intro_line;
++    if (!prepared_intro_line) {
++        prepared_intro_line = 1;
++        sg_prepare_intro_line(slot);
++    }
++#endif
 +    s_sgvp.inmask = s_sg_vp[slot].inmask;
 +    s_sgvp.input_stride = sg_vp_input_stride(s_sgvp.inmask);
 +    uint32_t input_bytes = n * s_sgvp.input_stride;
@@ -31199,7 +31257,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +668,15 @@
+@@ -421,7 +675,15 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -31216,7 +31274,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -466,39 +721,24 @@
+@@ -466,39 +728,24 @@
      {
          static SgVpUniforms u; /* 3 KB: not on the stack */
          SgXfShade shade;
@@ -31264,7 +31322,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          s_sg_stats.gpuvp++;
          return 1;
      }
-@@ -508,13 +748,13 @@
+@@ -508,13 +755,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -31280,7 +31338,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +772,43 @@
+@@ -532,31 +779,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -31330,7 +31388,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -564,20 +816,48 @@
+@@ -564,20 +823,48 @@
 
      {
          SgXfShade shade;
@@ -31949,10 +32007,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..aa5e50f
+index 0000000..fb1c027
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2026 @@
+@@ -0,0 +1,2057 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -32006,7 +32064,7 @@ index 0000000..aa5e50f
 +struct SDL_GPUTransferBuffer { WgTransferStorage *storage; uint32_t size; };
 +struct SDL_GPUSampler { WGPUSampler s; atomic_uint refs; };
 +struct SDL_GPUShader { WGPUShaderModule mod; SDL_GPUShaderStage stage; };
-+struct SDL_GPUGraphicsPipeline { WGPURenderPipeline pipe; atomic_uint refs; };
++struct SDL_GPUGraphicsPipeline { WGPURenderPipeline pipe; atomic_uint refs; atomic_bool ready; };
 +struct SDL_GPUFence { atomic_int state; atomic_uint refs; };
 +
 +/* Recorded commands, replayed on the server at submit. */
@@ -32748,7 +32806,18 @@ index 0000000..aa5e50f
 +}
 +
 +/* ── Pipelines ────────────────────────────────────────────────────────── */
-+typedef struct { const SDL_GPUGraphicsPipelineCreateInfo *info; SDL_GPUGraphicsPipeline *out; } PipeArgs;
++typedef struct { const SDL_GPUGraphicsPipelineCreateInfo *info; SDL_GPUGraphicsPipeline *out; bool prepare; } PipeArgs;
++static void pipeline_drop(SDL_GPUGraphicsPipeline *g);
++static void on_prepared(WGPUCreatePipelineAsyncStatus status, WGPURenderPipeline pipe,
++                        WGPUStringView message, void *userdata, void *unused)
++{
++    (void)message; (void)unused;
++    SDL_GPUGraphicsPipeline *g = userdata;
++    g->pipe = pipe;
++    atomic_store(&g->ready, status == WGPUCreatePipelineAsyncStatus_Success && pipe);
++    pipeline_drop(g);
++}
++bool wg_pipeline_ready(SDL_GPUGraphicsPipeline *g) { return g && atomic_load(&g->ready); }
 +static WGPUPrimitiveTopology primitive_topology(SDL_GPUPrimitiveType primitive) {
 +    switch(primitive) {
 +        case SDL_GPU_PRIMITIVETYPE_TRIANGLELIST:return WGPUPrimitiveTopology_TriangleList;
@@ -32850,19 +32919,30 @@ index 0000000..aa5e50f
 +        .multisample = { .count = 1, .mask = 0xFFFFFFFFu },
 +        .fragment = ct ? &frag : NULL,
 +    };
++    if (a->prepare) {
++        SDL_GPUGraphicsPipeline *g = calloc(1, sizeof *g);
++        if (!g) return;
++        atomic_init(&g->refs, 2); /* caller and completion callback */
++        atomic_init(&g->ready, false);
++        WGPUCreateRenderPipelineAsyncCallbackInfo callback = {
++            .mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_prepared, .userdata1 = g };
++        wgpuDeviceCreateRenderPipelineAsync(s_dev, &d, callback);
++        a->out = g;
++        return;
++    }
 +    WGPURenderPipeline pipe = wgpuDeviceCreateRenderPipeline(s_dev, &d);
 +    if (!pipe) return;
 +    a->out = (SDL_GPUGraphicsPipeline *)calloc(1, sizeof *a->out);
 +    if (!a->out) { wgpuRenderPipelineRelease(pipe); return; }
 +    atomic_init(&a->out->refs,1);
++    atomic_init(&a->out->ready,true);
 +    a->out->pipe = pipe;
 +}
-+SDL_GPUGraphicsPipeline *WG_CreateGPUGraphicsPipeline(SDL_GPUDevice *d, const SDL_GPUGraphicsPipelineCreateInfo *i)
++static SDL_GPUGraphicsPipeline *create_pipeline(const SDL_GPUGraphicsPipelineCreateInfo *i, bool prepare)
 +{
 +    if(primitive_topology(i->primitive_type)==WGPUPrimitiveTopology_Undefined) {
 +        SDL_SetError("unsupported GPU primitive topology");return NULL;
 +    }
-+    (void)d;
 +    const SDL_GPUVertexInputState *vi = &i->vertex_input_state;
 +    uint32_t slots = 0, locations = 0;
 +    if (vi->num_vertex_buffers > 8 || vi->num_vertex_attributes > 16 ||
@@ -32886,11 +32966,20 @@ index 0000000..aa5e50f
 +        }
 +        locations |= 1u << v->location;
 +    }
-+    PipeArgs a = { i, NULL };
++    PipeArgs a = { i, NULL, prepare };
 +    if (!i->vertex_shader || !i->fragment_shader) { SDL_SetError("pipeline without shaders"); return NULL; }
 +    run_sync(do_create_pipeline, &a);
 +    if (!a.out) SDL_SetError("WebGPU pipeline creation failed");
 +    return a.out;
++}
++SDL_GPUGraphicsPipeline *wg_prepare_pipeline(const SDL_GPUGraphicsPipelineCreateInfo *info)
++{
++    return create_pipeline(info, true);
++}
++SDL_GPUGraphicsPipeline *WG_CreateGPUGraphicsPipeline(SDL_GPUDevice *d, const SDL_GPUGraphicsPipelineCreateInfo *i)
++{
++    (void)d;
++    return create_pipeline(i, false);
 +}
 +
 +/* Internal: one fullscreen-triangle pipeline per target format, for blits
@@ -32984,7 +33073,7 @@ index 0000000..aa5e50f
 +    (void)d;if(s)emscripten_proxy_async(q(),s_server,do_release_shader,s);
 +}
 +static void do_release_pipeline(void *p) {
-+    SDL_GPUGraphicsPipeline *g=p;wgpuRenderPipelineRelease(g->pipe);free(g);
++    SDL_GPUGraphicsPipeline *g=p;if(g->pipe)wgpuRenderPipelineRelease(g->pipe);free(g);
 +}
 +static void pipeline_drop(SDL_GPUGraphicsPipeline *g) {
 +    if(g && atomic_fetch_sub(&g->refs,1)==1)
@@ -33981,10 +34070,10 @@ index 0000000..aa5e50f
 +#endif /* __EMSCRIPTEN__ */
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
 new file mode 100644
-index 0000000..b6d2e75
+index 0000000..2aff36a
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,167 @@
 +#ifndef SDL_GPU_WEBGPU_H
 +#define SDL_GPU_WEBGPU_H
 +/* The SDL GPU renderer on WebGPU (Emscripten builds).
@@ -34035,6 +34124,8 @@ index 0000000..b6d2e75
 +int wg_server_start(const char *canvas_id);
 +/* 1 once wg_server_start() succeeded. */
 +int wg_available(void);
++SDL_GPUGraphicsPipeline *wg_prepare_pipeline(const SDL_GPUGraphicsPipelineCreateInfo *info);
++bool wg_pipeline_ready(SDL_GPUGraphicsPipeline *pipeline);
 +
 +/* SDL_GPU_SHADERFORMAT_PRIVATE carries WGSL source here: the shader format
 + * enum has no WGSL value in SDL 3.2. */
@@ -45583,10 +45674,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..8b20585
+index 0000000..8d584bd
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2575 @@
+@@ -0,0 +1,2584 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -45644,7 +45735,7 @@ index 0000000..8b20585
 +}
 +
 +/* A flat 2D pipeline as sdlgpu_pipeline.inc.c builds one. */
-+static SDL_GPUGraphicsPipeline *flat_pipe_topology(SDL_GPUPrimitiveType primitive,int blend, Uint8 write_mask, int depth_test, SDL_GPUCompareOp cmp)
++static SDL_GPUGraphicsPipeline *create_flat_pipe(SDL_GPUPrimitiveType primitive,int blend, Uint8 write_mask, int depth_test, SDL_GPUCompareOp cmp, bool prepare)
 +{
 +    SDL_GPUVertexBufferDescription buf = { .slot = 0, .pitch = sizeof(SgVertex), .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX };
 +    SDL_GPUVertexAttribute a[3] = {
@@ -45669,7 +45760,10 @@ index 0000000..8b20585
 +        .target_info = { .color_target_descriptions = &ct, .num_color_targets = 1,
 +                         .depth_stencil_format = depth_fmt, .has_depth_stencil_target = true },
 +    };
-+    return SDL_CreateGPUGraphicsPipeline(dev, &i);
++    return prepare ? wg_prepare_pipeline(&i) : SDL_CreateGPUGraphicsPipeline(dev, &i);
++}
++static SDL_GPUGraphicsPipeline *flat_pipe_topology(SDL_GPUPrimitiveType primitive,int blend, Uint8 write_mask, int depth_test, SDL_GPUCompareOp cmp) {
++    return create_flat_pipe(primitive,blend,write_mask,depth_test,cmp,false);
 +}
 +static SDL_GPUGraphicsPipeline *flat_pipe(int blend,Uint8 write_mask,int depth_test,SDL_GPUCompareOp cmp) {
 +    return flat_pipe_topology(SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,blend,write_mask,depth_test,cmp);
@@ -46465,10 +46559,16 @@ index 0000000..8b20585
 +        SDL_GPUShader *owned_vs=shader(k_sg_flat2d_vert_wgsl,SDL_GPU_SHADERSTAGE_VERTEX,0);
 +        SDL_GPUShader *owned_fs=shader(k_sg_flat2d_frag_wgsl,SDL_GPU_SHADERSTAGE_FRAGMENT,1);
 +        flat_vs=owned_vs;flat_fs=owned_fs;
-+        SDL_GPUGraphicsPipeline *owned_pipe=flat_pipe(0,15,0,SDL_GPU_COMPAREOP_ALWAYS);
++        SDL_GPUGraphicsPipeline *abandoned=create_flat_pipe(SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,0,15,0,SDL_GPU_COMPAREOP_ALWAYS,true);
++        SDL_ReleaseGPUGraphicsPipeline(dev,abandoned);
++        SDL_GPUGraphicsPipeline *owned_pipe=create_flat_pipe(SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,0,15,0,SDL_GPU_COMPAREOP_ALWAYS,true);
 +        flat_vs=saved_vs;flat_fs=saved_fs;
 +        CHECK(owned_pipe!=NULL,"temporary shader/pipeline resources create");
 +        SDL_ReleaseGPUShader(dev,owned_vs);SDL_ReleaseGPUShader(dev,owned_fs);
++        Uint64 deadline=SDL_GetTicks()+10000;
++        while(owned_pipe && !wg_pipeline_ready(owned_pipe) && SDL_GetTicks()<deadline) SDL_Delay(1);
++        CHECK(wg_pipeline_ready(owned_pipe),"asynchronously prepared pipeline completes after shader release");
++        if(!wg_pipeline_ready(owned_pipe)) return 1;
 +        quad(v,8,8,40,40,0,0,0,0,0xFF8040C0u,0);
 +        d=(Draw){.color=color,.depth=depth,.tex=white,.pipe=owned_pipe,.v=v,.n=6,
 +            .clear_color=1,.clear_argb=0xFF000000u,.clear_depth=1,.depth_value=1};
