@@ -31949,10 +31949,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..0d39319
+index 0000000..aa5e50f
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2028 @@
+@@ -0,0 +1,2026 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -33461,12 +33461,10 @@ index 0000000..0d39319
 +            break;
 +        case OP_SCISSOR: {
 +            /* WebGPU rejects rectangles outside the target: clamp. */
-+            int x0 = o->scissor.x < 0 ? 0 : o->scissor.x, y0 = o->scissor.y < 0 ? 0 : o->scissor.y;
-+            int x1 = o->scissor.x + o->scissor.w, y1 = o->scissor.y + o->scissor.h;
-+            if (x1 > (int)tw) x1 = (int)tw;
-+            if (y1 > (int)th) y1 = (int)th;
-+            if (x0 > x1) x0 = x1;
-+            if (y0 > y1) y0 = y1;
++            int64_t x0 = SDL_clamp((int64_t)o->scissor.x, 0, (int64_t)tw);
++            int64_t y0 = SDL_clamp((int64_t)o->scissor.y, 0, (int64_t)th);
++            int64_t x1 = SDL_clamp((int64_t)o->scissor.x + o->scissor.w, x0, (int64_t)tw);
++            int64_t y1 = SDL_clamp((int64_t)o->scissor.y + o->scissor.h, y0, (int64_t)th);
 +            wgpuRenderPassEncoderSetScissorRect(pe, (uint32_t)x0, (uint32_t)y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0));
 +            break;
 +        }
@@ -45585,10 +45583,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..8aaf029
+index 0000000..8b20585
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2565 @@
+@@ -0,0 +1,2575 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -46798,6 +46796,16 @@ index 0000000..8aaf029
 +    draw(&d);
 +    download(color, 0, W, H, img);
 +    CHECK(px(img, 310, 230) == 0xFF00FF00u && px(img, 10, 10) == 0xFF000000u, "scissor past the target clamps");
++    d.scissor = (SDL_Rect){ -60, -60, 10, 10 };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 310, 230) == 0xFF000000u && px(img, 0, 0) == 0xFF000000u,
++          "fully offscreen scissor preserves the pass clear");
++    d.scissor = (SDL_Rect){ 10, 10, INT32_MAX, INT32_MAX };
++    draw(&d);
++    download(color, 0, W, H, img);
++    CHECK(px(img, 10, 10) == 0xFF00FF00u && px(img, W-1, H-1) == 0xFF00FF00u &&
++          px(img, 9, 9) == 0xFF000000u, "large scissor extents clip without overflow");
 +
 +    SgWindowClip clips;
 +    for (int i = 0; i < SG_CLIP_WINDOWS; i++) {
