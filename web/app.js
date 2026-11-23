@@ -330,9 +330,10 @@ async function play() {
     printErr: (t) => log(t, 'stderr'),
     onProgress: (text) => { if (text && !state.launchError) $('game-status').textContent = text; },
     onAbort: (what) => launchFailed('Aborted: ' + what),
-    onGameExit: (code) => launchFailed(code
-      ? `Game stopped with exit code ${code}. Open Diagnostics for details.`
-      : 'Game session ended. Reload the launcher to play again.'),
+    onGameExit: (code) => {
+      if (code) launchFailed(`Game stopped with exit code ${code}. Open Diagnostics for details.`);
+      else endSession('Game session ended. Reload the launcher to play again.');
+    },
     onGpuPresent: (on) => {
       if (state.launchError) return;
       state.presentingGpu = on;
@@ -348,12 +349,17 @@ async function play() {
       renderDisc();
     }
   }).catch((e) => {
-    log('The game stopped: ' + (e && e.message ? e.message : e), 'error');
-    launchFailed(e && e.message ? e.message : String(e));
+    launchFailed(e && e.message ? e.message : String(e), e && e.stack);
   });
 }
 
-function launchFailed(message) {
+function launchFailed(message, stack) {
+  if (state.launchError) return;
+  log('The game stopped: ' + (stack || message), 'error');
+  endSession(message);
+}
+
+function endSession(message) {
   if (state.launchError) return;
   state.running = false;
   state.launchError = message;
@@ -374,7 +380,7 @@ async function checkBuild() {
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const results = await Promise.all(['NFL2K5.js', 'NFL2K5.wasm'].map(file =>
-      fetch(file, { method: 'HEAD', cache: 'no-store', signal: controller.signal })));
+      fetch(window.NFL2K5Launch?.runtimeAsset?.(file) || file, { method: 'HEAD', cache: 'no-store', signal: controller.signal })));
     return results.every(r => r.ok && !/text\/html/.test(r.headers.get('content-type') || ''));
   } catch { return false; } finally { clearTimeout(timer); }
 }

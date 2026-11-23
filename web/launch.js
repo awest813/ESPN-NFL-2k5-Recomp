@@ -13,6 +13,16 @@
 'use strict';
 
 window.NFL2K5Launch = (() => {
+  // The Pages package puts a digest of its JS/Wasm pair on this script URL.
+  // Local builds and the smoke launcher can use the plain asset names.
+  const source = document.currentScript?.src;
+  const build = source && new URL(source).searchParams.get('build');
+  function runtimeAsset(path) {
+    if (!build) return path;
+    const url = new URL(path, document.baseURI);
+    url.searchParams.set('build', build);
+    return url.href;
+  }
   // Call synchronously from the click/key handler, before any await. 48 kHz
   // is the APU's own rate, so the game's sound plays without resampling
   // (web/audio-worklet.js resamples if the browser picks another rate).
@@ -60,10 +70,11 @@ window.NFL2K5Launch = (() => {
   // onGpuPresent(on): the WebGPU renderer took over (or gave back) the screen.
   async function start({ script, factory, canvas, audioContext, env = [], print, printErr,
                          onAbort, onGameExit, onGpuPresent, onProgress }) {
-    if (typeof window[factory] !== 'function') await loadScript(script);
+    if (typeof window[factory] !== 'function') await loadScript(runtimeAsset(script));
     if (canvas) canvas.focus();
     const mod = await window[factory]({
       canvas,
+      ...(build && {locateFile: (path, prefix) => runtimeAsset(prefix + path)}),
       SDL3: audioContext ? { audioContext } : undefined,
       print, printErr, onAbort, onGameExit, onGpuPresent,
       setStatus: (text) => { if (onProgress) onProgress(text); },
@@ -78,5 +89,5 @@ window.NFL2K5Launch = (() => {
     return mod;
   }
 
-  return { createAudio, watchSound, start };
+  return { createAudio, watchSound, start, runtimeAsset };
 })();

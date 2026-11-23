@@ -28,6 +28,7 @@ assert.deepEqual(timed.frameWindows[1].worstFrameMs,{texture:1,vertex:2,submit:1
 assert.equal(timed.result,'pass');
 
 for(const failure of [
+  {line:'The game stopped: RuntimeError: unreachable',kind:'error'},
   {line:'AUDIT wait-log timed out after 1000 ms: mode-ready',kind:'audit-error'},
   {line:'[WebGPU] device error 1: Attachment format does not match pipeline'},
   {line:'[WebGPU] device lost: Unknown'},

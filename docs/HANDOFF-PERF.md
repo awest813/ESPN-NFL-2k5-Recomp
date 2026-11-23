@@ -811,6 +811,29 @@ missed 500,352 additional audio frames, bottomed out at 4.2 FPS and had a
 draw workloads and the two builds came from different build environments.
 Only the paired DSP replay isolates the handler's performance.
 
+### Comparing browser builds in an existing profile
+
+After serving a published runtime and switching back to a local build on
+the same origin, Chrome twice stopped during Wasm initialization. The browser
+response for the JavaScript loader matched the preceding Pages build, while
+the local server contained a different loader. The mode audit now records
+the launcher's fatal error and stack when available. A pending transition
+wait ends immediately on that error.
+
+The Pages package keys the loader and Wasm requests with one digest of both
+files. The browser workers inherit the loader URL. In the same profile, the
+browser then fetched the intended loader and reached the opening drive using
+the existing imported disc. The deployment check verifies both response
+hashes and compiles the Wasm at its versioned URL.
+
+The recovered run's five-second windows ranged from 17.4 to 28.9 FPS, with
+a 211.74 ms worst flip and 75,520 additional missing audio frames from
+kickoff to the final sample. During that interval a separate pair of
+emulator processes averaged 5.78 CPU-seconds per second and all Chrome
+processes together averaged 3.38, on a host with 20 logical processors.
+These simultaneous measurements establish competing activity, but do
+not quantify its effect on game performance.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

@@ -209,7 +209,7 @@ async function playAndCheckXbe(page, want, label) {
     {
       const context = await browser.newContext({ viewport: {width: 390, height: 844} });
       const page = await context.newPage();
-      await page.route('**/NFL2K5.wasm', route => route.fulfill({status: 404, body: ''}));
+      await page.route(url => url.pathname.endsWith('/NFL2K5.wasm'), route => route.fulfill({status: 404, body: ''}));
       await page.goto('http://127.0.0.1:18765/');
       await page.waitForSelector('body[data-ready="1"]');
       check(await page.$eval('#play', b => b.disabled) && /runtime missing/i.test(await page.textContent('#launch-label')),

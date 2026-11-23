@@ -7,7 +7,7 @@
 'use strict';
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
-const {isAuditFailure,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
+const {isAuditFailure,isGameStop,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
 const {drainAuditRows}=require('./web-audit-audio.cjs');
 const {drainApuTraceRows}=require('./web-audit-apu-trace.cjs');
 const args=process.argv.slice(2);
@@ -77,12 +77,12 @@ async function prepare(url=origin){
     log=function(line,kind){auditPending.push({at:performance.now(),line,kind});previous(line,kind);};
   });
   if(captureMemory){
-    await page.addScriptTag({url:new URL('NFL2K5.js',target).href});
+    await page.addScriptTag({url:await page.evaluate(()=>new URL(NFL2K5Launch.runtimeAsset('NFL2K5.js'),document.baseURI).href)});
     await page.evaluate(()=>{
       const factory=createNFL2K5;
       window.createNFL2K5=options=>factory({...options,instantiateWasm:(imports,receive)=>{
         window.auditMemory=Object.values(imports).flatMap(v=>Object.values(v)).find(v=>v instanceof WebAssembly.Memory);
-        WebAssembly.instantiateStreaming(fetch('NFL2K5.wasm'),imports).then(r=>receive(r.instance,r.module)).catch(e=>options.onAbort?.(e.message));
+        WebAssembly.instantiateStreaming(fetch(NFL2K5Launch.runtimeAsset('NFL2K5.wasm')),imports).then(r=>receive(r.instance,r.module)).catch(e=>options.onAbort?.(e.message));
         return {};
       }});
     });
@@ -127,7 +127,14 @@ async function act(c){
           browserEvent(message,'audit-error');writeReport();throw Error(message);
         }
         let index=-1;
-        for(;cursor<events.length;cursor++)if(pattern.test(String(events[cursor].line||''))){index=cursor;break;}
+        for(;cursor<events.length;cursor++){
+          const event=events[cursor];
+          if(pattern.test(String(event.line||''))){index=cursor;break;}
+          if(isGameStop(event)){
+            if(currentCase)Object.assign(currentCase,caseDiagnostics('fail',events.slice(currentCase.eventStart)));
+            writeReport();throw Error(event.line);
+          }
+        }
         if(index>=0){result={matched:events[index].line,eventIndex:index,...(c.button?{presses}:{})};break;}
         if(c.button&&performance.now()>=nextPress){
           nextPress=performance.now()+everyMs;await press(c.button);presses++;continue;

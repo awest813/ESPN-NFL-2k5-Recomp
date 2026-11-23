@@ -2,9 +2,13 @@
 
 // File-not-found probes, queue occupancy and known guest TODO sites are
 // evidence rather than failures. Actual missing audio frames are failures.
+function isGameStop(row) {
+  return row.kind === 'error' && String(row.line || '').startsWith('The game stopped:');
+}
+
 function isAuditFailure(row) {
   const line = String(row.line || '');
-  return row.kind === 'browser-error' || row.kind === 'pageerror' || row.kind === 'audit-error'
+  return isGameStop(row) || row.kind === 'browser-error' || row.kind === 'pageerror' || row.kind === 'audit-error'
     || row.kind === 'audio-underrun' || /\[AUDIO-UNDERRUN\]/.test(line)
     || (!row.kind && /^\s*(?:PAGEERROR|BROWSER ERROR)\b/i.test(line))
     || /\[WebGPU\]\s+(?:device (?:error|lost)|no (?:device|adapter)|not available|cannot start|download\b|fence\b)/i.test(line)
@@ -56,4 +60,4 @@ function caseDiagnostics(result, rows) {
   };
 }
 
-module.exports = {isAuditFailure, caseDiagnostics};
+module.exports = {isAuditFailure, isGameStop, caseDiagnostics};

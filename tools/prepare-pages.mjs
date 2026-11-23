@@ -15,11 +15,17 @@ await mkdir(output,{recursive:true});
 for(const name of await readdir(output)) if(!allowed.has(name)) throw Error('Unexpected deployment file: '+name);
 const wasm=await readFile(resolve(build,'NFL2K5.wasm'));
 if(wasm.length<8||wasm.subarray(0,4).toString('hex')!=='0061736d') throw Error('Invalid WebAssembly runtime.');
+const sha256=data=>createHash('sha256').update(data).digest('hex');
+const wasmHash=sha256(wasm), jsHash=sha256(await readFile(resolve(build,'NFL2K5.js')));
+const runtimeBuild=sha256(jsHash+wasmHash);
 for(const name of launcher) await copyFile(resolve(root,'web',name),resolve(output,name));
+const index=resolve(output,'index.html'), html=await readFile(index,'utf8');
+if(!html.includes('src="launch.js"')) throw Error('Launcher script missing from page.');
+await writeFile(index,html.replace('src="launch.js"',`src="launch.js?build=${runtimeBuild}"`));
 for(const name of runtime) await copyFile(resolve(build,name),resolve(output,name));
 await writeFile(resolve(output,'.nojekyll'),'');
 await writeFile(resolve(output,'runtime.json'),JSON.stringify({version:1,wasmBytes:wasm.length,
-  sha256:createHash('sha256').update(wasm).digest('hex')},null,2)+'\n');
+  sha256:wasmHash,jsSha256:jsHash,runtimeBuild},null,2)+'\n');
 let total=0;
 for(const name of allowed) total+=(await stat(resolve(output,name))).size;
 if(total>1024**3) throw Error('Pages artifact exceeds 1 GiB.');

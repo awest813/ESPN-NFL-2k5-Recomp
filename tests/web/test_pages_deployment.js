@@ -20,15 +20,21 @@ const base=process.argv[2] || 'https://awest813.github.io/ESPN-NFL-2k5-Recomp/';
     console.log('ok: published runtime includes its linked XXH64 license notice');
     const result=await page.evaluate(async()=>{
       const manifest=await (await fetch('runtime.json',{cache:'no-cache'})).json();
-      const response=await fetch('NFL2K5.wasm',{cache:'no-cache'});
+      const urls=['NFL2K5.js','NFL2K5.wasm'].map(name=>new URL(NFL2K5Launch.runtimeAsset(name),document.baseURI));
+      const [js,response]=await Promise.all(urls.map(url=>fetch(url)));
       const type=response.headers.get('Content-Type'), bytes=await response.arrayBuffer();
-      const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),x=>x.toString(16).padStart(2,'0')).join('');
+      const digest=async data=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data)),x=>x.toString(16).padStart(2,'0')).join('');
+      const hash=await digest(bytes),jsHash=await digest(await js.arrayBuffer());
       const compiled=await WebAssembly.compile(bytes);
       const storage=await NFL2K5Storage.withLock(()=>NFL2K5Storage.run('status'));
-      return {type,size:bytes.byteLength,hash,manifest,imports:WebAssembly.Module.imports(compiled).length,storage};
+      return {type,size:bytes.byteLength,hash,jsHash,builds:urls.map(url=>url.searchParams.get('build')),
+        manifest,imports:WebAssembly.Module.imports(compiled).length,storage};
     });
     assert.ok(result.type.startsWith('application/wasm'));
     assert.equal(result.size,result.manifest.wasmBytes); assert.equal(result.hash,result.manifest.sha256);
+    assert.equal(result.jsHash,result.manifest.jsSha256);
+    assert.match(result.manifest.runtimeBuild,/^[a-f0-9]{64}$/);
+    assert.deepEqual(result.builds,[result.manifest.runtimeBuild,result.manifest.runtimeBuild]);
     assert.ok(result.imports>0);
     console.log('ok: published Wasm MIME type, byte count, SHA-256 and browser compilation');
     assert.equal(result.storage.files,0);
