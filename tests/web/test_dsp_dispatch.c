@@ -127,6 +127,9 @@ int main(int argc,char **argv) {
     for(unsigned alu=0;alu<256;alu++) {
         if(opcodes_alu[alu]==emu_undefined)continue;
         one(0x200000|alu,0); /* Pure ALU. */
+        /* Overlap the destination with each possible ALU source register. */
+        for (unsigned dst = 0; dst < 4; dst++)
+            one(0x4cd800u | (dst << 16) | alu, 0);
         for(unsigned mode=0;mode<32;mode++)one(0x204000|(mode<<8)|alu,0);
         for(unsigned src=4;src<16;src++)for(unsigned dst=4;dst<16;dst++)
             one(0x200000|(src<<13)|(dst<<8)|alu,0);
@@ -165,6 +168,10 @@ int main(int argc,char **argv) {
             for(unsigned r=0;r<8;r++) {
                 initial.registers[DSP_REG_R0 + r] = addresses[a];
                 initial.registers[DSP_REG_M0 + r] = modifiers[m];
+                if (a == 0) {
+                    for (unsigned dst = 0; dst < 4; dst++)
+                        one(0x4cd8d2u | (dst << 16) | (r << 8), 0);
+                }
                 for(unsigned d=0;d<4;d++)one(0x44d800u | (d<<16) | (r<<8),0);
                 for (unsigned acc = 0; acc < 2; acc++) {
                     unsigned operands = (acc << 16) | (r << 8);

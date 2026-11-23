@@ -9650,10 +9650,10 @@ index 0000000..56c5da2
 +}
 diff --git a/src/apu/dsp/dsp_cpu.c b/src/apu/dsp/dsp_cpu.c
 new file mode 100644
-index 0000000..1bc25f8
+index 0000000..fcdf3f0
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1481 @@
+@@ -0,0 +1,1496 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -10194,6 +10194,19 @@ index 0000000..1bc25f8
 +        dsp56k_read_memory(dsp, DSP_SPACE_X, address) & 0xffffffu;
 +}
 +
++/* Read Y:(Rn)+ before the parallel ALU operation. Its input registers
++ * retain their previous values until the memory move commits. */
++static void execute_pm5_read_y_postinc_alu(dsp_core_t *dsp)
++{
++    unsigned rn = (dsp->cur_inst >> 8) & 7u;
++    unsigned destination = (dsp->cur_inst >> 16) & 7u;
++    uint32_t address = dsp->registers[DSP_REG_R0 + rn];
++    emu_update_rn(dsp, rn, 1);
++    uint32_t value = dsp56k_read_memory(dsp, DSP_SPACE_Y, address);
++    opcodes_alu[dsp->cur_inst & 255u](dsp);
++    dsp->registers[destination] = value & 0xffffffu;
++}
++
 +/* MOVE A/B,X:(Rn)+ with no parallel ALU operation. */
 +static void execute_pm5_store_x_postinc_accumulator(dsp_core_t *dsp)
 +{
@@ -10236,6 +10249,8 @@ index 0000000..1bc25f8
 +    }
 +    if ((instruction >> 20) >= 4 && (instruction >> 20) < 8) {
 +        if ((instruction & 0xf40000) == 0x400000) return emu_pm_4x;
++        if ((instruction & 0xfcf800u) == 0x4cd800u)
++            return execute_pm5_read_y_postinc_alu;
 +        if ((instruction & 0xfcf8ffu) == 0x44d800u)
 +            return execute_pm5_read_x_postinc;
 +        if ((instruction & 0xfef8ffu) == 0x565800u)

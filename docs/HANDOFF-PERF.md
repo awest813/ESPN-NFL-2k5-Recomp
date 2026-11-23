@@ -787,6 +787,30 @@ These runs do not isolate a worklet regression or establish a gameplay
 benefit. The release keeps its current processor. A regression test covers
 stereo PCM and signal diagnostics across ring wrap and partial starvation.
 
+### Effects-processor parallel Y-memory loads
+
+In the captured Xbox effects-processor (EP) frame, 1,536 of 7,119
+instructions loaded a data register from Y memory while incrementing an
+address register. This family did not occur in the captured global-processor
+(GP) frame. The cached instruction handler reads the source, runs the parallel
+ALU operation on the original register values, then commits the destination.
+It uses the existing DSP address-update and memory-access routines.
+
+Two optimized Wasm comparisons alternated old and new implementations for
+seven pairs of 1,000 captured frames each. Median EP execution fell from
+96.82 to 87.77 ms and from 101.79 to 95.84 ms. GP medians moved in opposite
+directions. Each iteration reproduced the captured register and memory state,
+DMA metadata and transfers. The comparison covers these two captured frames.
+
+In sequential hardware Chrome Quick Games, the local candidate missed
+109,312 additional audio frames between kickoff and the final sample. Its
+lowest five-second average was 14.9 FPS and its longest flip was 142.28 ms.
+The published build from `38a912f`, verified against its Pages manifest,
+missed 500,352 additional audio frames, bottomed out at 4.2 FPS and had a
+459.06 ms flip. Both failed the audio audit. The games exercised different
+draw workloads and the two builds came from different build environments.
+Only the paired DSP replay isolates the handler's performance.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
