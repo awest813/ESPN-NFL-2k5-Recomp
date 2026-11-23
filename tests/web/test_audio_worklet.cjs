@@ -128,6 +128,25 @@ for(const rate of [8000,44100,48000,96000])for(const initial of [0,0xfffffffc]) 
 }
 console.log('ok: PCM published during a render block is consumed without a stale-snapshot gap');
 
+// Exact-rate output carries peak and crossing history across a ring wrap
+// and from the published prefix into a partially dry render block.
+{
+  const f = fixture(48000, 0xfffffffe);
+  f.put(5);
+  const samples = [-200, 300, -400, -500, 100];
+  for (let i = 0; i < samples.length; i++) {
+    const a = ((0xfffffffe + i) & f.processor.mask) * 2;
+    f.processor.data[a] = samples[i];
+    f.processor.data[a + 1] = -samples[i];
+  }
+  assert.deepEqual(f.render(2).concat(f.render(4)).map(v => v * 32768), [...samples, 0]);
+  assert.equal(f.processor.peak, 500 / 32768);
+  assert.equal(f.processor.crossings, 4);
+  assert.equal(f.processor.prev, 100 / 32768);
+  assert.equal(f.processor.played, 5);
+  assert.equal(f.processor.underrunFrames, 1);
+}
+
 // Missing output frames distinguish a partial render block from a full gap.
 for (const rate of [48000, 96000]) {
   const f = fixture(rate);

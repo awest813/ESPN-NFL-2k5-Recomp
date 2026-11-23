@@ -754,6 +754,39 @@ run bottomed out at 22.3 FPS with a 130.30 ms flip. The two games did not
 replay identical draws, so the isolated benchmark is the evidence for the
 layout speedup. The 30 FPS floor remains open.
 
+### Native-rate browser audio output
+
+An experimental AudioWorklet copied published 48 kHz stereo samples directly when the
+AudioContext also ran at 48 kHz. When a render block ran short, it still
+checked for newly published frames before reporting an underrun. Other output
+rates used the existing interpolation and phase rules.
+
+In a Node benchmark of the production processor, 80,000 fully supplied
+128-frame stereo blocks took a median of 78.92 ms before and 36.22 ms
+after, over nine alternating measured pairs. This isolates consumer work
+with source frames already present. It does not measure APU production time.
+In Chrome's OfflineAudioContext, rendering 262,144 frames took median
+times of 12.65 and 9.93 ms over seven alternating pairs. Every sample in
+both output channels matched the signed 16-bit source divided by 32,768,
+and both processors consumed the exact published frame count.
+
+A separate Quick Game capture with the previous worklet enabled APU
+scheduling diagnostics. Between kickoff and the final sample, the worklet
+missed 80,000 frames. The producer rebased its clock 25 times and was up
+to 81.88 ms behind. The longest measured DSP stage was 27.18 ms, and the
+longest gap between producer frames was 30.67 ms. These wall-clock
+intervals include host scheduling delays and tracing overhead.
+
+In a screenshot-free retail comparison using the same Wasm, menu script and
+Chrome profile, the candidate missed 61,952 additional frames from kickoff
+through the opening drive, against 128 for the released worklet. The lowest
+five-second averages were 14.0 and 23.7 FPS respectively. Draw workloads
+differed, peaking at 1,457 and 848 GPU draws per frame averaged over a
+window. Two other candidate attempts timed out before team selection.
+These runs do not isolate a worklet regression or establish a gameplay
+benefit. The release keeps its current processor. A regression test covers
+stereo PCM and signal diagnostics across ring wrap and partial starvation.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
