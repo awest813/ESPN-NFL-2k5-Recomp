@@ -32100,10 +32100,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..fb1c027
+index 0000000..9b167cf
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2057 @@
+@@ -0,0 +1,2111 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -32148,7 +32148,13 @@ index 0000000..fb1c027
 +    int swapchain;                /* the canvas's current texture, resolved at replay */
 +} WgTextureStorage;
 +struct SDL_GPUTexture { WgTextureStorage *storage; SDL_GPUTextureCreateInfo info; };
-+typedef struct { WGPUBuffer buf; uint32_t size; atomic_uint refs; } WgBufferStorage;
++typedef struct {
++    WGPUBuffer buf;
++    uint32_t size;
++    atomic_uint refs;
++    uint8_t *uploaded;
++    uint32_t uploaded_bytes;
++} WgBufferStorage;
 +struct SDL_GPUBuffer { WgBufferStorage *storage; SDL_GPUBufferCreateInfo info; };
 +typedef struct {
 +    uint8_t *mem;
@@ -32745,7 +32751,12 @@ index 0000000..fb1c027
 +    if (!b->storage) { free(b); return NULL; }
 +    return b;
 +}
-+static void do_release_buffer(void *p) { WgBufferStorage *b = (WgBufferStorage *)p; wgpuBufferRelease(b->buf); free(b); }
++static void do_release_buffer(void *p) {
++    WgBufferStorage *b = (WgBufferStorage *)p;
++    wgpuBufferRelease(b->buf);
++    free(b->uploaded);
++    free(b);
++}
 +static void buffer_storage_drop(WgBufferStorage *b)
 +{
 +    if (b && atomic_fetch_sub(&b->refs, 1) == 1)
@@ -33811,6 +33822,49 @@ index 0000000..fb1c027
 +    return 1;
 +}
 +
++/* OP_UPLOAD_BUFFER is the only writer to these geometry buffers. Replay owns
++ * the shadow on the WebGPU thread. Cycling creates new backing storage with
++ * its own empty shadow, even when the public SDL buffer is reused. */
++static void upload_geometry(WgBufferStorage *dst, uint32_t offset, const uint8_t *src, uint32_t size)
++{
++    if (offset || size > (16u << 20)) {
++        free(dst->uploaded);
++        dst->uploaded = NULL;
++        dst->uploaded_bytes = 0;
++        wgpuQueueWriteBuffer(s_queue, dst->buf, offset, src, size);
++        return;
++    }
++    if (size > dst->uploaded_bytes) {
++        uint8_t *grown = realloc(dst->uploaded, size);
++        wgpuQueueWriteBuffer(s_queue, dst->buf, 0, src, size);
++        if (grown) {
++            dst->uploaded = grown;
++            memcpy(grown, src, size);
++            dst->uploaded_bytes = size;
++        } else {
++            dst->uploaded_bytes = 0;
++        }
++        return;
++    }
++    uint32_t first = size, end = 0;
++    for (uint32_t at = 0; at < size; at += 4096) {
++        uint32_t bytes = SDL_min(4096u, size - at);
++        if (!memcmp(dst->uploaded + at, src + at, bytes)) continue;
++        /* Coalesce nearby changes so small gaps don't multiply queue calls. */
++        if (first < end && at - end >= 32768) {
++            wgpuQueueWriteBuffer(s_queue, dst->buf, first, src + first, end - first);
++            memcpy(dst->uploaded + first, src + first, end - first);
++            first = size;
++        }
++        if (first == size) first = at;
++        end = at + bytes;
++    }
++    if (first < end) {
++        wgpuQueueWriteBuffer(s_queue, dst->buf, first, src + first, end - first);
++        memcpy(dst->uploaded + first, src + first, end - first);
++    }
++}
++
 +static void replay(Replay *r)
 +{
 +    SDL_GPUCommandBuffer *c = r->c;
@@ -33834,8 +33888,8 @@ index 0000000..fb1c027
 +            /* Queue writes run ahead of the encoder: submit what is encoded
 +             * first so the order SDL promises holds. */
 +            flush_encoder(r);
-+            wgpuQueueWriteBuffer(s_queue, o->ub.dst->buf, o->ub.dst_off, o->ub.src->mem + o->ub.src_off,
-+                                 (o->ub.size + 3u) & ~3u);
++            upload_geometry(o->ub.dst, o->ub.dst_off, o->ub.src->mem + o->ub.src_off,
++                            (o->ub.size + 3u) & ~3u);
 +            if (start) profile->transfers += SDL_GetPerformanceCounter() - start;
 +            break;
 +        }
@@ -45767,10 +45821,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..8d584bd
+index 0000000..ed291c0
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2584 @@
+@@ -0,0 +1,2595 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -48254,9 +48308,12 @@ index 0000000..8d584bd
 +    }
 +
 +    {
-+        SgVertex vertices[12]; uint32_t indices[6] = {0,1,2,3,4,5};
++        /* Leave a large unchanged gap between two changed vertex regions. */
++        enum { blue_first = 2048 };
++        static SgVertex vertices[blue_first + 6];
++        uint32_t indices[6] = {0,1,2,3,4,5};
 +        quad(vertices, 0, 0, W, H, 0, 0, 0, 0, 0xFFFF0000u, 0);
-+        quad(vertices + 6, 0, 0, W, H, 0, 0, 0, 0, 0xFF0000FFu, 0);
++        quad(vertices + blue_first, 0, 0, W, H, 0, 0, 0, 0, 0xFF0000FFu, 0);
 +        SDL_GPUBufferCreateInfo bi = {.usage = SDL_GPU_BUFFERUSAGE_VERTEX, .size = sizeof vertices};
 +        SDL_GPUBuffer *vb = SDL_CreateGPUBuffer(dev, &bi);
 +        bi.usage = SDL_GPU_BUFFERUSAGE_INDEX; bi.size = sizeof indices;
@@ -48265,7 +48322,7 @@ index 0000000..8d584bd
 +            .size = sizeof vertices + sizeof indices};
 +        SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ti);
 +        uint8_t *bytes = SDL_MapGPUTransferBuffer(dev, tb, false);
-+        memcpy(bytes, vertices, sizeof vertices); memcpy(bytes + sizeof vertices, indices, sizeof indices);
++        memset(bytes, 0, sizeof vertices); memcpy(bytes + sizeof vertices, indices, sizeof indices);
 +        SDL_UnmapGPUTransferBuffer(dev, tb);
 +        SDL_GPUCommandBuffer *seed = SDL_AcquireGPUCommandBuffer(dev);
 +        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(seed);
@@ -48275,12 +48332,20 @@ index 0000000..8d584bd
 +        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices;
 +        SDL_UploadToGPUBuffer(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
 +        CHECK(SDL_SubmitGPUCommandBuffer(seed), "seed indexed destination versions");
++        bytes = SDL_MapGPUTransferBuffer(dev, tb, true);
++        memcpy(bytes, vertices, sizeof vertices); SDL_UnmapGPUTransferBuffer(dev, tb);
++        SDL_GPUCommandBuffer *update = SDL_AcquireGPUCommandBuffer(dev);
++        cp = SDL_BeginGPUCopyPass(update);
++        from.offset = 0; to.buffer = vb; to.size = sizeof vertices;
++        SDL_UploadToGPUBuffer(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_SubmitGPUCommandBuffer(update), "update both separated vertex regions");
++        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices;
 +        SDL_GPUTexture *before = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
 +            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
 +        SDL_GPUTexture *after = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
 +            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
 +        SDL_GPUCommandBuffer *old = record_indexed_binding(before, depth, opaque, vb, ib, white);
-+        for (int i=0;i<6;i++) indices[i] += 6;
++        for (int i=0;i<6;i++) indices[i] += blue_first;
 +        bytes = SDL_MapGPUTransferBuffer(dev, tb, true);
 +        memcpy(bytes + sizeof vertices, indices, sizeof indices); SDL_UnmapGPUTransferBuffer(dev, tb);
 +        SDL_GPUCommandBuffer *change = SDL_AcquireGPUCommandBuffer(dev); cp = SDL_BeginGPUCopyPass(change);

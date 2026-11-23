@@ -596,6 +596,45 @@ counts, longest flip, and mode transitions observed since the previous report
 within that case. Detailed profiling also records phase times for that flip.
 The phase timers can overlap.
 
+### Reusing unchanged geometry in WebGPU
+
+Successive stadium frames often write identical vertex and index data to the
+same addresses. In three complete five-second stadium windows, 43–50% of the
+vertex bytes matched the previous contents in 4 KiB blocks. A private browser
+prototype reduced geometry traffic from 2,144,377,220 to 1,009,867,388 bytes
+over five windows including entry. Queue calls rose from 2,562 to 2,880.
+
+The WebGPU backend compares aligned uploads at offset zero against an exact
+copy owned by the destination buffer backing. It uploads changed 4 KiB
+regions, joining them across unchanged gaps smaller than 32 KiB. Growing
+the recorded range sends the full payload. Offset writes and uploads larger
+than 16 MiB discard the copy. Cycling starts with a fresh backing, and an
+allocation failure falls back to a full write. The hardware Chrome pixel
+suite checks two separated changes and verifies that an earlier draw can
+still use the old index backing after a later draw uses the new one.
+
+Two reference/candidate pairs used the same retail Chrome attract sequence.
+Each row covers the window containing stadium entry and four subsequent
+windows. The detailed pair used renderer, submission, and APU lock timing.
+The lighter pair used only guest flip timing.
+
+| Timing | Renderer | Lowest window FPS | Longest flip (ms) | Flips over 100 ms | Missing audio frames at title / end |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Detailed | Reference | 20.6 | 1,159.24 | 2 | 2,304 / 2,432 |
+| Detailed | Changed-region uploads | 26.3 | 461.82 | 3 | 0 / 0 |
+| Flip only | Reference | 21.7 | 938.21 | 3 | 0 / 0 |
+| Flip only | Changed-region uploads | 22.9 | 1,141.71 | 3 | 0 / 0 |
+
+The lowest five-second average improved in both pairs. The longest individual
+stall moved in opposite directions. Stadium entry still misses the 30 FPS
+target under both timing configurations.
+
+A separate St. Louis at San Francisco Quick Game reached second-and-ten at
+the STL 20 with 4:55 left in the first quarter. From the window containing
+kickoff onward, eight windows averaged 24.8–30.1 FPS, with a longest flip
+of 239.94 ms and zero missing audio frames. The capture and opening-drive
+image are under `build-web-tests/upload-stall/quick-game-geometry-candidate`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
