@@ -727,6 +727,33 @@ These timers can overlap. This identifies texture handling as a substantial
 cost in a long frame during play with screenshot capture disabled. The
 timing-only run did not collect the phase data needed to attribute its stall.
 
+### Texture snapshot layout cost
+
+The renderer calculates how many guest bytes each texture snapshot spans
+before it checks those bytes. A two-dimensional power-of-two swizzled
+rectangle contains exactly width × height texels. Using that count avoids
+rebuilding Morton masks for its last texel at each mip level. Irregular
+dimensions retain the last-texel calculation. Cube snapshots now calculate
+the aligned face chain once, and an authored mip count that fits the
+dimensions can be accepted without walking the chain to find the maximum.
+
+A private Wasm harness compared snapshot sizes and acceptance against
+the previous release for 509,600 inputs. It covered power-of-two and
+irregular dimensions, pitched images, mip counts, cubes, unsupported
+formats and guest address limits. All results matched. Over twelve timed
+pairs with alternating order, the medians for 500,000 synthetic snapshots
+were 37.36 ms before and 10.23 ms after. The benchmark isolates layout
+calculation with direct guest memory and excludes texture verification,
+uploads and drawing.
+
+With the optimized layout, a screenshot-free retail Quick Game produced
+eight kickoff/opening-drive windows at 28.8–30.1 FPS. The longest flip was
+98.27 ms. The audio counter rose from 22,400 missing frames at kickoff to
+22,912 at the end, failing the audit. The preceding release's timing-only
+run bottomed out at 22.3 FPS with a 130.30 ms flip. The two games did not
+replay identical draws, so the isolated benchmark is the evidence for the
+layout speedup. The 30 FPS floor remains open.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

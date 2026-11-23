@@ -1064,7 +1064,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              uint16_t v = (uint16_t) (((s_gpu.clear_color >> 8) & 0xF800)
                                       | ((s_gpu.clear_color >> 5) & 0x07E0)
                                       | ((s_gpu.clear_color >> 3) & 0x001F));
-@@ -994,8 +1142,60 @@
+@@ -994,8 +1142,64 @@
      }
  }
 
@@ -1092,14 +1092,18 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 +    if(!tex_size_from_format(texture->color))return 1;
 +    uint32_t levels=(s_tex_reg[(0x1B04u+64u*(uint32_t)stage-NV_TEX_FIRST)/4]>>16)&15u;
 +    uint32_t maximum=1,big=texture->width>texture->height?texture->width:texture->height;
++    if (levels <= 1) return 1;
++    if (big >= (1u << (levels - 1))) return levels;
 +    while(big>1){maximum++;big>>=1;}
-+    if(!levels)levels=1;
-+    return levels<maximum?levels:maximum;
++    return maximum;
 +}
 +static uint64_t texture_mip_bytes(uint32_t format,uint32_t w,uint32_t h) {
 +    uint32_t block=d3d8_format_dxt_block_bytes(format);
 +    if(block)return (uint64_t)((w+3)/4)*((h+3)/4)*block;
-+    uint64_t texels=d3d8_format_is_swizzled(format)?(uint64_t)swizzle_offset(w-1,h-1,w,h)+1:(uint64_t)w*h;
++    /* Morton order permutes a power-of-two rectangle without holes. */
++    uint64_t texels = (uint64_t)w * h;
++    if (((w & (w - 1)) || (h & (h - 1))) && d3d8_format_is_swizzled(format))
++        texels = (uint64_t)swizzle_offset(w - 1, h - 1, w, h) + 1;
 +    return texels*gpu_fmt_bpp(format);
 +}
 +
@@ -1126,26 +1130,69 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  typedef struct {
      uint8_t *pixels;
      size_t bytes; /* of pixels: the texture's footprint in guest RAM */
-@@ -1052,6 +1252,18 @@
-             bytes = ((uint64_t) texture->height - 1) * texture->pitch + texture->width * bpp;
-         }
-     }
-+    if(tex_size_from_format(texture->color)) {
-+        uint32_t w=texture->width,h=texture->height,levels=texture_mip_levels(stage,texture);bytes=0;
-+        for(uint32_t level=0;level<levels;level++) {
-+            bytes+=texture_mip_bytes(texture->color,w,h);
-+            w=w>1?w/2:1;h=h>1?h/2:1;
+@@ -1020,37 +1224,31 @@
+         texture->width > 65535 || texture->height > 65535)
+         return;
+     blocks = d3d8_format_dxt_block_bytes(texture->color);
+-    if (blocks) {
+-        bytes = ((uint64_t) texture->width + 3) / 4 *
+-                (((uint64_t) texture->height + 3) / 4) * blocks;
+-    } else if (texture->color == 0x0B) {
+-        bytes = (uint64_t) swizzle_offset(texture->width - 1, texture->height - 1,
+-                                          texture->width, texture->height) + 1;
++    if (!blocks && texture->color != 0x0B) {
++        switch (format) {
++            case 0x12: case 0x1E: case 0x3F: case 0x40: case 0x41: bpp = 4; break;
++            case 0x10: case 0x1C: case 0x11: case 0x1D: bpp = 2; break;
++            case 0x13: case 0x1F: bpp = 1; break;
++            default: return;
 +        }
++        if (!d3d8_format_is_swizzled(texture->color) &&
++            (uint64_t)texture->pitch < (uint64_t)texture->width * bpp) return;
 +    }
 +    if (gpu_stage_is_cube(stage)) {
 +        uint32_t face_bytes = gpu_cube_face_bytes(stage, texture);
 +        if (!face_bytes) return;
-+        bytes = (uint64_t) face_bytes * 6;
-+    }
++        bytes = (uint64_t)face_bytes * 6;
++    } else if (tex_size_from_format(texture->color)) {
++        uint32_t w = texture->width, h = texture->height;
++        uint32_t levels = texture_mip_levels(stage,texture);
++        bytes = 0;
++        for (uint32_t level = 0; level < levels; level++) {
++            bytes += texture_mip_bytes(texture->color,w,h);
++            w = w > 1 ? w / 2 : 1;
++            h = h > 1 ? h / 2 : 1;
++        }
+     } else {
+-        switch (format) {
+-            case 0x12:
+-            case 0x1E:
+-            case 0x3F:
+-            case 0x40:
+-            case 0x41: bpp = 4;
+-                break;
+-            case 0x10:
+-            case 0x1C:
+-            case 0x11:
+-            case 0x1D: bpp = 2;
+-                break;
+-            case 0x13:
+-            case 0x1F: bpp = 1;
+-                break;
+-            default: return;
+-        }
+-        if (d3d8_format_is_swizzled(texture->color)) {
+-            bytes = ((uint64_t) swizzle_offset(texture->width - 1, texture->height - 1,
+-                                               texture->width, texture->height) + 1) * bpp;
+-        } else {
+-            if ((uint64_t) texture->pitch < (uint64_t) texture->width * bpp) return;
+-            bytes = ((uint64_t) texture->height - 1) * texture->pitch + texture->width * bpp;
+-        }
++        bytes = ((uint64_t)texture->height - 1) * texture->pitch + texture->width * bpp;
+     }
      if (!bytes || bytes > SIZE_MAX || bytes > UINT64_C(0x100000000) - texture->offset) return;
      uintptr_t base = (uintptr_t) xbox_GetMemoryOffset();
-     if (texture->color == 0x0B &&
-@@ -1098,7 +1310,7 @@
+@@ -1098,7 +1296,7 @@
  #endif
 
  static int sample_texture(uint32_t u, uint32_t v, uint32_t *argb) {
@@ -1154,7 +1201,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
  #endif
      const uint8_t *p;
-@@ -1106,7 +1318,7 @@
+@@ -1106,7 +1304,7 @@
 
      if (!s_gpu.tex.valid)
          return 0;
@@ -1163,7 +1210,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_texture_snapshot[s_sampler_stage].ready) return 0;
      const uint8_t *image = s_texture_snapshot[s_sampler_stage].pixels;
  #else
-@@ -1127,7 +1339,7 @@
+@@ -1127,7 +1325,7 @@
          if (!s_gpu.tex.palette)
              return 0;
          idx = image[swizzle_offset(u, v, s_gpu.tex.width, s_gpu.tex.height)];
@@ -1172,7 +1219,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          *argb = s_texture_snapshot[s_sampler_stage].palette[idx];
  #else
          *argb = *(const uint32_t *) (mem + s_gpu.tex.palette + (size_t) idx * 4u);
-@@ -1256,7 +1468,7 @@
+@@ -1256,7 +1454,7 @@
 
      if (!prefix || !w || !h || w > 4096 || h > 4096)
          return;
@@ -1181,7 +1228,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      snapshot_texture(0, &s_gpu.tex);
      s_sampler_stage = 0;
      if (!s_texture_snapshot[0].ready) return;
-@@ -1318,7 +1530,7 @@
+@@ -1318,7 +1516,7 @@
   * This is not a micro-optimisation for its own sake: the loader's video
   * paces on frames actually presented, so the rasteriser's throughput is the
   * playback rate. */
@@ -1190,7 +1237,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  static uint32_t *s_surface_first, *s_surface_end;
  static uint32_t s_surface_base, s_surface_rows, s_surface_pitch, s_surface_bpp;
  /* Linux: the staged surface is guest RAM itself (readable and writable,
-@@ -1328,7 +1540,7 @@
+@@ -1328,7 +1526,7 @@
  #endif
 
  static void surface_stage_reset(void) {
@@ -1199,7 +1246,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface_direct)
          free(s_surface);
      s_surface_direct = 0;
-@@ -1342,7 +1554,7 @@
+@@ -1342,7 +1540,7 @@
 
  static int surface_stage_begin(const uint8_t *mem) {
      uint32_t base = dma_resolve(s_gpu.color_offset);
@@ -1208,7 +1255,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint64_t right = (uint64_t) s_gpu.clip_x + s_gpu.clip_w;
      uint64_t bottom = (uint64_t) s_gpu.clip_y + s_gpu.clip_h;
      uint32_t bpp = surface_bpp();
-@@ -1398,7 +1610,7 @@
+@@ -1398,7 +1596,7 @@
  }
 
  static void surface_stage_dirty(uint32_t y, uint32_t first, uint32_t end) {
@@ -1217,7 +1264,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (!s_surface || s_surface_direct || y >= s_surface_rows || first >= end) return;
      if (first < s_surface_first[y]) s_surface_first[y] = first;
      if (end > s_surface_end[y]) s_surface_end[y] = end;
-@@ -1408,7 +1620,7 @@
+@@ -1408,7 +1606,7 @@
  }
 
  static int surface_stage_flush(const uint8_t *mem) {
@@ -1226,7 +1273,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t y;
      if (!s_surface || s_surface_direct) return 1; /* drawn in place */
      for (y = 0; y < s_surface_rows; y++)
-@@ -1428,6 +1640,15 @@
+@@ -1428,6 +1626,15 @@
 
  static int surface_begin_batch(const uint8_t *mem) {
      return surface_stage_begin(mem);
@@ -1242,7 +1289,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb) {
-@@ -1480,6 +1701,21 @@
+@@ -1480,6 +1687,21 @@
      }
  }
 
@@ -1264,7 +1311,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Write one fragment through alpha test and blending.
   *
   * The rasteriser used to store the texel as-is, so every translucent quad
-@@ -1490,34 +1726,13 @@
+@@ -1490,34 +1712,13 @@
  static void shade_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t src) {
      uint32_t a = src >> 24;
 
@@ -1306,7 +1353,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          uint32_t sv[4], dv[4], out = 0;
          int ch;
          sv[0] = (src >> 16) & 0xFF;
-@@ -1552,10 +1767,9 @@
+@@ -1552,10 +1753,9 @@
      }
      /* SET_COLOR_MASK: channels with their write-enable cleared keep what the
       * surface already holds. */
@@ -1320,7 +1367,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          uint32_t keep = 0;
          if (!(g_color_mask & 0x00000001u)) keep |= 0x000000FFu; /* blue  */
          if (!(g_color_mask & 0x00000100u)) keep |= 0x0000FF00u; /* green */
-@@ -1579,12 +1793,13 @@
+@@ -1579,12 +1779,13 @@
  /* Half-space fill. Barycentric edge functions rather than scanline slopes:
   * the same test decides both windings, so a title that emits clockwise
   * triangles does not silently render nothing. */
@@ -1337,7 +1384,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int minx, maxx, miny, maxy, x, y;
      int textured = uv && s_gpu.tex.valid;
 
-@@ -1606,6 +1821,12 @@
+@@ -1606,6 +1807,12 @@
      miny = (int) floorf(fminf(a[1], fminf(b[1], c[1])));
      maxy = (int) ceilf(fmaxf(a[1], fmaxf(b[1], c[1])));
 
@@ -1350,7 +1397,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (minx < (int) s_gpu.clip_x) minx = (int) s_gpu.clip_x;
      if (miny < (int) s_gpu.clip_y) miny = (int) s_gpu.clip_y;
      if (maxx > (int) (s_gpu.clip_x + s_gpu.clip_w)) maxx = (int) (s_gpu.clip_x + s_gpu.clip_w);
-@@ -1621,9 +1842,22 @@
+@@ -1621,9 +1828,22 @@
              float w0 = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0]);
              float w1 = (c[0] - b[0]) * (py - b[1]) - (c[1] - b[1]) * (px - b[0]);
              float w2 = (a[0] - c[0]) * (py - c[1]) - (a[1] - c[1]) * (px - c[0]);
@@ -1376,7 +1423,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              if (textured) {
                  /* Barycentric, straight from the edge functions already
                   * computed: w1 is the area opposite a, w2 opposite b, w0
-@@ -1638,15 +1872,26 @@
+@@ -1638,15 +1858,26 @@
                  if (su < 0.0f) su = 0.0f;
                  if (sv < 0.0f) sv = 0.0f;
                  if (sample_texture((uint32_t) su, (uint32_t) sv, &texel)) {
@@ -1405,7 +1452,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Attribute 3 is diffuse colour in every NV2A layout that sets one. Absent it,
-@@ -1727,17 +1972,6 @@
+@@ -1727,17 +1958,6 @@
      return 1;
  }
 
@@ -1423,7 +1470,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* An untransformed batch drawn as if it were screen space smears a few pixels
   * into the corner, so the batch has to be classified before it is rasterised.
   *
-@@ -1806,6 +2040,10 @@
+@@ -1806,6 +2026,10 @@
  #define NV_PRIM_QUAD_STRIP     9
  #define NV_PRIM_POLYGON        10
 
@@ -1434,7 +1481,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* How many post-draw captures to keep: enough to see whether the geometry
   * is stable from frame to frame, few enough not to fill a directory. */
  #define FB_DUMP_AFTER_DRAW 8
-@@ -1818,8 +2056,10 @@
+@@ -1818,8 +2042,10 @@
   * a batch whose texcoords cannot be read is drawn untextured rather than not
   * at all, so a missing coordinate stream costs the colour and not the shape.
   */
@@ -1446,7 +1493,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int textured;
 
      if (!fetch_attr(&s_gpu.attr[0], i0, p[0])
-@@ -1831,15 +2071,54 @@
+@@ -1831,15 +2057,54 @@
                 && fetch_texcoord(i1, uv[1])
                 && fetch_texcoord(i2, uv[2]);
 
@@ -1510,7 +1557,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
  static void batch_triangles(BatchTriFn emit, void *ctx) {
      uint32_t i;
-@@ -1847,36 +2126,36 @@
+@@ -1847,36 +2112,36 @@
          case NV_PRIM_TRIANGLES:
              for (i = 0; i + 2 < s_gpu.idx_count; i += 3)
                  emit(ctx, s_gpu.idx[i], s_gpu.idx[i + 1], s_gpu.idx[i + 2],
@@ -1554,7 +1601,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              break;
          default:
-@@ -1884,13 +2163,18 @@
+@@ -1884,13 +2149,18 @@
      }
  }
 
@@ -1575,7 +1622,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (s_gpu.idx_count < 3)
          return;
-@@ -1985,12 +2269,12 @@
+@@ -1985,12 +2255,12 @@
          return sample_texture(u, v, argb);
      saved = s_gpu.tex;
      s_gpu.tex = s_stage[st];
@@ -1590,7 +1637,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_sampler_stage = saved_stage;
  #endif
      s_gpu.tex = saved;
-@@ -2027,11 +2311,12 @@
+@@ -2027,11 +2297,12 @@
  #define NV097_SET_COMBINER_COLOR_OCW        0x1E40   /* +i*4, 8 */
  #define NV097_SET_COMBINER_CONTROL          0x1E60
  #define NV097_SET_SHADER_STAGE_PROGRAM      0x1E70
@@ -1604,7 +1651,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      int set;
  } s_comb;
 
-@@ -2075,6 +2360,8 @@
+@@ -2075,6 +2346,8 @@
              s_comb.set = 1;
              return 1;
          case NV097_SET_SHADER_STAGE_PROGRAM: s_comb.stage_prog = param;
@@ -1613,7 +1660,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              return 1;
          /* NV_PGRAPH_SHADERCTL: dot mappings (bits 0-11) and each stage's input
           * stage (bits 16-27), for the dot-product texture modes (xemu). */
-@@ -2449,6 +2736,12 @@
+@@ -2449,6 +2722,12 @@
          return 1;
      }
      switch (method) {
@@ -1626,7 +1673,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          case NV097_SET_TRANSFORM_EXECUTION_MODE: s_vp.mode = param & 3;
              return 1;
          case NV097_SET_TRANSFORM_PROGRAM_LOAD: s_vp.prog_load = param;
-@@ -2540,24 +2833,99 @@
+@@ -2540,24 +2819,99 @@
      return (t[word] >> bit) & ((1u << len) - 1u);
  }
 
@@ -1736,7 +1783,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  c += a0;
                  if (c >= 0 && c < VP_CONSTS && !s_const_written[c]) const_unwritten_note(c, a0);
              }
-@@ -2569,14 +2937,25 @@
+@@ -2569,14 +2923,25 @@
          default: s = R[0];
              break;
      }
@@ -1766,7 +1813,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (mask & 8) dst[0] = v[0];
      if (mask & 4) dst[1] = v[1];
      if (mask & 2) dst[2] = v[2];
-@@ -2623,7 +3002,19 @@
+@@ -2623,7 +2988,19 @@
  static float s_vp_dbg_r[13][4]; /* last vp_run's temporaries (RECOMP_IDX_DUMP) */
  static int s_vp_dbg_a0;
 
@@ -1787,7 +1834,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      float R[13][4];
      int a0 = 0, slot, i;
 
-@@ -2634,68 +3025,54 @@
+@@ -2634,68 +3011,54 @@
      }
 
      for (slot = (int) s_vp.start; slot < VP_PROG_LEN; slot++) {
@@ -1879,7 +1926,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  break; /* SGE */
              case 13: new_a0 = (int) floorf(A[0] + 0.001f);
                  a0_written = 1; /* ARL */
-@@ -2728,20 +3105,12 @@
+@@ -2728,20 +3091,12 @@
                  break; /* MOV */
              case 2: {
                  float x = C[0]; /* RCP */
@@ -1902,7 +1949,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[0] = ires[1] = ires[2] = ires[3] = r;
                  break;
              }
-@@ -2774,13 +3143,13 @@
+@@ -2774,13 +3129,13 @@
                  break;
              }
              case 7: {
@@ -1920,7 +1967,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  ires[3] = 1.0f;
                  break;
              }
-@@ -2823,11 +3192,18 @@
+@@ -2823,11 +3178,18 @@
                      vp_field(t, 1, 13, 8));
          if (a0_written)
              a0 = new_a0;
@@ -1944,7 +1991,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* One transformed vertex, as the rasteriser wants it. */
-@@ -2847,25 +3223,60 @@
+@@ -2847,25 +3209,60 @@
  static uint32_t s_xf_stamp[VP_CACHE];
  static uint32_t s_xf_gen = 1;
 
@@ -2009,7 +2056,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      s_vp.verts++;
      if (getenv("RECOMP_VP_TRACE")) {
          static unsigned shown;
-@@ -2891,8 +3302,10 @@
+@@ -2891,8 +3288,10 @@
                  O[3][0], O[3][1], O[3][2], O[3][3], O[9][0], O[9][1]);
          }
      }
@@ -2022,7 +2069,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      x->z = O[0][2];
      x->w = O[0][3];
      x->w = vp_clamp_w(x->w);
-@@ -2927,6 +3340,10 @@
+@@ -2927,6 +3326,10 @@
      return x;
  }
 
@@ -2033,7 +2080,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  /* Depth buffer: host-side, one float per pixel of the current surface.
   * Cleared by CLEAR_SURFACE's Z bit. */
  #define ZB_W 1024
-@@ -2946,10 +3363,10 @@
+@@ -2946,10 +3349,10 @@
  }
 
  /* Depth (CLEAR_SURFACE bit 0) and/or stencil (bit 1), inside the clear
@@ -2047,7 +2094,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint8_t st = (uint8_t) (s_vp.zclear & 0xFF);
      uint32_t x0, y0, x1, y1, x, y;
      clear_rect(&x0, &y0, &x1, &y1);
-@@ -3012,13 +3429,199 @@
+@@ -3012,13 +3415,199 @@
      }
  }
 
@@ -2248,7 +2295,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 
      if (!a->ok || !b->ok || !c->ok || (bpp != 4 && bpp != 2)) {
          s_vp.rej_bad++;
-@@ -3057,26 +3660,15 @@
+@@ -3057,26 +3646,15 @@
          }
          return;
      }
@@ -2278,7 +2325,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          int front = (s_vp.front_face == 0x0900) ? cw : !cw;
          if ((s_vp.cull_face == 0x0404 && front) || (s_vp.cull_face == 0x0405 && !front)
              || s_vp.cull_face == 0x0408) {
-@@ -3091,6 +3683,12 @@
+@@ -3091,6 +3669,12 @@
      maxx = (int) ceilf(fmaxf(a->x, fmaxf(b->x, c->x)));
      miny = (int) floorf(fminf(a->y, fminf(b->y, c->y)));
      maxy = (int) ceilf(fmaxf(a->y, fmaxf(b->y, c->y)));
@@ -2291,7 +2338,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      if (minx < (int) s_gpu.clip_x) minx = (int) s_gpu.clip_x;
      if (miny < (int) s_gpu.clip_y) miny = (int) s_gpu.clip_y;
      if (maxx > (int) (s_gpu.clip_x + s_gpu.clip_w)) maxx = (int) (s_gpu.clip_x + s_gpu.clip_w);
-@@ -3116,38 +3714,32 @@
+@@ -3116,38 +3700,32 @@
              float la, lb, lc, pa, pb, pc, iw, z;
              uint32_t argb, k;
              float col[4], spec[4], fog;
@@ -2350,7 +2397,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              }
              pa = la * iwa;
              pb = lb * iwb;
-@@ -3157,6 +3749,11 @@
+@@ -3157,6 +3735,11 @@
              pa /= iw;
              pb /= iw;
              pc /= iw;
@@ -2362,7 +2409,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              fog = pa * a->fog + pb * b->fog + pc * c->fog;
              for (k = 0; k < 4; k++) {
                  col[k] = pa * a->col[k] + pb * b->col[k] + pc * c->col[k];
-@@ -3168,9 +3765,12 @@
+@@ -3168,9 +3751,12 @@
                     | (uint32_t) (col[2] * 255.0f + 0.5f);
              {
                  float t0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -2376,7 +2423,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      float su = pa * a->uv[0] + pb * b->uv[0] + pc * c->uv[0];
                      float sv = pa * a->uv[1] + pb * b->uv[1] + pc * c->uv[1];
                      /* Negative coordinates wrap like any other: shift into range
-@@ -3178,26 +3778,54 @@
+@@ -3178,26 +3764,54 @@
                      if (su < 0.0f) su += (float) s_gpu.tex.width * (floorf(-su / (float) s_gpu.tex.width) + 1.0f);
                      if (sv < 0.0f) sv += (float) s_gpu.tex.height * (floorf(-sv / (float) s_gpu.tex.height) + 1.0f);
                      sampled = sample_texture((uint32_t) su, (uint32_t) sv, &texel);
@@ -2435,7 +2482,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      {
                          /* Register 3, as the D3D11 path builds it: fog colour
                           * (low byte red) and the clamped fog factor. */
-@@ -3232,11 +3860,19 @@
+@@ -3232,11 +3846,19 @@
                      }
                  }
              }
@@ -2455,7 +2502,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  static void xf_lerp(XfVert *o, const XfVert *p, const XfVert *q, float t) {
-@@ -3253,7 +3889,7 @@
+@@ -3253,7 +3875,7 @@
   * and the rasteriser used to drop the whole triangle -- floors, walls and
   * anything close to the camera vanished (1.5 million rejected vertices in
   * NFL 2K5's stadium). Undo the divide (x*w is the clip-space coordinate, the
@@ -2464,7 +2511,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
   * again and fan out the pieces. */
  /* Receives each finished 3D triangle: the software rasterizer
   * (raster_triangle_xf) or a GPU renderer. */
-@@ -3262,32 +3898,34 @@
+@@ -3262,32 +3884,34 @@
  static void raster_tri_clip(const XfVert *a, const XfVert *b, const XfVert *c,
                              XfTriFn emit, void *ctx) {
      const float eps = 1e-3f;
@@ -2511,7 +2558,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
              s_vp.rej_bad++;
              if (getenv("RECOMP_VP_TRACE") && (s_vp.rej_bad % 400000) == 1) {
                  const XfVert *vv[3];
-@@ -3334,76 +3972,161 @@
+@@ -3334,76 +3958,161 @@
          v->y *= v->w;
          v->z *= v->w;
      }
@@ -2694,7 +2741,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Batches drawn through a vertex program (3D) since the last present: a
-@@ -3424,7 +4147,8 @@
+@@ -3424,7 +4133,8 @@
      s_vp.batches++;
      if (s_gpu.tex.valid)
          note_texture_use();
@@ -2704,7 +2751,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  }
 
  /* Count constant arrays once per batch, never from the per-vertex fetch path.
-@@ -3605,7 +4329,7 @@
+@@ -3605,7 +4315,7 @@
 
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
@@ -2713,7 +2760,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      surface_stage_reset();
      if (!snapshot_textures()) {
          static unsigned failures;
-@@ -3843,7 +4567,7 @@
+@@ -3843,7 +4553,7 @@
                      uint32_t nz = 0;
                      if (!at->offset || !at->size)
                          continue;
@@ -2722,7 +2769,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                      uint8_t bytes[64];
                      if (!pb_diagnostic_read(at->offset, bytes, sizeof bytes)) {
                          fprintf(stderr, "  [GPU] attr%u bytes unavailable\n", a);
-@@ -3866,7 +4590,7 @@
+@@ -3866,7 +4576,7 @@
                  const uint8_t *mem = (const uint8_t *) xbox_GetMemoryOffset();
                  uint32_t k;
                  fprintf(stderr, "  [GPU]   bytes @0x%08X:", s_gpu.attr[0].offset);
@@ -2731,7 +2778,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                  uint8_t bytes[32];
                  if (pb_diagnostic_read(s_gpu.attr[0].offset, bytes, sizeof bytes)) {
                      for (k = 0; k < sizeof bytes; ++k) fprintf(stderr, " %02X", bytes[k]);
-@@ -4305,7 +5029,7 @@
+@@ -4305,7 +5015,7 @@
          /* Texture offset 0: the FORMAT word that follows is the header's
           * Format field ({Common, Data, Lock, Format, Size}); find every
           * header in guest memory with that Format and Data == 0. */
@@ -2740,7 +2787,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          {
              static int pending, dumps;
              static uint32_t zva[8], zdraw[8], nz, zdone;
-@@ -4756,7 +5480,7 @@
+@@ -4756,7 +5466,7 @@
                          hdr[28] = 32;
                          fwrite(hdr, 1, 54, f);
                          for (y = 0; y < h; y++) {
@@ -2749,7 +2796,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
                              uint32_t row[4096];
                              if (!pb_diagnostic_read((uint64_t) base + (uint64_t) y * s_gpu.pitch, row,
                                                      (size_t) w * 4)) {
-@@ -4874,7 +5598,7 @@
+@@ -4874,7 +5584,7 @@
      const uint32_t H = 0x43F00000u; /* 480.0f */
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2758,7 +2805,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 8], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4882,7 +5606,7 @@
+@@ -4882,7 +5592,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for 640.0f/480.0f pairs...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 8 && hits < 12; i++) {
          uint32_t at = i;
@@ -2767,7 +2814,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
          if (begin == UINT32_MAX || i >= begin + 1024) {
              begin = i & ~1023u;
              size_t count = 0x04000000u / 4 - begin;
-@@ -4934,7 +5658,7 @@
+@@ -4934,7 +5644,7 @@
      const uint32_t NAN_NEG = 0xFFC00000u;
      const uint32_t *ram = (const uint32_t *) xbox_GetMemoryOffset();
      uint32_t i, hits = 0;
@@ -2776,7 +2823,7 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
      uint32_t staged[1024 + 20], begin = UINT32_MAX;
      ram = staged;
  #endif
-@@ -4942,7 +5666,7 @@
+@@ -4942,7 +5652,7 @@
      fprintf(stderr, "[GPU] searching guest RAM for NaN matrices...\n");
      for (i = 0x1000 / 4; i < (0x04000000u / 4) - 20 && hits < 10; i++) {
          uint32_t at = i;
