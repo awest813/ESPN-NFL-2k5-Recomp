@@ -2866,7 +2866,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +195,35 @@
+@@ -185,9 +195,38 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
@@ -2874,6 +2874,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    uint64_t texture_ticks, vertex_ticks, submit_ticks;
 +    uint64_t texture_decode_ticks, texture_compare_ticks;
 +    uint64_t staging_ticks, record_ticks, backend_submit_ticks, max_submit_ticks;
++    uint64_t previous_texture_ticks, previous_vertex_ticks, previous_submit_ticks;
++    uint64_t longest_flip_ticks, longest_flip_texture, longest_flip_vertex, longest_flip_submit;
++    uint32_t intervals, over_30fps_budget, over_50ms, over_100ms;
 +    uint32_t flushes;
 +    uint64_t texture_hash_bytes, texture_compare_bytes;
 +    uint64_t vertex_upload_bytes;
@@ -2902,7 +2905,38 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -206,12 +242,57 @@
+@@ -200,18 +239,98 @@
+
+ static void sg_stats_tick(void) {
+     uint64_t now = SDL_GetTicks();
++    static uint64_t last_flip;
++    static int frame_profile = -1;
++    if (frame_profile < 0) frame_profile = getenv("RECOMP_SDLGPU_FRAME_PROFILE") != NULL;
++    uint64_t profile = sg_profile_now();
++    uint64_t flip = profile ? profile : frame_profile ? SDL_GetPerformanceCounter() : 0;
+     int i;
+
++    if (flip) {
++        if (last_flip) {
++            uint64_t interval = flip - last_flip;
++            uint64_t frequency = SDL_GetPerformanceFrequency();
++            s_sg_stats.intervals++;
++            s_sg_stats.over_30fps_budget += interval > frequency / 30;
++            s_sg_stats.over_50ms += interval > frequency / 20;
++            s_sg_stats.over_100ms += interval > frequency / 10;
++            if (interval > s_sg_stats.longest_flip_ticks) {
++                s_sg_stats.longest_flip_ticks = interval;
++                s_sg_stats.longest_flip_texture = s_sg_stats.texture_ticks - s_sg_stats.previous_texture_ticks;
++                s_sg_stats.longest_flip_vertex = s_sg_stats.vertex_ticks - s_sg_stats.previous_vertex_ticks;
++                s_sg_stats.longest_flip_submit = s_sg_stats.submit_ticks - s_sg_stats.previous_submit_ticks;
++            }
++        }
++        last_flip = flip; /* carry the interval across five-second report boundaries */
++        s_sg_stats.previous_texture_ticks = s_sg_stats.texture_ticks;
++        s_sg_stats.previous_vertex_ticks = s_sg_stats.vertex_ticks;
++        s_sg_stats.previous_submit_ticks = s_sg_stats.submit_ticks;
++    }
+     if (!s_sg_stats.since_ms)
          s_sg_stats.since_ms = now;
      if (now - s_sg_stats.since_ms < 5000)
          return;
@@ -2913,7 +2947,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      for (i = 0; i < SG_FB_COUNT; i++)
          if (s_sg_stats.why[i])
              fprintf(stderr, " %s %u", k_sg_fallback_names[i], s_sg_stats.why[i]);
-+    if (sg_profile_now() && s_sg_stats.frames) {
++    if (profile && s_sg_stats.frames) {
 +        double per_frame_ms = 1000.0 / ((double)SDL_GetPerformanceFrequency() * s_sg_stats.frames);
 +        fprintf(stderr, " | ms/frame texture %.2f vertex %.2f submit %.2f",
 +                s_sg_stats.texture_ticks * per_frame_ms, s_sg_stats.vertex_ticks * per_frame_ms,
@@ -2939,6 +2973,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +                s_sg_stats.vp_lines, (unsigned long long)s_sg_stats.vp_line_indices, s_sg_stats.vp_points);
 +        fprintf(stderr," | lines %u segments / %u draws",s_sg_stats.line_segments,s_sg_stats.line_draws);
 +    }
++    if (flip && s_sg_stats.intervals) {
++        double ms = 1000.0 / SDL_GetPerformanceFrequency();
++        fprintf(stderr," | flip intervals %u over-budget %u over-50ms %u over-100ms %u"
++                " worst %.2f ms",
++                s_sg_stats.intervals, s_sg_stats.over_30fps_budget, s_sg_stats.over_50ms, s_sg_stats.over_100ms,
++                s_sg_stats.longest_flip_ticks * ms);
++        if (profile)
++            fprintf(stderr," (texture %.2f vertex %.2f submit %.2f)", s_sg_stats.longest_flip_texture * ms,
++                    s_sg_stats.longest_flip_vertex * ms, s_sg_stats.longest_flip_submit * ms);
++    }
 +#ifdef __EMSCRIPTEN__
 +    if (s_sg_stats.gpuvp && getenv("RECOMP_WEBGPU_UNIFORM_PROFILE"))
 +        fprintf(stderr, " | VP constant bytes saved %llu of %llu",
@@ -2961,7 +3005,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
  }
-@@ -246,7 +327,11 @@
+@@ -246,7 +365,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -2973,7 +3017,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +353,12 @@
+@@ -268,7 +391,12 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -2986,7 +3030,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +396,17 @@
+@@ -306,12 +434,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();

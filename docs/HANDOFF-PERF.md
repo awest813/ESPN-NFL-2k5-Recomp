@@ -531,6 +531,34 @@ processes using about five CPU cores. Their contribution to the individual
 stalls is unresolved. Captures are under
 `build-web-tests/upload-stall/{retail-shared-vertex,retail-vertex-countercheck,retail-vertex-repeat}`.
 
+## Measuring individual stadium stalls
+
+Open the launcher with `?env=RECOMP_SDLGPU_FRAME_PROFILE=1`, enter the stadium,
+and inspect the `[SDLGPU] 5s` lines in the runtime log. Each line reports the
+number of intervals between guest GPU flips, how many exceeded 33⅓, 50, and
+100 ms, and the duration of the longest interval. The counts overlap. An
+interval crossing a reporting boundary belongs to the window in which it ends.
+Browser presentation can introduce additional delays after a guest flip.
+
+For a second pass, use `?env=RECOMP_SDLGPU_PROFILE=1`. This also records the
+texture, vertex, and submission time for the longest interval in each window.
+Detailed timers run on the draw path and can affect the result. Both profiling
+modes are opt-in.
+
+In two retail Chrome attract-mode runs on November 23, the window containing
+stadium entry and the next four windows showed the following results.
+
+| Capture | Window averages (FPS) | Longest guest flip interval | Audio audit |
+| --- | --- | --- | --- |
+| Flip timing only | 25.7, 22.3, 27.7, 30.0, 29.3 | 967.48 ms | 1,408 missing audio frames |
+| Detailed draw timing | 26.3, 28.0, 23.7, 26.6, 30.0 | 398.41 ms | No underrun reported |
+
+In the detailed run, submission accounted for 359, 325, and 338 ms of the
+longest intervals in the first three windows (398, 347, and 369 ms).
+Submission is the next place to investigate. The 967 ms interval occurred
+in the timing-only run, so its cause is unknown. These two runs establish
+neither the production FPS floor nor the overhead of detailed profiling.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
