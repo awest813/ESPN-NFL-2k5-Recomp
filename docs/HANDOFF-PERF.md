@@ -402,6 +402,39 @@ from 14.3 to 29.6 FPS, and audio underruns remained. The follow-up capture is
 under `build-web-tests/upload-stall/retail-dawn-trace`. The WebGPU pixel and
 presentation suite passed on this build.
 
+### Stadium draw uniforms and GPU-process CPU time
+
+An experimental SDL GPU draw queue reused adjacent fragment constants and
+skipped pushes when the last visible draw already used the same immutable
+uniform block. The native Vulkan pixel fixture and the WebAssembly queue and
+merge tests passed, including a one-byte change to a 3,600-byte block.
+
+Three sequential hardware Chrome captures ran the same title and attract-mode
+script on the same profile with renderer timing enabled. The reference was
+the retained `56bb7305` release. The candidate included the subsequent
+offscreen clipping fix. Samples below start with the first renderer report
+after the stadium mode push. Each FPS sample covers roughly five seconds.
+Audio frames lost are the increase between the title and final audio samples.
+
+| Run order | Adjacent uniform hits in WebGPU recorder | Lowest sampled FPS | Longest flush | Audio frames lost |
+| --- | ---: | ---: | ---: | ---: |
+| Candidate | 0 | 15.4 | 1,857 ms | 52,224 |
+| Reference | 242,161 | 16.7 | 2,760 ms | 7,040 |
+| Candidate repeat | 0 | 11.2 | 2,945 ms | 112,768 |
+
+The candidate removed repeated updates. The captures covered different draw
+counts and showed no repeatable frame-time gain. Both candidate runs lost
+more audio. The production queue still uses the reference uniform behavior.
+Private captures are under `build-web-tests/upload-stall/retail-uniform-*`.
+
+In the earlier Dawn trace, the GPU-process thread consumed **1,760.4 ms of
+CPU time during the 1,768.2 ms** it spent handling the 64,192-byte command
+batch. The next two longest batches used 509.4 of 511.4 ms and 440.4 of
+442.4 ms on that thread. This narrows the remaining investigation to CPU
+work inside the GPU process while the WebGPU worker waits for command space.
+A CPU stack sample from that process during stadium entry would distinguish
+the decoder, graphics driver and pipeline creation paths.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
