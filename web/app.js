@@ -289,8 +289,15 @@ async function play() {
   const screen = $('screen');
   // SDL requests fullscreen on its canvas. Keep both canvases in the
   // fullscreen element so a renderer handoff cannot hide the visible frame.
-  if (typeof screen.requestFullscreen === 'function')
-    canvas.requestFullscreen = (options) => screen.requestFullscreen(options);
+  if (typeof screen.requestFullscreen === 'function') {
+    canvas.requestFullscreen = (options) => {
+      const request = screen.requestFullscreen(options);
+      // SDL drops the promise. Keep it observable for callers that await it,
+      // while reporting a denial when the native path cannot handle it.
+      request.catch(error => log('Fullscreen unavailable: ' + error.message, 'stderr'));
+      return request;
+    };
+  }
   state.launched = true;
   state.launchNotice = '';
   renderDisc();

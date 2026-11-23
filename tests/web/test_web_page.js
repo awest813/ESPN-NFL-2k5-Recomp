@@ -392,6 +392,18 @@ async function playAndCheckXbe(page, want, label) {
       check(await page.isHidden('#game-fps'), 'renderer handoff clears the old WebGPU sample');
       await page.click('#focus-game');
       check(await page.evaluate(()=>document.activeElement.id)==='canvas', 'game toolbar can restore keyboard focus');
+      const rejectedFullscreen = [];
+      page.on('pageerror', error => {
+        if (error.message === 'fixture fullscreen denied') rejectedFullscreen.push(error.message);
+      });
+      await page.evaluate(() => {
+        document.querySelector('#screen').requestFullscreen = () => Promise.reject(new TypeError('fixture fullscreen denied'));
+        // Emscripten requests fullscreen without awaiting the browser promise.
+        document.querySelector('#canvas').requestFullscreen();
+      });
+      const fullscreenLog = await waitLog(page, /^Fullscreen unavailable: fixture fullscreen denied$/, 1500);
+      check(!!fullscreenLog && !rejectedFullscreen.length && await page.evaluate(() => state.running),
+        'denied SDL fullscreen stays windowed and logs the rejection without a page error');
       await page.evaluate(()=>history.replaceState(null,'','?autoplay=1&env=TEST=1'));
       page.once('dialog', dialog=>dialog.accept());
       await Promise.all([page.waitForURL(url=>!url.searchParams.has('autoplay')),page.click('#restart')]);

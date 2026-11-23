@@ -119,6 +119,8 @@ status and offers a reload. Reloading clears autoplay and preserves the
 imported library. The page tests exercise this path through the runtime's
 own disc hash check, both with server isolation headers and through the
 static-host service worker.
+If the browser denies fullscreen during SDL startup, the launcher logs the
+denial under **Diagnostics** and the game can continue in its window.
 
 The launcher's **Frame rate** choice defaults to **30 FPS lock** and also
 offers **Uncapped**. It persists locally and can switch during a game without
