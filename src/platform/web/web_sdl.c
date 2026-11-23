@@ -19,6 +19,7 @@
  * queue. */
 #ifdef __EMSCRIPTEN__
 #include <SDL3/SDL.h>
+#include <emscripten/emscripten.h>
 #include <emscripten/threading.h>
 #include <stdlib.h>
 #include "kernel/sdlgpu/webgpu/sdl_gpu_webgpu.h"
@@ -27,6 +28,15 @@
 #include <stdio.h>
 
 static sem_t s_ready;
+
+/* A return from main leaves Emscripten's page runtime alive. Notify the
+ * launcher so it can distinguish an ended session from a running worker. */
+void nfl2k5_web_report_exit(int status)
+{
+    MAIN_THREAD_EM_ASM({
+        if (Module['onGameExit']) Module['onGameExit']($0);
+    }, status);
+}
 
 static void *web_sdl_pump(void *arg)
 {

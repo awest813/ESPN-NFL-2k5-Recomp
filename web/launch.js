@@ -58,13 +58,14 @@ window.NFL2K5Launch = (() => {
   // script: the module's .js; factory: its EXPORT_NAME. Resolves to the
   // module once it is running (its main runs on a worker meanwhile).
   // onGpuPresent(on): the WebGPU renderer took over (or gave back) the screen.
-  async function start({ script, factory, canvas, audioContext, env = [], print, printErr, onAbort, onGpuPresent, onProgress }) {
+  async function start({ script, factory, canvas, audioContext, env = [], print, printErr,
+                         onAbort, onGameExit, onGpuPresent, onProgress }) {
     if (typeof window[factory] !== 'function') await loadScript(script);
     if (canvas) canvas.focus();
     const mod = await window[factory]({
       canvas,
       SDL3: audioContext ? { audioContext } : undefined,
-      print, printErr, onAbort, onGpuPresent,
+      print, printErr, onAbort, onGameExit, onGpuPresent,
       setStatus: (text) => { if (onProgress) onProgress(text); },
       preRun: [(m) => {
         for (const kv of env) {

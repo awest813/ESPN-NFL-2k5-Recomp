@@ -595,9 +595,11 @@ void nfl2k5_diag_slot(const char *where, uint32_t a, uint32_t b, uint32_t c, uin
 #if defined(__EMSCRIPTEN__)
 extern int nfl2k5_web_mount(void);   /* src/platform/web/web_fs.c */
 extern int nfl2k5_web_sdl_start(void);   /* src/platform/web/web_sdl.c */
-#endif
-
+extern void nfl2k5_web_report_exit(int status);
+static int run_game(int argc, char **argv)
+#else
 int main(int argc, char **argv)
+#endif
 {
 #if defined(_WIN32)
     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
@@ -969,7 +971,14 @@ int main(int argc, char **argv)
     return 0;
 }
 
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+int main(int argc, char **argv)
+{
+    int status = run_game(argc, argv);
+    nfl2k5_web_report_exit(status);
+    return status;
+}
+#elif defined(_WIN32)
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, int show)
 {
     (void)instance; (void)previous; (void)command_line; (void)show;

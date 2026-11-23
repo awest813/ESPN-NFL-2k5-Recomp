@@ -323,6 +323,9 @@ async function play() {
     printErr: (t) => log(t, 'stderr'),
     onProgress: (text) => { if (text && !state.launchError) $('game-status').textContent = text; },
     onAbort: (what) => launchFailed('Aborted: ' + what),
+    onGameExit: (code) => launchFailed(code
+      ? `Game stopped with exit code ${code}. Open Diagnostics for details.`
+      : 'Game session ended. Reload the launcher to play again.'),
     onGpuPresent: (on) => {
       if (state.launchError) return;
       state.presentingGpu = on;
@@ -351,6 +354,12 @@ function launchFailed(message) {
   $('game-fps').hidden = true;
   $('game-status').textContent = 'Game stopped · reload to try again';
   renderDisc();
+}
+
+function reloadLauncher() {
+  const url = new URL(location.href);
+  url.searchParams.delete('autoplay');
+  location.replace(url.href);
 }
 
 async function checkBuild() {
@@ -504,12 +513,9 @@ async function main() {
   $('import-folder').onclick = () => $('file-folder').click();
   $('remove').onclick = removeDisc;
   $('play').onclick = play;
-  $('reload').onclick = () => location.reload();
+  $('reload').onclick = reloadLauncher;
   $('restart').onclick = () => {
-    if (!confirm('Exit to the launcher? Unsaved progress will be lost.')) return;
-    const url = new URL(location.href);
-    url.searchParams.delete('autoplay');
-    location.replace(url.href);
+    if (confirm('Exit to the launcher? Unsaved progress will be lost.')) reloadLauncher();
   };
   $('focus-game').onclick = () => $('canvas').focus();
   $('fullscreen').onclick = async () => {
@@ -555,4 +561,4 @@ async function main() {
   if (params.get('autoplay') === '1' && !$('play').disabled) play();
 }
 
-main().catch((e) => { log('Page error: ' + e.message, 'error'); $('launch-status').textContent = 'Launcher setup failed: ' + e.message; $('reload').hidden = false; $('reload').onclick = () => location.reload(); });
+main().catch((e) => { log('Page error: ' + e.message, 'error'); $('launch-status').textContent = 'Launcher setup failed: ' + e.message; $('reload').hidden = false; $('reload').onclick = reloadLauncher; });

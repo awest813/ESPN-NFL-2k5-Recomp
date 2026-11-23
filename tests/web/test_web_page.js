@@ -104,6 +104,21 @@ async function playAndCheckXbe(page, want, label) {
   const hit = await waitLog(page, /XBE hash mismatch/, 30000);
   const got = hit && (hit.match(/got ([0-9a-f]{64})/) || [])[1];
   check(got === want.xbe_sha256, `${label}: module read default.xbe from OPFS (SHA-256 ${got})`);
+  const stopped = await page.waitForFunction(() => {
+    const stage = document.querySelector('#game-status').textContent;
+    const status = document.querySelector('#launch-status').textContent;
+    return stage.includes('Game stopped') && /exit code \d+/.test(status) &&
+      !document.querySelector('#reload').hidden && document.querySelector('#play').disabled;
+  }, null, {timeout:5000}).catch(() => null);
+  check(!!stopped, `${label}: runtime startup failure returns the launcher to a recoverable stopped state`);
+  if (stopped && label === 'image') {
+    await page.evaluate(() => history.replaceState(null, '', '?autoplay=1&env=TEST=1'));
+    await Promise.all([page.waitForURL(url => !url.searchParams.has('autoplay')), page.click('#reload')]);
+    await page.waitForSelector('body[data-ready="1"]');
+    check(await page.locator('#stage').isHidden() && await page.locator('#disc-installed').isVisible() &&
+          new URL(page.url()).searchParams.get('env') === 'TEST=1',
+          'startup reload clears autoplay and keeps the imported disc available');
+  }
 }
 
 (async () => {

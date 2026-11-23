@@ -114,6 +114,11 @@ keyboard bindings. The game toolbar shows measured WebGPU FPS and provides
 the frame-rate cap, fullscreen, keyboard focus and **Exit to launcher**.
 Exiting reloads the page to reset the runtime and discards unsaved progress.
 Removing game files preserves the separate save/settings storage.
+When the WebAssembly entry point returns, the launcher shows the exit
+status and offers a reload. Reloading clears autoplay and preserves the
+imported library. The page tests exercise this path through the runtime's
+own disc hash check, both with server isolation headers and through the
+static-host service worker.
 
 The launcher's **Frame rate** choice defaults to **30 FPS lock** and also
 offers **Uncapped**. It persists locally and can switch during a game without
