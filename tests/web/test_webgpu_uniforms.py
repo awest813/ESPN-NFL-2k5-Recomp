@@ -16,7 +16,7 @@ runtime=root/'external/xboxrecomp/src/kernel/sdlgpu/webgpu'
 text=(runtime/'sdl_gpu_webgpu.c').read_text(encoding='utf-8')
 uniform_constants = '\n'.join(
     next(line for line in text.splitlines() if line.startswith(f'#define {name} '))
-    for name in ('WG_VS_UNIFORM_BYTES', 'WG_FS_UNIFORM_BYTES', 'WG_UNIFORM_ALIGN', 'WG_UNIFORM_TAIL')
+    for name in ('WG_VS_UNIFORM_BYTES', 'WG_FS_UNIFORM_BYTES', 'WG_UNIFORM_ALIGN', 'WG_UNIFORM_TAIL', 'WG_MAX_SAMPLERS')
 )
 def function(signature):
     start=text.index(signature);opening=text.index('{',start);depth=1;end=opening+1
@@ -50,6 +50,8 @@ typedef uint32_t Uint32;
 typedef enum {OP_UNIFORM=1} OpKind;
 typedef struct {OpKind kind;struct {int fragment;uint32_t off;} uniform;} Op;
 typedef struct SDL_GPUCommandBuffer SDL_GPUCommandBuffer;
+typedef struct WgTextureStorage WgTextureStorage;
+typedef struct SDL_GPUSampler SDL_GPUSampler;
 #define SDL_max(a, b) (((a) > (b)) ? (a) : (b))
 /* UNIFORM CONSTANTS */
 static unsigned errors;

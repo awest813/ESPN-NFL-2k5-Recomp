@@ -31738,10 +31738,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..076a9fc
+index 0000000..162af60
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1923 @@
+@@ -0,0 +1,1958 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -31824,7 +31824,11 @@ index 0000000..076a9fc
 +        uint8_t stencil_ref;
 +        SDL_GPUGraphicsPipeline *pipeline;
 +        struct { WgBufferStorage *buf; uint32_t off, slot; } vb;
-+        struct { WgTextureStorage *tex[WG_MAX_SAMPLERS]; SDL_GPUSampler *smp[WG_MAX_SAMPLERS]; uint32_t first, n; } samplers;
++        struct {
++            WgTextureStorage *tex[WG_MAX_SAMPLERS];
++            SDL_GPUSampler *smp[WG_MAX_SAMPLERS];
++            uint32_t texture_mask, sampler_mask;
++        } samplers;
 +        struct { int fragment; uint32_t off; } uniform;
 +        struct { uint32_t count, instances, first, first_instance; int32_t vertex_offset; } draw;
 +    };
@@ -31838,6 +31842,7 @@ index 0000000..076a9fc
 +    uint64_t uniform_pushed;
 +    uint64_t uniform_uncached_bytes;
 +    uint32_t uniform_last_hits, uniform_cache_hits;
++    struct { WgTextureStorage *texture; SDL_GPUSampler *sampler; } bound_samplers[WG_MAX_SAMPLERS];
 +    int has_draw;
 +    int has_download;
 +    int failed;                     /* never replay an incomplete recording */
@@ -32794,9 +32799,10 @@ index 0000000..076a9fc
 +        break;
 +    case OP_VERTEX_BUFFER: case OP_INDEX_BUFFER: buffer_ref(o->vb.buf, release); break;
 +    case OP_SAMPLERS:
-+        for (uint32_t i = 0; i < o->samplers.n; i++) {
-+            texture_ref(o->samplers.tex[i], release);
-+            SDL_GPUSampler *s=o->samplers.smp[i];
++        for (uint32_t slots = o->samplers.texture_mask; slots; slots &= slots - 1u)
++            texture_ref(o->samplers.tex[__builtin_ctz(slots)], release);
++        for (uint32_t slots = o->samplers.sampler_mask; slots; slots &= slots - 1u) {
++            SDL_GPUSampler *s=o->samplers.smp[__builtin_ctz(slots)];
 +            if(s) {if(release)sampler_drop(s);else atomic_fetch_add(&s->refs,1);}
 +        }
 +        break;
@@ -32924,6 +32930,7 @@ index 0000000..076a9fc
 +{
 +    Op *o = push(c, OP_BEGIN_PASS);
 +    if (!o) return NULL;
++    memset(c->bound_samplers, 0, sizeof c->bound_samplers);
 +    if (n) {
 +        WgTextureStorage *color = texture_for_write(ct[0].texture, ct[0].cycle && ct[0].load_op != SDL_GPU_LOADOP_LOAD);
 +        if (!color) { cmd_fail(c, "color target cycling failed"); return NULL; }
@@ -32973,12 +32980,39 @@ index 0000000..076a9fc
 +}
 +void WG_BindGPUFragmentSamplers(SDL_GPURenderPass *p, Uint32 first, const SDL_GPUTextureSamplerBinding *b, Uint32 n)
 +{
-+    Op *o = push(CMD(p), OP_SAMPLERS);
-+    if (!o) return;
-+    o->samplers.first = first;
-+    o->samplers.n = n > WG_MAX_SAMPLERS ? WG_MAX_SAMPLERS : n;
-+    for (uint32_t i = 0; i < o->samplers.n; i++) { o->samplers.tex[i] = texture_current(b[i].texture); o->samplers.smp[i] = b[i].sampler; }
-+    op_resources(o, 0);
++    SDL_GPUCommandBuffer *c = CMD(p);
++    if (!c || c->failed || first >= WG_MAX_SAMPLERS) return;
++    Op *o = NULL;
++    uint32_t texture_mask = 0, sampler_mask = 0;
++    for (uint32_t i = 0; i < n && i < WG_MAX_SAMPLERS - first; i++) {
++        uint32_t slot = first + i;
++        /* A cycle can change storage even when the SDL texture handle is
++         * reused. Earlier operations keep their captured storage alive. */
++        WgTextureStorage *texture = texture_current(b[i].texture);
++        SDL_GPUSampler *sampler = b[i].sampler;
++        bool texture_changed = c->bound_samplers[slot].texture != texture;
++        bool sampler_changed = c->bound_samplers[slot].sampler != sampler;
++        if (!texture_changed && !sampler_changed) continue;
++        if (!o) {
++            o = push(c, OP_SAMPLERS);
++            if (!o) return;
++        }
++        if (texture_changed) {
++            c->bound_samplers[slot].texture = texture;
++            o->samplers.tex[slot] = texture;
++            texture_mask |= 1u << slot;
++        }
++        if (sampler_changed) {
++            c->bound_samplers[slot].sampler = sampler;
++            o->samplers.smp[slot] = sampler;
++            sampler_mask |= 1u << slot;
++        }
++    }
++    if (o) {
++        o->samplers.texture_mask = texture_mask;
++        o->samplers.sampler_mask = sampler_mask;
++        op_resources(o, 0);
++    }
 +}
 +/* Index immutable fragment copies within this command buffer. Vertex palette
 + * blocks keep the consecutive-match path without extra fingerprint work. */
@@ -33229,14 +33263,15 @@ index 0000000..076a9fc
 +            wgpuRenderPassEncoderSetIndexBuffer(pe, o->vb.buf->buf, WGPUIndexFormat_Uint32, o->vb.off, WGPU_WHOLE_SIZE);
 +            break;
 +        case OP_SAMPLERS:
-+            for (uint32_t i = 0; i < o->samplers.n && o->samplers.first + i < WG_MAX_SAMPLERS; i++) {
-+                uint32_t slot = o->samplers.first + i;
-+                if (tex[slot] != o->samplers.tex[i] || smp[slot] != o->samplers.smp[i]) {
-+                    tex[slot] = o->samplers.tex[i];
-+                    smp[slot] = o->samplers.smp[i];
-+                    samplers_dirty = 1;
-+                }
++            for (uint32_t slots = o->samplers.texture_mask; slots; slots &= slots - 1u) {
++                uint32_t slot = (uint32_t)__builtin_ctz(slots);
++                tex[slot] = o->samplers.tex[slot];
 +            }
++            for (uint32_t slots = o->samplers.sampler_mask; slots; slots &= slots - 1u) {
++                uint32_t slot = (uint32_t)__builtin_ctz(slots);
++                smp[slot] = o->samplers.smp[slot];
++            }
++            samplers_dirty = 1;
 +            break;
 +        case OP_UNIFORM:
 +            if (o->uniform.fragment) {
@@ -45269,10 +45304,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..df2ef0b
+index 0000000..8aaf029
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2456 @@
+@@ -0,0 +1,2565 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -45893,6 +45928,114 @@ index 0000000..df2ef0b
 +    SDL_ReleaseGPUShader(dev, vs);
 +}
 +
++static void test_sampler_changes(void)
++{
++    const char *vertex =
++        "@vertex fn main(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {"
++        " let p = array(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3)); return vec4f(p[i],0,1); }";
++    const char *fragment =
++        "@group(2) @binding(0) var t0: texture_2d<f32>;"
++        "@group(2) @binding(1) var t1: texture_2d<f32>;"
++        "@group(2) @binding(8) var s0: sampler;"
++        "@group(2) @binding(9) var s1: sampler;"
++        "@fragment fn main()->@location(0) vec4f {"
++        " let uv = vec2f(.375,.5); return vec4f(textureSample(t0,s0,uv).rgb+textureSample(t1,s1,uv).rgb,1); }";
++    SDL_GPUShader *vs = shader(vertex, SDL_GPU_SHADERSTAGE_VERTEX, 0);
++    SDL_GPUShader *fs = shader(fragment, SDL_GPU_SHADERSTAGE_FRAGMENT, 2);
++    SDL_GPUColorTargetDescription format = { .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM };
++    SDL_GPUGraphicsPipelineCreateInfo info = { .vertex_shader = vs, .fragment_shader = fs,
++        .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
++        .target_info = { .num_color_targets = 1, .color_target_descriptions = &format } };
++    SDL_GPUGraphicsPipeline *pipe = SDL_CreateGPUGraphicsPipeline(dev, &info);
++    SDL_GPUSamplerCreateInfo sampler_info = { .min_filter = SDL_GPU_FILTER_NEAREST,
++        .mag_filter = SDL_GPU_FILTER_NEAREST };
++    SDL_GPUSampler *sampler = SDL_CreateGPUSampler(dev, &sampler_info);
++    sampler_info.min_filter = sampler_info.mag_filter = SDL_GPU_FILTER_LINEAR;
++    SDL_GPUSampler *linear = SDL_CreateGPUSampler(dev, &sampler_info);
++    SDL_GPUTextureFormat rgba = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
++    SDL_GPUTexture *red = make_tex(rgba, SDL_GPU_TEXTUREUSAGE_SAMPLER, 2, 1, 1);
++    SDL_GPUTexture *green = make_tex(rgba, SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++    SDL_GPUTexture *blue = make_tex(rgba, SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, 1, 1);
++    const uint32_t green_rgba = 0xFF00FF00u, blue_rgba = 0xFFFF0000u;
++    const uint32_t red_blue[] = {0xFF0000FFu, blue_rgba};
++    upload(red, red_blue, 2, 1);
++    upload(green, &green_rgba, 1, 1);
++    upload(blue, &blue_rgba, 1, 1);
++    const uint32_t expected[] = {
++        0xFFFFFF00u, 0xFFFF00FFu, 0xFFBF00FFu, 0xFFFF0000u, 0xFF00FF00u, 0xFF00FF00u,
++    };
++    SDL_GPUTexture *target = make_tex(format.format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
++                                      SDL_arraysize(expected), 1, 1);
++    SDL_GPUColorTargetInfo color = { .texture = target, .load_op = SDL_GPU_LOADOP_CLEAR,
++        .store_op = SDL_GPU_STOREOP_STORE };
++    SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(dev);
++    SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
++    SDL_BindGPUGraphicsPipeline(pass, pipe);
++    SDL_GPUTextureSamplerBinding pair[2] = {{red, sampler}, {green, sampler}};
++    for (int x = 0; x < 5; x++) {
++        if (x == 0) {
++            SDL_BindGPUFragmentSamplers(pass, 0, pair, 2);
++            SDL_BindGPUFragmentSamplers(pass, 0, pair, 2);
++        } else if (x == 1) {
++            pair[1].texture = blue;
++            SDL_BindGPUFragmentSamplers(pass, 1, pair + 1, 1);
++        } else if (x == 2) {
++            pair[0].sampler = linear;
++            SDL_BindGPUFragmentSamplers(pass, 0, pair, 2);
++        } else if (x == 3) {
++            pair[0].sampler = sampler;
++            pair[1] = (SDL_GPUTextureSamplerBinding){0};
++            SDL_BindGPUFragmentSamplers(pass, 0, pair, 2);
++        } else {
++            /* A separate recording cycles the texture while the first pass
++             * still holds the original storage through its earlier draws. */
++            SDL_GPUTransferBufferCreateInfo upload_info = {.usage=SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size=8};
++            SDL_GPUTransferBuffer *transfer = SDL_CreateGPUTransferBuffer(dev, &upload_info);
++            const uint32_t green_pair[] = {green_rgba, green_rgba};
++            memcpy(SDL_MapGPUTransferBuffer(dev, transfer, false), green_pair, sizeof green_pair);
++            SDL_UnmapGPUTransferBuffer(dev, transfer);
++            SDL_GPUCommandBuffer *change = SDL_AcquireGPUCommandBuffer(dev);
++            SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(change);
++            SDL_GPUTextureTransferInfo src = {.transfer_buffer=transfer};
++            SDL_GPUTextureRegion dst = {.texture=red, .w=2, .h=1, .d=1};
++            SDL_UploadToGPUTexture(copy, &src, &dst, true);
++            SDL_EndGPUCopyPass(copy);
++            CHECK(SDL_SubmitGPUCommandBuffer(change), "cycle a texture still bound by the first draw");
++            SDL_ReleaseGPUTransferBuffer(dev, transfer);
++            SDL_BindGPUFragmentSamplers(pass, 0, pair, 1);
++        }
++        SDL_Rect pixel = {x, 0, 1, 1};
++        SDL_SetGPUScissor(pass, &pixel);
++        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
++    }
++    /* The same bindings must be emitted again in a new pass. An unspecified
++     * slot starts empty even when previously set in the same command. */
++    SDL_BindGPUFragmentSamplers(pass, 1, &(SDL_GPUTextureSamplerBinding){red, sampler}, 1);
++    SDL_EndGPURenderPass(pass);
++    color.load_op = SDL_GPU_LOADOP_LOAD;
++    pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
++    SDL_BindGPUGraphicsPipeline(pass, pipe);
++    SDL_BindGPUFragmentSamplers(pass, 0, pair, 1);
++    SDL_Rect last = {5, 0, 1, 1};
++    SDL_SetGPUScissor(pass, &last);
++    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
++    SDL_EndGPURenderPass(pass);
++    SDL_ReleaseGPUTexture(dev, red);
++    SDL_ReleaseGPUTexture(dev, green);
++    SDL_ReleaseGPUTexture(dev, blue);
++    SDL_ReleaseGPUSampler(dev, sampler);
++    SDL_ReleaseGPUSampler(dev, linear);
++    CHECK(SDL_SubmitGPUCommandBuffer(command), "submit sampler deltas after releasing public handles");
++    uint32_t actual[SDL_arraysize(expected)] = {0};
++    download(target, 0, SDL_arraysize(expected), 1, actual);
++    for (unsigned i = 0; i < SDL_arraysize(expected); i++)
++        CHECK(actual[i] == expected[i], "sampler delta pixel %u is %08X (expected %08X)", i, actual[i], expected[i]);
++    SDL_ReleaseGPUTexture(dev, target);
++    SDL_ReleaseGPUGraphicsPipeline(dev, pipe);
++    SDL_ReleaseGPUShader(dev, fs);
++    SDL_ReleaseGPUShader(dev, vs);
++}
++
 +int main(void)
 +{
 +    setenv("RECOMP_WEBGPU_UNIFORM_CACHE","1",1);
@@ -45903,6 +46046,7 @@ index 0000000..df2ef0b
 +    dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_WGSL, false, NULL);
 +    CHECK(dev != NULL, "device (driver %s)", dev ? SDL_GetGPUDeviceDriver(dev) : "none");
 +    test_uniform_submission_order();
++    test_sampler_changes();
 +    /* A malformed recording must fail atomically; it must not submit the
 +     * valid prefix or manufacture a signalled fence for dropped commands. */
 +    {

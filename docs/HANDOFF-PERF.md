@@ -258,6 +258,35 @@ the reused version. These are isolated workloads. Sustained retail
 gameplay FPS and uninterrupted audio remain open. Raw samples are in
 `build-web-tests/uniform-buffer-replay/samples.json`.
 
+### WebGPU texture and sampler binding changes
+
+Each render pass tracks its current texture storage and sampler per slot.
+The WebGPU recorder omits identical binds and retains only the resources
+whose bindings changed. Earlier records keep their resources alive if a
+texture cycles or its public handle is released. A new pass starts with
+empty bindings.
+
+The hardware renderer fixture checks six exact pixels across partial
+updates, a sampler-only change, a slot reset, texture cycling and pass
+boundaries. The full hardware renderer suite and native and Wasm uniform
+recording checks passed.
+
+Seven alternating pairs replayed 100 submissions of 200 draws on hardware
+Chrome. Median recording and submission time changed from 10.64 to 7.51 ms
+for identical binds, 9.56 to 7.93 ms when one texture changed, 9.74 to
+8.45 ms for four changes, and 9.34 to 8.37 ms for eight changes. Replacing
+all eight textures and all eight samplers together increased median time
+from 9.19 to 10.49 ms. These synthetic workloads measure submission cost.
+Raw samples are in `build-web-tests/sampler-delta-bench/samples.json`.
+
+The retail sampler build reached the Chiefs–49ers kickoff and completed a
+23-yard return to the SF 22 at 4:56 in the first quarter. It paused and resumed
+at the first play call. The audit recorded audio underruns throughout the
+session. It logged no browser exceptions or WebGPU validation errors.
+A separate local link overlapped the capture, so the frame samples are
+unsuitable for a performance comparison. See
+`build-web-tests/retail-launch-stability`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
