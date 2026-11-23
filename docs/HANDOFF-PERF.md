@@ -635,6 +635,41 @@ kickoff onward, eight windows averaged 24.8–30.1 FPS, with a longest flip
 of 239.94 ms and zero missing audio frames. The capture and opening-drive
 image are under `build-web-tests/upload-stall/quick-game-geometry-candidate`.
 
+### Controller polling during gameplay
+
+The port discovery call now updates SDL once and checks which slots are
+connected. A Windows SDL run compared 1,000 calls per round, reversing the
+order for a second round. With four virtual controllers the mean fell from
+8.95 to 0.50 µs per query. With two it fell from 3.65 to 0.30 µs. Both paths
+returned identical masks with zero through four controllers. Input state
+queries still sample buttons, triggers and sticks.
+
+The binding menu starts its capture thread on the first remapping request.
+After a capture it waits on a semaphore until another request arrives. A
+native SDL test exercised controller capture, keyboard capture, cancellation,
+and the six-second timeout. It observed zero polls during a 160 ms idle check.
+The browser SDL renderer has no binding-menu callbacks, so it no longer starts
+this worker. Game-thread lock statistics now use the runtime thread ID from
+the input poll, matching the ID used when the guest lock records wait time.
+
+Three sequential retail Chrome Quick Games used the same script. Each row
+includes the window containing kickoff and the next seven reports.
+
+| Run | Window FPS range | Longest flip (ms) | Missing audio frames at title / end |
+| --- | ---: | ---: | ---: |
+| Local candidate | 13.3–28.2 | 215.58 | 0 / 6,400 |
+| Published release `3a57761` | 22.2–29.3 | 257.82 | 640 / 640 |
+| Local candidate repeat | 23.4–29.4 | 216.12 | 0 / 0 |
+
+The runs cover different matchups and the reference came from the Pages
+build. They establish no consistent gameplay FPS gain from the input change.
+In the first candidate's 13.3 FPS window, texture verification compared
+148.19 MiB per frame and averaged 24.58 ms per frame. The maximum queue flush
+in that window was 24.08 ms. The hardware Chrome controller and A/V suite
+passed connection, disconnection, reconnection, and presenter checks. The
+forced SwiftShader configuration on the same Windows installation failed
+to claim the presenter.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

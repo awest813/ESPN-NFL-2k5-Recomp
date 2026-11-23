@@ -482,11 +482,12 @@ unsigned nfl2k5_controls_ports(void)
     unsigned m = 1; /* Port 0 always active (keyboard) */
     controls_init();
     sdl_pads_refresh();
+    SDL_UpdateGamepads();
+    SDL_LockMutex(s_lock);
     for (int i = 1; i < 4; i++) {
-        RawPad s;
-        read_sdl_pad(i, &s);
-        if (s.connected) m |= (1u << i);
+        if (s_pads[i] && SDL_GamepadConnected(s_pads[i])) m |= (1u << i);
     }
+    SDL_UnlockMutex(s_lock);
     return m;
 }
 
@@ -564,12 +565,16 @@ extern void xbox_MenuInvalidate(void);
 extern int (*g_xbox_menu_pad)(XBOX_GAMEPAD *g);
 
 static SDL_AtomicInt s_capture_pad = { -1 }, s_capture_key = { -1 };
+static SDL_Semaphore *s_capture_wake;
+static int s_capture_started;
 static Uint64 s_capture_start;
 
 static int SDLCALL capture_thread(void *arg)
 {
     (void)arg;
     for (;;) {
+        if (s_capture_wake && SDL_GetAtomicInt(&s_capture_pad) < 0 && SDL_GetAtomicInt(&s_capture_key) < 0)
+            SDL_WaitSemaphore(s_capture_wake);
         SDL_Delay(15);
         int cap_pad = SDL_GetAtomicInt(&s_capture_pad);
         if (cap_pad >= 0) {
@@ -715,13 +720,32 @@ static void p2_change(int r, int dir)
     cfg_save();
     xbox_MenuInvalidate();
 }
+/* Only the menu thread starts capture. SDL renderers without a binding
+ * menu never consume a worker from the browser's pthread pool. */
+static void begin_capture(SDL_AtomicInt *target, int row)
+{
+    if (!s_capture_started) {
+        s_capture_wake = SDL_CreateSemaphore(0);
+        SDL_Thread *worker = SDL_CreateThread(capture_thread, "ctl_capture", NULL);
+        if (!worker) {
+            SDL_DestroySemaphore(s_capture_wake);
+            s_capture_wake = NULL;
+            return;
+        }
+        SDL_DetachThread(worker);
+        s_capture_started = 1;
+    }
+    s_capture_start = SDL_GetTicks();
+    SDL_SetAtomicInt(target, row);
+    if (s_capture_wake) SDL_SignalSemaphore(s_capture_wake);
+    xbox_MenuInvalidate();
+}
+
 static void p2_activate(int r)
 {
     if (r == -1) { SDL_SetAtomicInt(&s_capture_pad, -1); return; }
     if (r == C_COUNT) { for (int i = 0; i < C_COUNT; i++) s_cfg.map[i] = i; cfg_save(); xbox_MenuInvalidate(); return; }
-    s_capture_start = SDL_GetTicks();
-    SDL_SetAtomicInt(&s_capture_pad, r);
-    xbox_MenuInvalidate();
+    begin_capture(&s_capture_pad, r);
 }
 static int p2_busy(void) { return SDL_GetAtomicInt(&s_capture_pad) >= 0; }
 static const XboxMenuPage k_p2 = { "CONTROLLER BUTTONS", p2_count, p2_label, p2_change, p2_activate, p2_busy };
@@ -738,9 +762,7 @@ static void p3_activate(int r)
 {
     if (r == -1) { SDL_SetAtomicInt(&s_capture_key, -1); return; }
     if (r == K_COUNT) { for (int i = 0; i < K_COUNT; i++) s_cfg.keys[i] = k_key_default[i]; cfg_save(); xbox_MenuInvalidate(); return; }
-    s_capture_start = SDL_GetTicks();
-    SDL_SetAtomicInt(&s_capture_key, r);
-    xbox_MenuInvalidate();
+    begin_capture(&s_capture_key, r);
 }
 static void p3_change(int r, int dir) { (void)dir; if (r >= 0 && r < K_COUNT) { s_cfg.keys[r] = 0; cfg_save(); xbox_MenuInvalidate(); } }
 static int p3_busy(void) { return SDL_GetAtomicInt(&s_capture_key) >= 0; }
@@ -748,7 +770,6 @@ static const XboxMenuPage k_p3 = { "KEYBOARD", p3_count, p3_label, p3_change, p3
 
 void nfl2k5_controls_menu_init(void)
 {
-    SDL_Thread *t;
     xbox_MenuAddPage(&k_p1);
     xbox_MenuAddPage(&k_p2);
     xbox_MenuAddPage(&k_p3);
@@ -757,8 +778,6 @@ void nfl2k5_controls_menu_init(void)
         extern int (*g_xbox_prompt_style)(void);
         g_xbox_prompt_style = prompt_style;
     }
-    t = SDL_CreateThread(capture_thread, "ctl_capture", NULL);
-    if (t) SDL_DetachThread(t);
 }
 
 void nfl2k5_controls_start(void) { controls_init(); }

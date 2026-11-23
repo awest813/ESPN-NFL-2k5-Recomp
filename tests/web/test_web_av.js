@@ -164,18 +164,21 @@ const hasLog = (page, re, ms) => until(page, (src) => window.smokeLog.some((l) =
       await page.evaluate(() => __connectPad(1));
       await page.evaluate(() => __pressPad(0,true,1));
       check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'second controller maps to a separate Xbox port');
+      check(!!(await hasLog(page, /^\[SMOKE\] port mask: 3$/, 5000)), 'Xbox port mask includes the second controller');
       await page.evaluate(() => {
-        smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 1:'));
+        smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 1:') && !l.includes('[SMOKE] port mask:'));
         const pad = __pads[1]; pad.connected=false; __pads[1]=null;
         const e = new Event('gamepaddisconnected'); e.gamepad=pad; dispatchEvent(e);
       });
       check(!!(await hasLog(page, /^\[SMOKE\] controls 1: connected=0 buttons=0 A=0 LT=0 RT=0 sticks=0,0,0,0$/, 5000)), 'unplugging clears held buttons and sticks');
+      check(!!(await hasLog(page, /^\[SMOKE\] port mask: 1$/, 5000)), 'unplugging preserves the keyboard port');
       await page.evaluate(() => { smokeLog = smokeLog.filter(l => !l.includes('[SMOKE] controls 1:')); __connectPad(1); __pressPad(0,true,1); });
       const reconnected = await hasLog(page, /^\[SMOKE\] controls 1: connected=1 buttons=0 A=255 LT=0 RT=0 sticks=0,0,0,0$/, 5000);
       if (!reconnected) console.log('reconnect diagnostics:', await page.evaluate(() => ({
         pads: __pads, logs: smokeLog.filter(l => /controls|gamepads/.test(l))
       })));
       check(!!reconnected, 'controller reconnects and resumes input on the second port');
+      check(!!(await hasLog(page, /^\[SMOKE\] port mask: 3$/, 5000)), 'reconnection restores the second port bit');
       await page.close();
     }
     {

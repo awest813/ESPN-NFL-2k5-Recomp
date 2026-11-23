@@ -394,7 +394,7 @@ int nfl2k5_hle_XInputGetState(void)
     nfl2k5_live_qb_guest_tick();
     {
         extern volatile DWORD g_xbox_game_tid;
-        g_xbox_game_tid = (DWORD)SDL_GetCurrentThreadID();
+        g_xbox_game_tid = GetCurrentThreadId();
     }
     state = MEM32(g_esp + 8u);
     if (!s_first_poll_ms)

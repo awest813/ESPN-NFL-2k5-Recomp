@@ -26,6 +26,7 @@
 
 int nfl2k5_web_mount(void);
 int nfl2k5_controls_get(int port, XBOX_GAMEPAD *g, int use_pads);
+unsigned nfl2k5_controls_ports(void);
 void nfl2k5_controls_start(void);
 
 /* Exercise the same C/WasmFS mount as the game, including durable close. */
@@ -226,6 +227,12 @@ int main(void)
             SDL_UpdateGamepads();
             int a = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
             if (a != last_a) { printf("[SMOKE] pad A %s\n", a ? "down" : "up"); last_a = a; }
+        }
+        static unsigned last_ports;
+        unsigned ports = nfl2k5_controls_ports();
+        if (last_ports != ports) {
+            printf("[SMOKE] port mask: %u\n", ports);
+            last_ports = ports;
         }
         for (int port = 0; port < 2; port++) {
             XBOX_GAMEPAD g;
