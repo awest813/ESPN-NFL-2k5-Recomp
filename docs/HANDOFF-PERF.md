@@ -435,6 +435,45 @@ work inside the GPU process while the WebGPU worker waits for command space.
 A CPU stack sample from that process during stadium entry would distinguish
 the decoder, graphics driver and pipeline creation paths.
 
+### DirectX shader compilation at stadium entry
+
+On Intel Gen-12HP with hardware Chrome, the first stadium line pipeline is
+responsible for most of the previously observed two-second stall. A local
+sampler followed the audit browser's GPU process and sampled its
+`CrGpuMain` instruction pointer. The 64,192-byte Dawn command batch took
+2,198.6 ms elapsed and 2,170.7 ms of thread CPU. Of 139 samples in that
+interval, 118 landed in `dxcompiler.dll`. The next three longest batches
+also spent most of their samples in that module.
+
+An independent capture recorded the descriptors on the game's WebGPU device.
+Replaying them in order with `createRenderPipelineAsync` in two fresh browser
+processes took 1,797 and 1,604 ms for the first instanced vertex-program line
+pipeline. It pairs the translated endpoint vertex program with
+`k_sg_xf_linevp_frag_wgsl`. The first ordinary 3D pipeline took 1,163 and
+1,048 ms earlier in the sequence. Both replays completed without validation
+errors. Warming the line fragment shader with a substitute vertex program
+still left over 2,200 ms of compilation for the real pipeline in both trials.
+
+The private retail experiment compiled the exact line descriptor asynchronously
+before stadium entry and retained the resulting pipeline on the same device.
+It checked shader source, layout identity and pipeline state before returning
+the compiled object. The captured shader sources and altered browser bundle
+stay local. The released renderer still creates this pipeline on first use.
+
+| Intel hardware Chrome capture | Longest Dawn command batch | First stadium FPS window | Lowest stadium FPS window | Audio frames lost at final sample |
+| --- | ---: | ---: | ---: | ---: |
+| Production, CPU sampling | 2,199 ms | 14.1 | 14.1 | 15,104 |
+| Production, descriptor capture | 2,028 ms | 14.4 | 14.4 | 128 |
+| Exact pipeline prepared early | 417 ms | 26.7 | 26.7 | 0 |
+| Exact pipeline prepared early, repeat | 854 ms | 24.3 | 22.3 | 0 |
+
+Each row is a fresh launch through the title and 45 seconds of attract mode.
+The two private test runs both logged a matching pipeline at first use and
+passed the audio checks. The remaining long batches and sub-30 FPS windows
+still need work. A release implementation needs to obtain its pipeline
+description from the user's game at runtime. Captures and isolated timings
+are in `build-web-tests/upload-stall/retail-{gpu-cpu-samples,pipeline-descriptors,warm-exact-line*}`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
