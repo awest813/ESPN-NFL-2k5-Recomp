@@ -18,8 +18,10 @@ const profile=path.resolve(option('profile','build-web-mode-audit'));
 const executablePath=option('executable',process.env.CHROME_BIN);
 const script=option('script');
 const captureMemory=args.includes('--capture-memory');
+const skipScreenshots=args.includes('--skip-screenshots');
 fs.mkdirSync(out,{recursive:true});
 const report={started:new Date().toISOString(),url:origin,cases:[]};
+if(skipScreenshots)report.screenshotsDisabled=true;
 const events=[];
 let context,page,flushing=null,currentCase=null,commandEventStart=0;
 const reportPath=path.join(out,'report.json');
@@ -138,6 +140,7 @@ async function act(c){
       await flush();commandEventStart=events.length;currentCase={id:c.id,title:c.title||c.id,started:new Date().toISOString(),eventStart:events.length,screenshots:[]};
       report.cases.push(currentCase);writeReport();result='case started';break;
     case 'shot':{
+      if(skipScreenshots){result={skipped:'screenshot'};break;}
       const tag=String(c.tag||currentCase?.id||'screen').replace(/[^a-zA-Z0-9_.-]/g,'-');
       const file=tag+'.png';await page.locator('#screen').screenshot({path:path.join(out,file)});
       if(currentCase)currentCase.screenshots.push(file);writeReport();result={screenshot:file};break;

@@ -703,6 +703,30 @@ did encounter audio underruns. The release capture still falls below the
 30 FPS target, and this single matchup does not establish a change in
 end-to-end frame rate.
 
+### Kickoff timing without browser screenshots
+
+Use `--skip-screenshots` with `tools/audit-web-modes.cjs` to run the same
+script without capturing the browser surface. The report records
+`screenshotsDisabled: true`. Keep the usual screenshot run for visual checks.
+
+In six of eight prior Quick Game captures, the scrimmage PNG's write time
+fell inside the five-second window containing the longest kickoff or opening
+drive frame. In the 251.53 ms case, that window also contained a 256 ms
+guest-lock wait. Neither timestamp identifies what caused that frame.
+Two further Chrome runs on the same release removed every screenshot.
+Each had eight windows from kickoff through the opening possession.
+
+| Timing | Lowest window FPS | Longest flip | Missing audio frames at kickoff / end |
+| --- | ---: | ---: | ---: |
+| Flip timing only | 22.3 | 130.30 ms | 6,144 / 13,824 |
+| Detailed draw timing | 19.9 | 180.85 ms | 3,456 / 17,280 |
+
+Both audits failed on audio underruns. During the 180.85 ms flip, texture
+handling took 94.10 ms, vertex processing 27.25 ms and submission 48.42 ms.
+These timers can overlap. This identifies texture handling as a substantial
+cost in a long frame during play with screenshot capture disabled. The
+timing-only run did not collect the phase data needed to attribute its stall.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
