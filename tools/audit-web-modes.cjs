@@ -8,6 +8,7 @@
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
 const {isAuditFailure,isGameStop,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
+const {readQuickGameTeams,selectMatchup}=require('./web-audit-matchup.cjs');
 const {drainAuditRows}=require('./web-audit-audio.cjs');
 const {drainApuTraceRows}=require('./web-audit-apu-trace.cjs');
 const args=process.argv.slice(2);
@@ -56,6 +57,7 @@ function flush(){
 }
 async function prepare(url=origin){
   await flush();
+  delete report.guestMemoryOffset;
   const target=new URL(url);
   target.searchParams.append('env','NFL2K5_MODE_TRACE=1');
   target.searchParams.append('env','NFL2K5_NO_HOST_PAD=1');
@@ -159,6 +161,22 @@ async function act(c){
         ...caseDiagnostics(c.result,events.slice(currentCase.eventStart))});
       writeReport();result=currentCase;currentCase=null;break;
     case 'reload':result=await prepare(c.url||origin);commandEventStart=events.length;break;
+    case 'matchup':{
+      await flush();
+      const readTeams=()=>page.evaluate(readQuickGameTeams,report.guestMemoryOffset);
+      try{
+        if(!captureMemory || report.guestMemoryOffset===undefined)
+          throw Error('matchup requires --capture-memory and an initialized guest');
+        result=await selectMatchup(c,readTeams,press,ms=>page.waitForTimeout(ms));
+        if(currentCase)currentCase.matchup=result;
+      }catch(error){
+        browserEvent('AUDIT matchup: '+error.message,'audit-error');
+        if(currentCase)Object.assign(currentCase,caseDiagnostics('fail',events.slice(currentCase.eventStart)));
+        writeReport();throw error;
+      }
+      writeReport();
+      break;
+    }
     case 'peek':
       await flush();
       if(report.guestMemoryOffset===undefined)throw Error('Guest memory offset has not been reported yet');

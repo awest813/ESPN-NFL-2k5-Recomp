@@ -103,6 +103,23 @@ guest-site diagnostics. Browser exceptions, GPU failures and rejected draws
 override requested pass/partial results and make the CLI exit unsuccessfully.
 The [stadium/staff audit](WEB-STADIUM-FIDELITY.md) documents close replay views.
 
+## Repeatable retail Quick Game benchmark
+
+Run the fixture against a local build using a browser profile with the disc already imported.
+Use the same browser, launcher settings and screenshot setting for both measurements.
+
+```sh
+node tools/audit-web-modes.cjs --profile build-web-render-lab --url "http://127.0.0.1:8081/?env=RECOMP_SDLGPU_FRAME_PROFILE=1" --capture-memory --skip-screenshots --script tests/web/quick-game-packers-49ers.json --out build-web-tests/packers-49ers
+```
+
+The fixture assigns the controller to each side and selects Green Bay at San Francisco
+with the game's triggers. The audit reads the selected clubs from guest memory and
+records their asset codes and roster categories in `cases[].matchup`. Removing
+`--skip-screenshots` captures Team Select and gameplay. The fixture exercises the
+kickoff and opening possession with timed inputs. Coin tosses, play selection and
+camera cuts can still differ. Compare the five-second frame windows for the same
+stage of gameplay, and check the worst flip interval and audio failures in each run.
+
 ## Regression checks
 
 - Full local web build passes.
