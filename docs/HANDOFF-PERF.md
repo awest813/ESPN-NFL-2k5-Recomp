@@ -324,6 +324,42 @@ Renderer windows during the title-to-intro transition ranged from 2.7 to 29.8
 FPS. Audio underruns were the only audit failures. The report and screenshots
 are under `build-web-tests/dsp-accu-moves/retail`.
 
+### Stadium intro submission stalls
+
+The `4270757` Chrome capture hit 6.4 FPS entering attract mode. Draw submission
+averaged 109.08 ms per frame in that window. Texture and vertex preparation
+together averaged 5.16 ms. Later, a 13.4 FPS window spent 25.99 ms per frame in
+texture preparation and requested 90.44 MiB of texture verification per frame.
+That span counts all eligible bytes, including any skipped on early mismatch.
+See `build-web-tests/retail-intro-gpu-profile`.
+
+The draw queue now binds its shared index buffer once per pass and selects each
+draw's range with the first index. Native Vulkan verifies all 76,800 pixels
+across two indexed draws using different ranges, with an unindexed draw between
+them. The WebGPU suite checks nonzero index offsets, indexed instances, upload
+order, resource lifetime and pixels. With 100 submissions per round and nine
+alternating pairs on hardware Chrome, median recording and submission took
+5.640 to 3.635 ms at 80 indexed draws per pass, 8.145 to 4.705 ms at 240, and
+15.345 to 6.375 ms at 600. The corresponding queue-fence medians also fell.
+These draws isolate the binding change. See `build-web-tests/submit-profile/index-bench`.
+
+`RECOMP_SDLGPU_PROFILE=1` now separates staging, recording and backend
+submission. It also reports the time spent comparing texture bytes.
+`RECOMP_WEBGPU_SUBMIT_PROFILE=1` samples submissions at or above 16 ms and
+separates dispatch, replay, and return. Replay reports uniform preparation,
+transfers, pass encoding and final submission. These are elapsed times on
+the worker and can include browser or OS scheduling delays.
+
+On the instrumented build, one stadium-intro flush took 3,026.88 ms. The
+backend logged 3,022.99 ms in uniform preparation and 0.25 ms in render pass
+encoding. Another submit spent 313.38 ms in transfers, and a third spent
+316.22 ms in uniform preparation. In a later 16.8 FPS window, byte verification
+averaged 8.78 ms of the 16.96 ms of texture time per frame. The worklet also
+reported underruns, with the longest gap logged before the 3-second submit.
+The retail run reached the intro and logged no software draw fallback or
+WebGPU validation errors. It did not meet 30 FPS or continuous audio. The
+capture is under `build-web-tests/submit-profile/retail`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

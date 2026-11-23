@@ -2866,13 +2866,15 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +195,33 @@
+@@ -185,9 +195,35 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
 +    uint32_t frames;
 +    uint64_t texture_ticks, vertex_ticks, submit_ticks;
-+    uint64_t texture_decode_ticks;
++    uint64_t texture_decode_ticks, texture_compare_ticks;
++    uint64_t staging_ticks, record_ticks, backend_submit_ticks, max_submit_ticks;
++    uint32_t flushes;
 +    uint64_t texture_hash_bytes, texture_compare_bytes;
 +    uint64_t vertex_upload_bytes;
 +#ifdef __EMSCRIPTEN__
@@ -2900,7 +2902,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -206,12 +240,52 @@
+@@ -206,12 +242,57 @@
          s_sg_stats.since_ms = now;
      if (now - s_sg_stats.since_ms < 5000)
          return;
@@ -2916,6 +2918,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +        fprintf(stderr, " | ms/frame texture %.2f vertex %.2f submit %.2f",
 +                s_sg_stats.texture_ticks * per_frame_ms, s_sg_stats.vertex_ticks * per_frame_ms,
 +                s_sg_stats.submit_ticks * per_frame_ms);
++        fprintf(stderr, " | submit-ms/frame staging %.2f record %.2f backend %.2f (%u flushes, max %.2f ms)",
++                s_sg_stats.staging_ticks * per_frame_ms, s_sg_stats.record_ticks * per_frame_ms,
++                s_sg_stats.backend_submit_ticks * per_frame_ms, s_sg_stats.flushes,
++                s_sg_stats.max_submit_ticks * (1000.0 / SDL_GetPerformanceFrequency()));
 +        fprintf(stderr, " | hash %.2f MiB/frame verify %.2f decode %.2f readback %.2f gpu-copy %.2f",
 +                (double)s_sg_stats.texture_hash_bytes / (1048576.0 * s_sg_stats.frames),
 +                (double)s_sg_stats.texture_compare_bytes / (1048576.0 * s_sg_stats.frames),
@@ -2923,7 +2929,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +                (double)s_sg_stats.texture_downloads / s_sg_stats.frames,
 +                (double)s_sg_stats.texture_gpu_copies / s_sg_stats.frames);
 +        fprintf(stderr, " | vertices %.2f MiB/frame", (double)s_sg_stats.vertex_upload_bytes / (1048576.0 * s_sg_stats.frames));
-+        fprintf(stderr, " | decode-ms %.2f/frame", s_sg_stats.texture_decode_ticks * per_frame_ms);
++        fprintf(stderr, " | texture-ms/frame verify %.2f decode %.2f",
++                s_sg_stats.texture_compare_ticks * per_frame_ms, s_sg_stats.texture_decode_ticks * per_frame_ms);
 +        fprintf(stderr, " | merged %.2f/frame", (double)s_sg_stats.merged_draws / s_sg_stats.frames);
 +        fprintf(stderr, " | VP fallback affine %u program %u pipeline %u",
 +                s_sg_stats.vp_affine, s_sg_stats.vp_program_pending, s_sg_stats.vp_pipeline_failed);
@@ -2954,7 +2961,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
  }
-@@ -246,7 +320,11 @@
+@@ -246,7 +327,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -2966,7 +2973,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +346,12 @@
+@@ -268,7 +353,12 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -2979,7 +2986,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +389,17 @@
+@@ -306,12 +396,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
@@ -3371,11 +3378,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
      /* The GPU copy will be the newer one. Anything that reads the surface on
       * the CPU flushes the queue first (sg_cpu_access, sg_flip). */
-@@ -265,9 +386,12 @@
+@@ -265,9 +386,13 @@
          q->upload_surface = 0;
          return 1;
      }
 +    uint64_t profile_start = sg_profile_now();
++    uint64_t profile_stage = profile_start;
 
      sbytes = q->upload_surface ? s->w * s->h * 4 : 0;
 -    total = q->vbytes + q->ibytes + sbytes + q->tbytes;
@@ -3385,7 +3393,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      if (sg_vertex_buffer_reserve(q->vbytes) && sg_index_buffer_reserve(q->ibytes) && sg_upload_reserve(total)) {
          SDL_GPUCommandBuffer *cmd;
          uint8_t *stage = (uint8_t *) SDL_MapGPUTransferBuffer(s_sg.dev, s_sg.upload, true);
-@@ -278,10 +402,12 @@
+@@ -278,10 +403,12 @@
          }
          /* Transfer layout: vertices | indices | surface | textures */
          memcpy(stage, q->vdata, q->vbytes);
@@ -3400,7 +3408,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
 
-@@ -310,16 +436,18 @@
+@@ -310,16 +437,22 @@
              }
              for (i = 0; i < q->upload_count; i++) {
                  const SgQueuedUpload *u = &q->uploads[i];
@@ -3424,10 +3432,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 -            for (i = 0; i < q->upload_count; i++)
 -                if (q->uploads[i].w > 1 || q->uploads[i].h > 1)    /* 1x1: one level, nothing to generate */
 -                    SDL_GenerateMipmapsForGPUTexture(cmd, q->uploads[i].tex);
++        }
++        if (profile_start) {
++            profile_stage = sg_profile_now();
++            s_sg_stats.staging_ticks += profile_stage - profile_start;
          }
          {
              SDL_GPUColorTargetInfo target = {
-@@ -329,14 +457,22 @@
+@@ -329,14 +462,26 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
@@ -3438,6 +3450,10 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +            int have_blend = 0, have_stencil = 0, have_scissor = 0;
 
              SDL_SetGPUViewport(pass, &view);
++            if (q->ibytes) {
++                SDL_GPUBufferBinding ib = {.buffer = s_sg.indices, .offset = 0};
++                SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
++            }
              for (i = 0; i < q->count; i++) {
                  const SgQueuedDraw *qd = &q->draws[i];
                  SDL_GPUBufferBinding vb = {.buffer = s_sg.vertices, .offset = qd->vertex_offset};
@@ -3451,7 +3467,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,59 +486,70 @@
+@@ -350,59 +495,78 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
@@ -3470,21 +3486,21 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
 -                SDL_PushGPUFragmentUniformData(cmd, 0, qd->fs, qd->fs_size);
-+                SDL_PushGPUFragmentUniformData(cmd, 0, q->udata + qd->fs_offset, qd->fs_size);
-                 if (qd->index_count) {
-                     SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
-                     SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+-                if (qd->index_count) {
+-                    SDL_GPUBufferBinding ib = { .buffer = s_sg.indices, .offset = qd->index_offset };
+-                    SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 -                    SDL_DrawGPUIndexedPrimitives(pass, qd->index_count, 1, 0, 0, 0);
 -                } else {
 -                    SDL_DrawGPUPrimitives(pass, qd->vertex_count, 1, 0, 0);
-+                }
++                SDL_PushGPUFragmentUniformData(cmd, 0, q->udata + qd->fs_offset, qd->fs_size);
 +                for (k = 0; k < scissor_count; k++) {
 +                    if (!have_scissor || memcmp(&bound_scissor, &scissors[k], sizeof bound_scissor)) {
 +                        SDL_SetGPUScissor(pass, &scissors[k]);
 +                        bound_scissor = scissors[k]; have_scissor = 1;
 +                    }
 +                    if (qd->index_count)
-+                        SDL_DrawGPUIndexedPrimitives(pass, qd->index_count, qd->instance_count ? qd->instance_count : 1, 0, 0, 0);
++                        SDL_DrawGPUIndexedPrimitives(pass, qd->index_count, qd->instance_count ? qd->instance_count : 1,
++                                                     qd->index_offset / sizeof(uint32_t), 0, 0);
 +                    else
 +                        SDL_DrawGPUPrimitives(pass, qd->vertex_count, qd->instance_count ? qd->instance_count : 1, 0, 0);
                  }
@@ -3493,7 +3509,13 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          }
 -        SDL_SubmitGPUCommandBuffer(cmd);
 -        ok = 1;
++        if (profile_start) {
++            uint64_t now = sg_profile_now();
++            s_sg_stats.record_ticks += now - profile_stage;
++            profile_stage = now;
++        }
 +        ok = SDL_SubmitGPUCommandBuffer(cmd);
++        if (profile_start) s_sg_stats.backend_submit_ticks += sg_profile_now() - profile_stage;
      }
 
  failed:
@@ -3513,7 +3535,12 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
      q->surface = NULL;
      q->upload_surface = 0;
      q->epoch++;
-+    if (profile_start) s_sg_stats.submit_ticks += sg_profile_now() - profile_start;
++    if (profile_start) {
++        uint64_t elapsed = sg_profile_now() - profile_start;
++        s_sg_stats.submit_ticks += elapsed;
++        if (elapsed > s_sg_stats.max_submit_ticks) s_sg_stats.max_submit_ticks = elapsed;
++        s_sg_stats.flushes++;
++    }
      return ok;
  }
 
@@ -3540,7 +3567,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          uint32_t cap = list->cap ? list->cap * 2 : 192;
          SgVertex *v = (SgVertex *) realloc(list->v, cap * sizeof *v);
          if (!v)
-@@ -410,18 +557,22 @@
+@@ -410,18 +574,22 @@
          list->v = v;
          list->cap = cap;
      }
@@ -3572,7 +3599,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
  }
 
  /* gpu_draw_batch(1). Returns 0 to leave the batch to the software path. */
-@@ -431,7 +582,7 @@
+@@ -431,7 +599,7 @@
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
 
@@ -3581,7 +3608,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          return 0; /* raster_batch keeps its counters */
      if (!sg_draw_init())
          return sg_fallback(SG_FB_SHADERS, 0);
-@@ -445,19 +596,27 @@
+@@ -445,19 +613,27 @@
          return sg_fallback(SG_FB_TEXTURE, 0); /* unreadable texture: software decides */
 
      list.count = 0;
@@ -3612,7 +3639,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          SgDraw d = {
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgVertex),
-@@ -466,7 +625,37 @@
+@@ -466,7 +642,37 @@
              .vs_uniform = surface_size, .vs_uniform_size = sizeof surface_size,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
@@ -4285,7 +4312,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +298,255 @@
+@@ -112,75 +298,257 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4371,7 +4398,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +        int unchanged=0;
 +        if(retained && !refresh) {
 +            s_sg_stats.texture_compare_bytes+=snap->bytes;
++            uint64_t started = sg_profile_now();
 +            unchanged=sg_texture_bytes_equal(m->checked,snap->pixels,snap->bytes);
++            if (started) s_sg_stats.texture_compare_ticks += sg_profile_now() - started;
 +        }
 +        if(!unchanged) {
 +            uint64_t start=retained?m->copy_start:0;
@@ -4594,7 +4623,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +554,14 @@
+@@ -188,11 +556,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4611,7 +4640,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +577,36 @@
+@@ -208,23 +579,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4657,7 +4686,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,35 +627,42 @@
+@@ -245,35 +629,42 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4713,7 +4742,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -289,6 +678,6 @@
+@@ -289,6 +680,6 @@
  static void sg_texture_commit(SgTextureUse *use)
  {
      if (use->pending)
@@ -6559,7 +6588,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +273,1517 @@
+@@ -231,34 +273,1547 @@
      return bad == 0;
  }
 
@@ -7705,7 +7734,8 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        "layout(location=0)noperspective out vec4 v_color;layout(location=1)noperspective out vec3 v_uv;"
 +        "layout(set=1,binding=0)uniform V{vec2 size;}vp;"
 +        "void main(){vec2 p[6]=vec2[6](vec2(0,0),vec2(10,0),vec2(10,10),vec2(0,0),vec2(10,10),vec2(0,10));"
-+        "vec2 xy=(p[gl_VertexIndex]+origin)/vp.size*2-1;gl_Position=vec4(xy.x,-xy.y,0,1);v_color=color;v_uv=vec3(0);}";
++        "vec2 xy=(p[gl_VertexIndex%6]+vec2(float(gl_VertexIndex/6)*12,0)+origin)/vp.size*2-1;"
++        "gl_Position=vec4(xy.x,-xy.y,0,1);v_color=color;v_uv=vec3(0);}";
 +    size_t word_count=0;uint32_t *words=compile_test_vertex_source(source,&word_count);
 +    CHECK(words,"compile native queued-instance vertex shader");if(!words)return;
 +    SDL_GPUShader *vs=sg_shader(words,word_count*4,SDL_GPU_SHADERSTAGE_VERTEX,0);free(words);
@@ -7744,6 +7774,35 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    }
 +    printf("Queued native instances: %u errors across 76800 pixels\n",errors);
 +    CHECK(!errors,"queued native draw preserves all instance uploads and instance count");
++
++    CHECK(sg_clear(0xf0),"clear mixed indexed queue target");
++    const float draw_rows[3][8] = {
++        {10,20,0,0,1,0,0,1}, {40,20,0,0,0,1,0,1}, {70,20,0,0,0,0,1,1},
++    };
++    const uint32_t first_indices[] = {0,1,2,3,4,5}, last_indices[] = {6,7,8,9,10,11};
++    const uint32_t *indices[] = {first_indices, NULL, last_indices};
++    draw.vertex_bytes = sizeof draw_rows[0];
++    draw.instance_count = 1;
++    for (unsigned i = 0; i < 3; i++) {
++        draw.vertices = draw_rows[i];
++        draw.indices = indices[i];
++        draw.index_count = indices[i] ? 6 : 0;
++        CHECK(sg_queue_draw(&draw), "queue mixed indexed draw %u", i);
++    }
++    CHECK(s_sg_queue.count == 3 && s_sg_queue.draws[2].index_offset == sizeof first_indices,
++          "last indexed draw uses the second range in the same pass");
++    download_frame();
++    const unsigned left[] = {10,40,82};
++    errors = 0;
++    for (unsigned y = 0; y < 240; y++) for (unsigned x = 0; x < 320; x++) {
++        uint32_t expected = 0xff000000u;
++        for (unsigned i = 0; i < 3; i++)
++            if (x >= left[i] && x < left[i] + 10 && y >= 20 && y < 30) expected = colors[i];
++        uint32_t pixel;
++        memcpy(&pixel, g_ram + 0x400000 + (y * 320 + x) * 4, 4);
++        errors += pixel != expected;
++    }
++    CHECK(!errors, "mixed native indexed queue preserves both index ranges and vertex offsets (%u errors)", errors);
 +    SDL_ReleaseGPUGraphicsPipeline(s_sg.dev,pipe);SDL_ReleaseGPUShader(s_sg.dev,vs);
 +}
 +
@@ -8081,7 +8140,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1792,25 @@
+@@ -267,10 +1822,25 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -8110,7 +8169,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1848,48 @@
+@@ -308,12 +1878,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -8160,7 +8219,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1898,40 @@
+@@ -322,6 +1928,40 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -31765,10 +31824,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..162af60
+index 0000000..3be3f10
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,1958 @@
+@@ -0,0 +1,2009 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -33141,6 +33200,11 @@ index 0000000..162af60
 +} Readback;
 +
 +typedef struct {
++    uint64_t start, server_start, server_end;
++    uint64_t uniforms, transfers, passes, finish;
++} SubmitProfile;
++
++typedef struct {
 +    SDL_GPUCommandBuffer *c;
 +    WGPUCommandEncoder enc;
 +    int encoded;               /* GPU commands in `enc` not yet submitted */
@@ -33151,6 +33215,7 @@ index 0000000..162af60
 +    atomic_int pending;
 +    atomic_int failed;
 +    SDL_GPUFence *fence;
++    SubmitProfile profile;
 +} Replay;
 +
 +static WGPUTextureView view_of(Replay *r, WgTextureStorage *t, uint32_t level, int sampling)
@@ -33428,6 +33493,8 @@ index 0000000..162af60
 +static void replay(Replay *r)
 +{
 +    SDL_GPUCommandBuffer *c = r->c;
++    SubmitProfile *profile = &r->profile;
++    if (profile->start) profile->server_start = SDL_GetPerformanceCounter();
 +    uniform_profile(c);
 +    /* Replay is serial on the server. The uniform write is ordered after
 +     * the preceding submissions and before this command buffer's draws. */
@@ -33435,19 +33502,24 @@ index 0000000..162af60
 +        atomic_store(&r->failed, 1);
 +        return;
 +    }
++    if (profile->start) profile->uniforms = SDL_GetPerformanceCounter() - profile->server_start;
 +    r->enc = wgpuDeviceCreateCommandEncoder(s_dev, NULL);
 +
 +    for (uint32_t i = 0; i < c->n; i++) {
 +        const Op *o = &c->ops[i];
 +        switch (o->kind) {
-+        case OP_UPLOAD_BUFFER:
++        case OP_UPLOAD_BUFFER: {
++            uint64_t start = profile->start ? SDL_GetPerformanceCounter() : 0;
 +            /* Queue writes run ahead of the encoder: submit what is encoded
 +             * first so the order SDL promises holds. */
 +            flush_encoder(r);
 +            wgpuQueueWriteBuffer(s_queue, o->ub.dst->buf, o->ub.dst_off, o->ub.src->mem + o->ub.src_off,
 +                                 (o->ub.size + 3u) & ~3u);
++            if (start) profile->transfers += SDL_GetPerformanceCounter() - start;
 +            break;
++        }
 +        case OP_UPLOAD_TEXTURE: {
++            uint64_t start = profile->start ? SDL_GetPerformanceCounter() : 0;
 +            flush_encoder(r);
 +            WGPUTexelCopyTextureInfo dst = { .texture = o->ut.dst->tex, .mipLevel = o->ut.level,
 +                                             .origin = { o->ut.x, o->ut.y, o->ut.layer }, .aspect = WGPUTextureAspect_All };
@@ -33455,6 +33527,7 @@ index 0000000..162af60
 +            WGPUExtent3D ext = { o->ut.w, o->ut.h, 1 };
 +            wgpuQueueWriteTexture(s_queue, &dst, o->ut.src->mem + o->ut.src_off,
 +                                  (size_t)(o->ut.h - 1) * o->ut.row_px * 4 + (size_t)o->ut.w * 4, &layout, &ext);
++            if (start) profile->transfers += SDL_GetPerformanceCounter() - start;
 +            break;
 +        }
 +        case OP_DOWNLOAD_TEXTURE: {
@@ -33522,20 +33595,28 @@ index 0000000..162af60
 +                                o->blit.clear, o->blit.clear_color, vp, cropped ? uv : NULL);
 +            break;
 +        }
-+        case OP_BEGIN_PASS:
++        case OP_BEGIN_PASS: {
++            uint64_t start = profile->start ? SDL_GetPerformanceCounter() : 0;
 +            replay_pass(r, &i);
++            if (start) profile->passes += SDL_GetPerformanceCounter() - start;
 +            break;
++        }
 +        default:
 +            break;   /* render-pass state outside a pass: nothing to do */
 +        }
 +    }
 +
++    uint64_t finish_start = profile->start ? SDL_GetPerformanceCounter() : 0;
 +    WGPUCommandBuffer cb = wgpuCommandEncoderFinish(r->enc, NULL);
 +    wgpuQueueSubmit(s_queue, 1, &cb);
 +    wgpuCommandBufferRelease(cb);
 +    wgpuCommandEncoderRelease(r->enc);
 +    if (r->swap_view) wgpuTextureViewRelease(r->swap_view);
 +    if (r->swap_tex) wgpuTextureRelease(r->swap_tex);
++    if (finish_start) {
++        profile->server_end = SDL_GetPerformanceCounter();
++        profile->finish = profile->server_end - finish_start;
++    }
 +}
 +
 +static void track_fence(void *p);
@@ -33563,13 +33644,42 @@ index 0000000..162af60
 +    }
 +}
 +
++static uint64_t submit_profile_start(void)
++{
++    static atomic_int enabled = -1;
++    int on = atomic_load_explicit(&enabled, memory_order_relaxed);
++    if (on < 0) {
++        on = getenv("RECOMP_WEBGPU_SUBMIT_PROFILE") != NULL;
++        atomic_store_explicit(&enabled, on, memory_order_relaxed);
++    }
++    return on ? SDL_GetPerformanceCounter() : 0;
++}
++
++static void submit_profile_log(const Replay *r, uint64_t end)
++{
++    const SubmitProfile *p = &r->profile;
++    if (!p->server_end || end < p->server_end || p->server_start < p->start) return;
++    double ms = 1000.0 / SDL_GetPerformanceFrequency();
++    double total = (end - p->start) * ms;
++    if (total < 16.0) return;
++    static atomic_uint slow_submits;
++    unsigned count = atomic_fetch_add_explicit(&slow_submits, 1, memory_order_relaxed);
++    if (count >= 48 && (count % 64u)) return;
++    fprintf(stderr, "[WebGPU-SUBMIT] %.2fms ops=%u readback=%u | dispatch %.2f replay %.2f return %.2f"
++                    " | uniforms %.2f transfers %.2f passes %.2f finish %.2f\n",
++            total, r->c->n, r->nrb, (p->server_start - p->start) * ms,
++            (p->server_end - p->server_start) * ms, (end - p->server_end) * ms,
++            p->uniforms * ms, p->transfers * ms, p->passes * ms, p->finish * ms);
++}
++
 +static bool submit(SDL_GPUCommandBuffer *c, SDL_GPUFence *fence)
 +{
 +    if (!c) { SDL_SetError("WebGPU submit: null command buffer"); return false; }
 +    if (c->failed) { cmd_free(c); return false; }
-+    Replay r = { .c = c, .fence = fence };
++    Replay r = { .c = c, .fence = fence, .profile.start = submit_profile_start() };
 +    if (c->has_download) run_sync_ctx(do_submit_download, &r);   /* returns with the data in place */
 +    else run_sync(do_submit, &r);
++    if (r.profile.start) submit_profile_log(&r, SDL_GetPerformanceCounter());
 +    free(r.rb);
 +    cmd_free(c);
 +    if (atomic_load(&r.failed)) { SDL_SetError("WebGPU command replay failed"); return false; }
