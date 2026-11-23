@@ -8219,7 +8219,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1928,40 @@
+@@ -322,6 +1928,87 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 
@@ -8256,6 +8256,53 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +    CHECK(!fail_next_wait && *first == before, "failed fence wait copied unconfirmed GPU bytes");
 +    sg_download_all();
 +    CHECK(*first == 0xFFFF0000u, "readback retry did not restore GPU pixels");
++
++    /* Rejection must preserve the displayed pixels and leave the guest copy
++     * authoritative so that a subsequent flip can retry the upload. */
++    if (!s_sgp.lock) s_sgp.lock = SDL_CreateMutex();
++    CHECK(s_sgp.lock, "create present snapshot mutex");
++    if (s_sgp.lock) {
++        target(0x400000, 8, 8, 32);
++        SgSurface *surface = sg_surface_current();
++        CHECK(surface, "create initial present surface");
++        if (surface) {
++            uint32_t *pixels = (uint32_t *)(g_ram + s_gpu.color_offset);
++            for (unsigned i = 0; i < 64; i++) pixels[i] = 0xff123456u;
++            surface->owner = SG_OWNER_GUEST;
++            sg_present_flip();
++            SDL_GPUTexture *previous = s_sgp.tex;
++            CHECK(previous && s_sgp.w == 8 && s_sgp.h == 8, "publish initial present snapshot");
++            for (unsigned i = 0; i < 64; i++) pixels[i] = 0xffabcdefu;
++            surface->owner = SG_OWNER_GUEST;
++            fail_next_submit = 1;
++            sg_present_flip();
++            CHECK(!fail_next_submit && s_sgp.tex == previous && surface->owner == SG_OWNER_GUEST,
++                  "rejected same-size flip preserves guest ownership and present handle");
++            if (previous) check_authored_mip(previous, 0, 0, 8, 8, 0xff123456u, 20);
++            sg_present_flip();
++            CHECK(surface->owner == SG_OWNER_GPU, "same-size retry uploaded the guest image");
++            if (s_sgp.tex) check_authored_mip(s_sgp.tex, 0, 0, 8, 8, 0xffabcdefu, 21);
++
++            target(0x500000, 16, 8, 64);
++            surface = sg_surface_current();
++            CHECK(surface, "create resized present surface");
++            if (surface) {
++                pixels = (uint32_t *)(g_ram + s_gpu.color_offset);
++                for (unsigned i = 0; i < 128; i++) pixels[i] = 0xff13579bu;
++                surface->owner = SG_OWNER_GUEST;
++                fail_next_submit = 1;
++                sg_present_flip();
++                CHECK(!fail_next_submit && s_sgp.tex == previous && s_sgp.w == 8 &&
++                      s_sgp.h == 8 && surface->owner == SG_OWNER_GUEST,
++                      "rejected resize retains the previous present snapshot and dimensions");
++                if (s_sgp.tex && s_sgp.w == 8) check_authored_mip(s_sgp.tex, 0, 0, 8, 8, 0xffabcdefu, 22);
++                sg_present_flip();
++                CHECK(s_sgp.tex && s_sgp.w == 16 && s_sgp.h == 8 && surface->owner == SG_OWNER_GPU,
++                      "resize retry publishes the new present snapshot");
++                if (s_sgp.tex && s_sgp.w == 16) check_authored_mip(s_sgp.tex, 0, 0, 16, 8, 0xff13579bu, 23);
++            }
++        }
++    }
 +
      printf("%s (driver %s)\n", fails ? "FAILED" : "ALL PASS", s_sg.dev ? SDL_GetGPUDeviceDriver(s_sg.dev) : "none");
      SDL_Quit();
@@ -30361,7 +30408,85 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -178,4 +254,4 @@
+@@ -127,44 +203,63 @@
+         SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
+     }
+
+-    if (!s_sgp.tex || s_sgp.w != s->w || s_sgp.h != s->h) {
++    SDL_GPUTexture *present = s_sgp.tex;
++    bool replace = !present || s_sgp.w != s->w || s_sgp.h != s->h;
++    if (replace) {
+         SDL_GPUTextureCreateInfo info = {
+             .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+             .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+             .width = s->w, .height = s->h, .layer_count_or_depth = 1, .num_levels = 1,
+         };
+-        SDL_GPUTexture *t = SDL_CreateGPUTexture(s_sg.dev, &info);
+-        if (!t) {
++        present = SDL_CreateGPUTexture(s_sg.dev, &info);
++        if (!present) {
+             sg_gpu_error("present texture");
+             return;
+         }
+-        SDL_LockMutex(s_sgp.lock);
+-        if (s_sgp.tex)
+-            SDL_ReleaseGPUTexture(s_sg.dev, s_sgp.tex);   /* freed once the GPU is done */
+-        s_sgp.tex = t;
+-        s_sgp.w = s->w;
+-        s_sgp.h = s->h;
+-        SDL_UnlockMutex(s_sgp.lock);
+     }
+
+     cmd = SDL_AcquireGPUCommandBuffer(s_sg.dev);
+     if (!cmd) {
+         sg_gpu_error("present flip: command buffer");
+-        return;
++        goto failed;
+     }
+     copy = SDL_BeginGPUCopyPass(cmd);
++    if (!copy) {
++        sg_gpu_error("present flip: copy pass");
++        SDL_CancelGPUCommandBuffer(cmd);
++        goto failed;
++    }
+     if (upload) {
+         SDL_GPUTextureTransferInfo src = { .transfer_buffer = s_sg.upload };
+         SDL_GPUTextureRegion dst = { .texture = s->color, .w = s->w, .h = s->h, .d = 1 };
+         SDL_UploadToGPUTexture(copy, &src, &dst, false);
+-        s->owner = SG_OWNER_GPU;                  /* both copies agree now */
+     }
+     {
+-        SDL_GPUTextureLocation from = { .texture = s->color }, to = { .texture = s_sgp.tex };
++        SDL_GPUTextureLocation from = { .texture = s->color }, to = { .texture = present };
+         SDL_CopyGPUTextureToTexture(copy, &from, &to, s->w, s->h, 1, false);
+     }
+     SDL_EndGPUCopyPass(copy);
+-    SDL_SubmitGPUCommandBuffer(cmd);
++    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
++        sg_gpu_error("present flip: submit");
++        goto failed;
++    }
++
++    /* Only publish the replacement after its copy has entered the GPU queue.
++     * A rejected upload keeps guest ownership, so the next flip retries it. */
++    if (upload) s->owner = SG_OWNER_GPU;
++    if (replace) {
++        SDL_LockMutex(s_sgp.lock);
++        SDL_GPUTexture *old = s_sgp.tex;
++        s_sgp.tex = present;
++        s_sgp.w = s->w;
++        s_sgp.h = s->h;
++        SDL_UnlockMutex(s_sgp.lock);
++        if (old) SDL_ReleaseGPUTexture(s_sg.dev, old);
++    }
++    return;
++
++failed:
++    if (replace) SDL_ReleaseGPUTexture(s_sg.dev, present);
+ }
+
+ /* Once the renderer can draw: take over presenting (fb_thread claims the
+@@ -178,4 +273,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);
@@ -31824,10 +31949,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..3be3f10
+index 0000000..0d39319
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2009 @@
+@@ -0,0 +1,2028 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -33202,6 +33327,8 @@ index 0000000..3be3f10
 +typedef struct {
 +    uint64_t start, server_start, server_end;
 +    uint64_t uniforms, transfers, passes, finish;
++    uint64_t uniform_setup, uniform_write, uniform_capacity;
++    uint32_t uniform_bytes;
 +} SubmitProfile;
 +
 +typedef struct {
@@ -33443,8 +33570,11 @@ index 0000000..3be3f10
 +        since = now; pushed = stored = uncached = last_hits = cache_hits = commands = 0;
 +    }
 +}
-+static int prepare_draw_uniforms(SDL_GPUCommandBuffer *c)
++static int prepare_draw_uniforms(Replay *r)
 +{
++    SDL_GPUCommandBuffer *c = r->c;
++    SubmitProfile *profile = &r->profile;
++    uint64_t started = profile->start ? SDL_GetPerformanceCounter() : 0;
 +    uint32_t bytes = (c->ubytes + 3u) & ~3u;
 +    uint32_t required = bytes + WG_UNIFORM_TAIL;
 +    if (required > s_draw_uniforms.capacity) {
@@ -33479,12 +33609,23 @@ index 0000000..3be3f10
 +    /* A shader can bind the full block at the last dynamic offset. Clear any
 +     * reachable bytes left by an earlier, larger upload, like a fresh buffer. */
 +    uint32_t upload_bytes = SDL_max(bytes, SDL_min(s_draw_uniforms.dirty_end, required));
++    const uint8_t *payload = c->uniforms;
 +    if (c->ubytes) {
 +        memset(c->uniforms + bytes, 0, upload_bytes - bytes);
-+        wgpuQueueWriteBuffer(s_queue, s_draw_uniforms.buffer, 0, c->uniforms, upload_bytes);
-+    } else if (upload_bytes) {
++    } else {
 +        static const uint8_t zero[WG_UNIFORM_TAIL];
-+        wgpuQueueWriteBuffer(s_queue, s_draw_uniforms.buffer, 0, zero, upload_bytes);
++        payload = zero;
++    }
++    uint64_t write_start = 0;
++    if (started) {
++        write_start = SDL_GetPerformanceCounter();
++        profile->uniform_setup = write_start - started;
++        profile->uniform_bytes = upload_bytes;
++        profile->uniform_capacity = s_draw_uniforms.capacity;
++    }
++    if (upload_bytes) {
++        wgpuQueueWriteBuffer(s_queue, s_draw_uniforms.buffer, 0, payload, upload_bytes);
++        if (write_start) profile->uniform_write = SDL_GetPerformanceCounter() - write_start;
 +    }
 +    if (upload_bytes >= s_draw_uniforms.dirty_end) s_draw_uniforms.dirty_end = bytes;
 +    return 1;
@@ -33498,7 +33639,7 @@ index 0000000..3be3f10
 +    uniform_profile(c);
 +    /* Replay is serial on the server. The uniform write is ordered after
 +     * the preceding submissions and before this command buffer's draws. */
-+    if (c->has_draw && !prepare_draw_uniforms(c)) {
++    if (c->has_draw && !prepare_draw_uniforms(r)) {
 +        atomic_store(&r->failed, 1);
 +        return;
 +    }
@@ -33666,10 +33807,13 @@ index 0000000..3be3f10
 +    unsigned count = atomic_fetch_add_explicit(&slow_submits, 1, memory_order_relaxed);
 +    if (count >= 48 && (count % 64u)) return;
 +    fprintf(stderr, "[WebGPU-SUBMIT] %.2fms ops=%u readback=%u | dispatch %.2f replay %.2f return %.2f"
-+                    " | uniforms %.2f transfers %.2f passes %.2f finish %.2f\n",
++                    " | uniforms %.2f transfers %.2f passes %.2f finish %.2f"
++                    " | uniform setup %.2f write %.2f bytes %u capacity %llu\n",
 +            total, r->c->n, r->nrb, (p->server_start - p->start) * ms,
 +            (p->server_end - p->server_start) * ms, (end - p->server_end) * ms,
-+            p->uniforms * ms, p->transfers * ms, p->passes * ms, p->finish * ms);
++            p->uniforms * ms, p->transfers * ms, p->passes * ms, p->finish * ms,
++            p->uniform_setup * ms, p->uniform_write * ms, p->uniform_bytes,
++            (unsigned long long)p->uniform_capacity);
 +}
 +
 +static bool submit(SDL_GPUCommandBuffer *c, SDL_GPUFence *fence)

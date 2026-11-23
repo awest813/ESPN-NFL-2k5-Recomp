@@ -360,6 +360,48 @@ The retail run reached the intro and logged no software draw fallback or
 WebGPU validation errors. It did not meet 30 FPS or continuous audio. The
 capture is under `build-web-tests/submit-profile/retail`.
 
+### Presentation upload recovery and uniform writes
+
+The presenting thread keeps the previous snapshot until a replacement copy
+has been submitted successfully. If an upload from guest memory is rejected,
+the guest copy stays authoritative and the next flip uploads it again. The
+native Vulkan fixture injects failures during both a same-size update and a
+resize, then reads the complete snapshots before and after retry. It reproduces
+stale or incorrect pixels on `7c36fff` and passes with the recovery fix. The
+Linux protected-memory staging fixture also passes.
+
+An isolated hardware Chrome transfer benchmark copied from shared Wasm memory
+and drew after each of 140 writes. With 384 KiB per submission, median CPU
+submission was 17.88 ms for one queue write and 10.29 ms for mapped staging.
+Waiting through the final queue fence took 20.94 ms and 33.47 ms, respectively.
+At 5 MiB per submission, the single write had the shortest median submission
+and fence times among the tested methods. Splitting into 128, 256 or 512 KiB
+writes gave mixed results across sizes. The game keeps its existing upload
+method. Raw samples are under `build-web-tests/upload-stall/upload-methods.json`.
+
+The opt-in WebGPU submit trace now separates uniform setup from the queue write
+and reports the written bytes and backing buffer capacity.
+
+The first retail capture with these timings logged a 1,968.66 ms submission
+entering the stadium. It wrote 867,840 uniform bytes in 0.44 ms. Chrome's trace
+shows 1,964.77 ms in `CommandBufferProxyImpl::WaitForToken` on the WebGPU worker,
+overlapping a 1,831.51 ms WebGPU request on the GPU process. Two later transfers
+of about 230 ms also line up with a command-buffer wait. The transfer call can
+therefore be where the renderer waits for earlier GPU work. The timings do not
+isolate the operation inside the GPU process. The capture is under
+`build-web-tests/upload-stall/retail-chrome-trace`.
+
+A follow-up with Dawn tracing reproduced a 1.99-second submit. Dawn's client
+spent 1.986 seconds obtaining space for a 2,123,872-byte command, including
+1.982 seconds waiting for a token while the GPU process handled earlier Dawn
+commands. In the same run, a 301.02 ms uniform write spent 298.55 ms obtaining
+command space, including 298.41 ms in the token wait. These two examples put
+both stalls at the browser's command buffer. The work inside the preceding
+GPU-process commands still needs attribution. Stadium-intro windows ranged
+from 14.3 to 29.6 FPS, and audio underruns remained. The follow-up capture is
+under `build-web-tests/upload-stall/retail-dawn-trace`. The WebGPU pixel and
+presentation suite passed on this build.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
