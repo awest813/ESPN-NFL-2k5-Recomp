@@ -531,6 +531,30 @@ processes using about five CPU cores. Their contribution to the individual
 stalls is unresolved. Captures are under
 `build-web-tests/upload-stall/{retail-shared-vertex,retail-vertex-countercheck,retail-vertex-repeat}`.
 
+## Packers at 49ers browser benchmark (2026-11-23)
+
+The [Quick Game fixture](WEB-GAME-MODES.md#repeatable-retail-quick-game-benchmark)
+reached kickoff and opening possession on the Intel Gen-12HP Chrome adapter.
+The repeat began with visiting club code 14 and used controller inputs to reach
+Green Bay (10) at San Francisco (25). Both clubs reported roster category zero.
+The table includes only complete reporting windows after the first kickoff
+play-selection transition (0050FF70), excluding the window containing it.
+Audio losses are cumulative at the end of each run.
+
+| Timing enabled | Windows | Five-second averages (FPS) | Worst flip | Missing audio frames |
+| --- | ---: | ---: | ---: | ---: |
+| Flip intervals | 7 | 19.9–30.0 | 212.92 ms | 283,904 |
+| Flip intervals, repeat | 6 | 18.3–30.0 | 125.30 ms | 215,936 |
+| Detailed draw and WebGPU submission | 7 | 6.0–27.2 | 681.68 ms | 286,336 |
+
+In the 6.0 FPS window, texture verification averaged 77.28 ms and 117.65 MiB
+per frame. Texture decoding averaged 1.37 ms. The longest flip spent 409.48 ms
+in texture processing, 126.23 ms in vertex processing and 85.92 ms in submission.
+Texture verification warrants a controlled comparison using the same scene and
+retail pixels. Detailed timers add overhead, and the timing-only runs do not
+attribute individual stalls to a renderer phase. The private captures are under
+`build-web-tests/upload-stall/{fixed-matchup-1,fixed-matchup-2,fixed-matchup-phases-confirm}`.
+
 ## Measuring individual stadium stalls
 
 Open the launcher with `?env=RECOMP_SDLGPU_FRAME_PROFILE=1`, enter the stadium,

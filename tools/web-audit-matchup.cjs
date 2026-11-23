@@ -36,14 +36,19 @@ async function selectMatchup(requested,readTeams,press,wait){
       if(seen.has(key)||seen.size>=100)throw Error('Could not reach '+side+' club '+requested[side]);
       seen.add(key);
       const before=result;
-      await press(trigger);
-      for(let i=0;i<12;i++){
-        result=await readTeams();
-        if(result[other].slot!==before[other].slot)throw Error('Controller changed the '+other+' team');
+      for(let attempt=0;attempt<2;attempt++){
+        if(attempt){await press(direction);await wait(700);}
+        await press(trigger);
+        for(let i=0;i<12;i++){
+          result=await readTeams();
+          if(result[other].slot!==before[other].slot)throw Error('Controller changed the '+other+' team');
+          if(result[side].slot!==before[side].slot)break;
+          await wait(150);
+        }
         if(result[side].slot!==before[side].slot)break;
-        await wait(150);
       }
-      if(result[side].slot===before[side].slot)throw Error('No team change on '+side);
+      if(result[side].slot===before[side].slot)
+        throw Error('No team change on '+side+' from '+before[side].code+' using '+trigger);
     }
   }
   for(const side of ['home','away']){
