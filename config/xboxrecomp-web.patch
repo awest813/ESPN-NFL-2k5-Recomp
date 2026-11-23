@@ -30497,7 +30497,7 @@ diff --git a/src/apu/apu_env.h b/src/apu/apu_env.h
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
-@@ -1,6 +1,32 @@
+@@ -1,6 +1,35 @@
 
  void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
 -uint32_t xbox_FramebufferWindowVa(void);
@@ -30513,14 +30513,17 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +    static uint64_t deadline;
 +    static int previous_limit;
 +    int limit = xbox_VideoFpsLimit();
-+    uint64_t now = SDL_GetTicksNS();
 +    if (limit != 30) { deadline = 0; previous_limit = limit; return; }
++    uint64_t now = SDL_GetTicksNS();
 +    const uint64_t period = 1000000000ull / 30u;
 +    if (previous_limit != limit || !deadline) deadline = now;
 +    previous_limit = limit;
 +    if (now < deadline) {
 +        int depth = xbox_ggl_release_all();
-+        SDL_DelayNS(deadline - now);
++        /* Releasing the guest lock can yield the worker. Only sleep for
++         * the time still remaining when it can actually start the wait. */
++        now = SDL_GetTicksNS();
++        if (now < deadline) SDL_DelayNS(deadline - now);
 +        xbox_ggl_reacquire(depth);
 +        now = SDL_GetTicksNS();
 +    }
@@ -30531,7 +30534,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static struct {
      SDL_Mutex      *lock;             /* tex, w, h: replaced on the flip thread */
-@@ -9,7 +35,39 @@
+@@ -9,7 +38,39 @@
      int             registered;
      SDL_AtomicInt   failed;           /* the window could not be claimed */
      int             claimed;          /* fb_thread only */
@@ -30571,7 +30574,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static int sg_present_wanted(void)
  {
-@@ -40,6 +98,14 @@
+@@ -40,6 +101,14 @@
          s_sgp.claimed = 0;
          return 1;
      }
@@ -30586,7 +30589,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s_sgp.claimed) {
          if (!SDL_ClaimWindowForGPUDevice(s_sg.dev, win)) {
              fprintf(stderr, "  [SDLGPU] cannot present on the window (%s); frames go through guest RAM\n",
-@@ -65,22 +131,20 @@
+@@ -65,22 +134,20 @@
          SDL_LockMutex(s_sgp.lock);
          if (s_sgp.tex) {
              SDL_GPUBlitInfo blit;
@@ -30620,7 +30623,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
              blit.load_op = SDL_GPU_LOADOP_CLEAR;  /* black outside the frame */
              blit.clear_color = (SDL_FColor){ 0.0f, 0.0f, 0.0f, 1.0f };
              blit.filter = (s_vs.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-@@ -92,9 +156,14 @@
+@@ -92,9 +159,14 @@
              };
              SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
          }
@@ -30637,7 +30640,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      return 1;
  }
 
-@@ -103,15 +172,22 @@
+@@ -103,15 +175,22 @@
   * renderer holds (the previous frame stays). */
  static void sg_present_flip(void)
  {
@@ -30663,7 +30666,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -127,44 +203,63 @@
+@@ -127,44 +206,63 @@
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
      }
 
@@ -30741,7 +30744,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
  }
 
  /* Once the renderer can draw: take over presenting (fb_thread claims the
-@@ -178,4 +273,4 @@
+@@ -178,4 +276,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);

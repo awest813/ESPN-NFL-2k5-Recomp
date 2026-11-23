@@ -32,11 +32,11 @@ static struct {int fps_limit;} s_vs={60};
 #define SG_MAX_TEXTURES 512
 typedef struct { uint64_t key; uint32_t w,h,layers,epoch_used; } SgCachedTexture;
 static SgCachedTexture s_sg_textures[SG_MAX_TEXTURES];
-static uint64_t clock_ns, waited;
+static uint64_t clock_ns, waited, release_ns;
 static int releases, reacquires;
 static uint64_t SDL_GetTicksNS(void) { return clock_ns; }
 static void SDL_DelayNS(uint64_t n) { clock_ns+=n; waited+=n; }
-static int xbox_ggl_release_all(void) { releases++; return 3; }
+static int xbox_ggl_release_all(void) { releases++; clock_ns+=release_ns; return 3; }
 static void xbox_ggl_reacquire(int depth) { assert(depth==3); reacquires++; }
 /* PRODUCTION */
 static struct {void *dev;} s_sg;
@@ -85,6 +85,18 @@ int main(void) {
     clock_ns+=10000000u; sg_frame_pace();
     assert(clock_ns-previous==33333333u);
     puts("ok: slow frame resets the deadline without a catch-up burst");
+    for (int late=0; late<=1; late++) {
+        previous=waited;
+        uint64_t begin=clock_ns;
+        clock_ns+=10000000u;
+        release_ns=late?45000000u:8000000u;
+        sg_frame_pace();
+        assert(clock_ns-begin==(late?55000000u:33333333u));
+        assert(waited-previous==(late?0u:15333333u));
+        assert(releases==reacquires);
+    }
+    release_ns=0;
+    puts("ok: lock handoff consumes the remaining wait and an expired deadline never sleeps");
     assert(xbox_WebSetFpsLimit(0)); previous=waited; sg_frame_pace();
     assert(waited==previous);
     assert(xbox_WebSetFpsLimit(30)); sg_frame_pace();

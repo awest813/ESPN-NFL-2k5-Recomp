@@ -834,6 +834,24 @@ processes together averaged 3.38, on a host with 20 logical processors.
 These simultaneous measurements establish competing activity, but do
 not quantify its effect on game performance.
 
+### Time spent handing off the guest lock at 30 FPS
+
+The browser frame limiter releases the guest execution lock before sleeping
+until the next frame deadline. It now samples the clock again after releasing
+the lock. A worker that resumes after its deadline immediately proceeds to
+reacquisition. Uncapped frames also skip the limiter's clock read.
+
+The deterministic Wasm fixture starts with 10 ms of frame work. An 8 ms
+handoff leaves 15.33 ms to sleep before the 33.33 ms deadline. With a 45 ms
+handoff, the frame is already late and the limiter requests zero sleep.
+Both paths restore the original lock depth.
+
+The release build reached the opening drive in hardware Chrome. Its eight
+five-second windows from kickoff ranged from 10.4 to 24.2 FPS, with a
+364.90 ms worst flip. The worklet missed 90,274 additional audio frames.
+The retail run did not time lock handoffs individually, so it establishes
+neither their frequency nor an end-to-end speedup.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
