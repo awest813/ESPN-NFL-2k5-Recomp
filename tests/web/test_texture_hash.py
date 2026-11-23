@@ -19,6 +19,8 @@ def main():
     if "s_sg_hash_copy_cursor" in memo:memo="#define TEST_PERSISTENT_COPY 1\n"+memo
     hashing=src[start if start>=0 else src.index("static uint64_t sg_hash("):src.index("/* Decode each DXT block")]
     if start<0:hashing='static int sg_texture_bytes_equal(const uint8_t*a,const uint8_t*b,size_t n){return memcmp(a,b,n)==0;}\n'+hashing
+    if 'static int sg_texture_copy_equal(' in hashing:
+        hashing = '#define TEST_PATTERN_COPY 1\n' + hashing
     harness = r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -43,6 +45,30 @@ static void *hash_test_allocate(size_t bytes) {return fail_hash_allocation?NULL:
 #undef malloc
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 int main(void) {
+#ifdef TEST_PATTERN_COPY
+    /* A nonuniform prefix and tail surround two different periodic runs.
+     * Check every byte in the retained image, including both boundaries. */
+    {
+        enum { length = 10 * 1024 + 3 };
+        uint8_t *stored = malloc(length + 1), *guest = malloc(length + 1);
+        CHECK(stored && guest);
+        SgHashMemo m = {.checked=stored+1, .bytes=length};
+        for(unsigned i=0;i<length;i++)
+            m.checked[i] = i<1024 || i>=9*1024 ? (uint8_t)(i^(i>>4))
+                : (uint8_t)((i&15)+(i>=5*1024 ? 37 : 0));
+        memcpy(guest+1,m.checked,length);
+        sg_texture_pattern(&m,m.checked,length);
+#ifdef __wasm_simd128__
+        CHECK(m.pattern_offset==1024 && m.pattern_bytes==4096);
+#endif
+        CHECK(sg_texture_copy_equal(&m,guest+1));
+        for(unsigned i=0;i<length;i++) {
+            guest[1+i]^=128; CHECK(!sg_texture_copy_equal(&m,guest+1)); guest[1+i]^=128;
+        }
+        sg_texture_pattern(&m,NULL,length); CHECK(!m.pattern_bytes);
+        free(stored);free(guest);
+    }
+#endif
     /* Misalignment, vector boundaries, tails and exact allocation ends. */
     for(unsigned length=0;length<=131;length++)for(unsigned offset=0;offset<16;offset++) {
         uint8_t *a=malloc(length+offset+1),*b=malloc(length+offset+1);

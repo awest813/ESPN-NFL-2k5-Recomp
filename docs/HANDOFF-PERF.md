@@ -670,6 +670,39 @@ passed connection, disconnection, reconnection, and presenter checks. The
 forced SwiftShader configuration on the same Windows installation failed
 to claim the presenter.
 
+### Which texture bytes Quick Game verifies
+
+A private Wasm probe counted the bytes compared against retained texture
+copies. Across seven complete five-second windows after the kickoff transition,
+the four texture stages accounted for 27.28%, 47.91%, 23.47%, and 1.34% of
+94.58 billion compared bytes. The probe found zero bytes from secondary
+stages that its conservative combiner analysis could prove unused. It also
+found zero bytes from lower 2D mip levels behind a sampler clamped to level
+zero. These observations apply to the sampled draws.
+
+Of those bytes, 20.51% belonged to 1 KiB blocks containing a repeating
+16-byte value. A second Quick Game measured one long contiguous span per
+retained image. Spans of at least 4 KiB covered 8.96% of verified bytes
+across seven complete kickoff windows. This measures the portion for which
+a comparator can reuse an expected vector. The guest side still requires a
+full read to detect writes anywhere in the texture.
+
+A private paired probe ran both comparators on the same texture bytes for
+one in sixteen eligible calls, alternating which ran first. They agreed on
+all 19,812 sampled calls. In the seven complete kickoff windows, the old
+comparator took 347.942 ms over 8,215 calls and the new one took 300.403 ms
+(13.7% less time). The new routine was faster in five windows. This measures
+eligible comparisons only and excludes the cost of finding a pattern when
+the retained copy changes.
+
+The release build with frame timing enabled reached second and ten in a
+Chargers–49ers Quick Game. Eight five-second windows from kickoff through
+the opening drive measured 28.8–30.1 FPS, with a worst frame of 251.53 ms.
+Both audio samples reported zero underrun frames. The detailed paired probe
+did encounter audio underruns. The release capture still falls below the
+30 FPS target, and this single matchup does not establish a change in
+end-to-end frame rate.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

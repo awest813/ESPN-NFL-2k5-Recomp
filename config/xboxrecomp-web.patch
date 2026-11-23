@@ -4128,7 +4128,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      SDL_GPUTexture *tex;
      uint32_t        last_use;
      uint32_t        epoch_used; /* s_sg_queue.epoch when last used: in flight
-@@ -29,30 +29,151 @@
+@@ -29,30 +29,152 @@
      SgCachedTexture *pending;   /* cache slot to mark valid once the upload is issued */
      uint64_t         pending_key;
      SDL_GPUSampler *sampler;
@@ -4251,6 +4251,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +    uint32_t       shape[5];
 +    uint32_t       frame;      /* last use, for collision-window replacement */
 +    uint64_t       hash, copy_start;
++    uint32_t       pattern_offset, pattern_bytes;
 +    uint8_t       *checked;    /* ring copy; validate its serial before reading */
  } SgHashMemo;
 
@@ -4291,7 +4292,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  /* One decode buffer per stage: one batch can upload several stages. */
  static uint32_t       *s_sg_decode[4];
-@@ -65,13 +186,19 @@
+@@ -65,13 +187,19 @@
  }
 
  /* ── Samplers, from the title's own per-stage settings (as the D3D11 path):
@@ -4317,7 +4318,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 
  static SDL_GPUSamplerAddressMode sg_address_mode(uint32_t m)
  {
-@@ -82,29 +209,88 @@
+@@ -82,29 +210,88 @@
      }
  }
 
@@ -4420,7 +4421,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +298,257 @@
+@@ -112,75 +299,305 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4455,6 +4456,53 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +        if(wasm_v128_any_true(wasm_v128_xor(wasm_v128_load(a),wasm_v128_load(b))))return 0;
 +#endif
 +    return memcmp(a,b,n)==0;
++}
++
++/* Reuse one expected vector for a long periodic span of the retained image.
++ * The guest side is always read in full, including its first and last bytes. */
++static void sg_texture_pattern(SgHashMemo *m, const uint8_t *copy, size_t bytes)
++{
++    m->pattern_bytes = 0;
++#ifdef __wasm_simd128__
++    if (!copy || bytes < 4096) return;
++    /* Test blocks only when establishing a new retained copy. Keeping just
++     * the longest run needs no allocation or per-block lookup on a draw. */
++    uint32_t run = 0;
++    for (size_t at = 0; at + 1024 <= bytes; at += 1024) {
++        if (!sg_texture_bytes_equal(copy + at, copy + at + 16, 1008)) {
++            run = 0;
++            continue;
++        }
++        if (run && memcmp(copy + at - 16, copy + at, 16)) run = 0;
++        run += 1024;
++        if (run >= 4096 && run > m->pattern_bytes) {
++            m->pattern_offset = (uint32_t)(at + 1024 - run);
++            m->pattern_bytes = run;
++        }
++    }
++#else
++    (void)copy; (void)bytes;
++#endif
++}
++
++static int sg_texture_copy_equal(const SgHashMemo *m, const uint8_t *pixels)
++{
++#ifdef __wasm_simd128__
++    if (m->pattern_bytes) {
++        uint32_t offset = m->pattern_offset, end = offset + m->pattern_bytes;
++        if (!sg_texture_bytes_equal(m->checked, pixels, offset)) return 0;
++        v128_t expected = wasm_v128_load(m->checked + offset);
++        for (; offset < end; offset += 64) {
++            v128_t a = wasm_v128_xor(expected, wasm_v128_load(pixels + offset));
++            v128_t b = wasm_v128_xor(expected, wasm_v128_load(pixels + offset + 16));
++            v128_t c = wasm_v128_xor(expected, wasm_v128_load(pixels + offset + 32));
++            v128_t d = wasm_v128_xor(expected, wasm_v128_load(pixels + offset + 48));
++            if (wasm_v128_any_true(wasm_v128_or(wasm_v128_or(a, b), wasm_v128_or(c, d)))) return 0;
++        }
++        return sg_texture_bytes_equal(m->checked + end, pixels + end, m->bytes - end);
++    }
++#endif
++    return sg_texture_bytes_equal(m->checked, pixels, m->bytes);
 +}
 +
 +/* Keys are private to the process. XXH64's independent word lanes avoid
@@ -4507,7 +4555,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +        if(retained && !refresh) {
 +            s_sg_stats.texture_compare_bytes+=snap->bytes;
 +            uint64_t started = sg_profile_now();
-+            unchanged=sg_texture_bytes_equal(m->checked,snap->pixels,snap->bytes);
++            unchanged=sg_texture_copy_equal(m,snap->pixels);
 +            if (started) s_sg_stats.texture_compare_ticks += sg_profile_now() - started;
 +        }
 +        if(!unchanged) {
@@ -4520,6 +4568,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +            if(copy)memcpy(copy,snap->pixels,snap->bytes);
 +            m->hash=sg_hash(copy?copy:snap->pixels,snap->bytes,
 +                           sg_hash((const uint8_t*)shape,sizeof shape,0x243F6A8885A308D3ull));
++            sg_texture_pattern(m,copy,snap->bytes);
 +            m->checked=copy;m->copy_start=start;
 +            s_sg_stats.texture_hash_bytes+=snap->bytes;
 +        }
@@ -4731,7 +4780,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +556,14 @@
+@@ -188,11 +605,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4748,7 +4797,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +579,36 @@
+@@ -208,23 +628,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4794,7 +4843,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,35 +629,42 @@
+@@ -245,35 +678,42 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4850,7 +4899,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -289,6 +680,6 @@
+@@ -289,6 +729,6 @@
  static void sg_texture_commit(SgTextureUse *use)
  {
      if (use->pending)
