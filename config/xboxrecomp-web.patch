@@ -3439,10 +3439,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          }
          {
              SDL_GPUColorTargetInfo target = {
-@@ -329,14 +462,26 @@
+@@ -329,14 +462,27 @@
              SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &target, 1, &depth);
              SDL_GPUViewport view = {0, 0, (float) s->w, (float) s->h, 0.0f, 1.0f};
              SDL_GPUGraphicsPipeline *bound = NULL;
++            uint32_t bound_vertex_offset = UINT32_MAX;
 +            SDL_Rect scissors[SG_CLIP_SCISSORS];
 +            SDL_FColor bound_blend = {0};
 +            SDL_Rect bound_scissor = {0};
@@ -3456,8 +3457,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +            }
              for (i = 0; i < q->count; i++) {
                  const SgQueuedDraw *qd = &q->draws[i];
-                 SDL_GPUBufferBinding vb = {.buffer = s_sg.vertices, .offset = qd->vertex_offset};
+-                SDL_GPUBufferBinding vb = {.buffer = s_sg.vertices, .offset = qd->vertex_offset};
 -                SDL_GPUTextureSamplerBinding tb[4];
++                uint32_t first_vertex = 0;
 +                SDL_GPUTextureSamplerBinding tb[8];
 +                int scissor_count = sg_clip_scissors(qd->scissor, &qd->window_clip, scissors);
                  int k;
@@ -3467,13 +3469,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
                  if (qd->pipe != bound) {
                      SDL_BindGPUGraphicsPipeline(pass, qd->pipe);
                      bound = qd->pipe;
-@@ -350,59 +495,78 @@
+@@ -350,59 +496,88 @@
                              fprintf(stderr, "  [SDLGPU] draw %u stage %d: texture %p sampler %p (of %u)\n",
                                      i, k, (void *)tb[k].texture, (void *)tb[k].sampler, qd->tex_count);
                      }
 -                SDL_SetGPUScissor(pass, &qd->scissor);
 -                SDL_SetGPUBlendConstants(pass, qd->blend_constant);
 -                SDL_SetGPUStencilReference(pass, qd->stencil_ref);
+-                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
 +                if (!have_blend || memcmp(&bound_blend, &qd->blend_constant, sizeof bound_blend)) {
 +                    SDL_SetGPUBlendConstants(pass, qd->blend_constant);
 +                    bound_blend = qd->blend_constant; have_blend = 1;
@@ -3482,7 +3485,17 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +                    SDL_SetGPUStencilReference(pass, qd->stencil_ref);
 +                    bound_stencil = qd->stencil_ref; have_stencil = 1;
 +                }
-                 SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
++                /* Ordinary draws can address the same binding in vertices.
++                 * Instanced lines fetch endpoints per instance and need a
++                 * zero-based vertex index for the six generated corners. */
++                if (qd->vertex_stride && qd->vertex_offset >= bound_vertex_offset &&
++                    (qd->vertex_offset - bound_vertex_offset) % qd->vertex_stride == 0) {
++                    first_vertex = (qd->vertex_offset - bound_vertex_offset) / qd->vertex_stride;
++                } else {
++                    SDL_GPUBufferBinding vb = {.buffer = s_sg.vertices, .offset = qd->vertex_offset};
++                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
++                    bound_vertex_offset = qd->vertex_offset;
++                }
                  SDL_BindGPUFragmentSamplers(pass, 0, tb, (Uint32) qd->tex_count);
                  SDL_PushGPUVertexUniformData(cmd, 0, q->udata + qd->vs_offset, qd->vs_size);
 -                SDL_PushGPUFragmentUniformData(cmd, 0, qd->fs, qd->fs_size);
@@ -3500,9 +3513,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
 +                    }
 +                    if (qd->index_count)
 +                        SDL_DrawGPUIndexedPrimitives(pass, qd->index_count, qd->instance_count ? qd->instance_count : 1,
-+                                                     qd->index_offset / sizeof(uint32_t), 0, 0);
++                                                     qd->index_offset / sizeof(uint32_t), (Sint32)first_vertex, 0);
 +                    else
-+                        SDL_DrawGPUPrimitives(pass, qd->vertex_count, qd->instance_count ? qd->instance_count : 1, 0, 0);
++                        SDL_DrawGPUPrimitives(pass, qd->vertex_count, qd->instance_count ? qd->instance_count : 1, first_vertex, 0);
                  }
              }
              SDL_EndGPURenderPass(pass);
@@ -3567,7 +3580,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          uint32_t cap = list->cap ? list->cap * 2 : 192;
          SgVertex *v = (SgVertex *) realloc(list->v, cap * sizeof *v);
          if (!v)
-@@ -410,18 +574,22 @@
+@@ -410,18 +585,22 @@
          list->v = v;
          list->cap = cap;
      }
@@ -3599,7 +3612,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
  }
 
  /* gpu_draw_batch(1). Returns 0 to leave the batch to the software path. */
-@@ -431,7 +599,7 @@
+@@ -431,7 +610,7 @@
      SDL_GPUGraphicsPipeline *pipe;
      SgSurface *s;
 
@@ -3608,7 +3621,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          return 0; /* raster_batch keeps its counters */
      if (!sg_draw_init())
          return sg_fallback(SG_FB_SHADERS, 0);
-@@ -445,19 +613,27 @@
+@@ -445,19 +624,27 @@
          return sg_fallback(SG_FB_TEXTURE, 0); /* unreadable texture: software decides */
 
      list.count = 0;
@@ -3639,7 +3652,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_draw.inc.c b/src/kernel/sdlgpu/sdlgpu_draw
          SgDraw d = {
              .surface = s, .pipe = pipe,
              .vertices = list.v, .vertex_bytes = list.count * (uint32_t) sizeof(SgVertex),
-@@ -466,7 +642,37 @@
+@@ -466,7 +653,37 @@
              .vs_uniform = surface_size, .vs_uniform_size = sizeof surface_size,
              .fs_uniform = &shade, .fs_uniform_size = sizeof shade,
          };
@@ -6639,7 +6652,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      ref_draw();
      if (!taken) { printf("FAIL: %s: GPU did not take the batch\n", name); fails++; return 0; }
 
-@@ -231,34 +273,1547 @@
+@@ -231,34 +273,1583 @@
      return bad == 0;
  }
 
@@ -7854,6 +7867,42 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 +        errors += pixel != expected;
 +    }
 +    CHECK(!errors, "mixed native indexed queue preserves both index ranges and vertex offsets (%u errors)", errors);
++
++    /* Exercise firstVertex, baseVertex, and a per-instance binding whose
++     * 32-byte records break the alignment of 36-byte flat vertices. */
++    CHECK(sg_clear(0xf0),"clear shared vertex binding target");
++    SgPipeKey flat_key={.color=SG_COLOR_VALID | (15u<<1)};
++    SDL_GPUGraphicsPipeline *flat_pipe=sg_pipeline_create(&flat_key);
++    CHECK(flat_pipe,"create flat pipeline for shared vertex binding");
++    if(flat_pipe) {
++        const unsigned corners[6]={0,1,2,0,2,3};
++        for(unsigned i=0;i<5;i++) {
++            SgVertex vertices[6]={0};
++            SgDraw rect=draw;
++            for(unsigned k=0;k<6;k++) {
++                vertices[k].x=10+30*i+(corners[k]==1 || corners[k]==2 ? 10:0);
++                vertices[k].y=20+(corners[k]>=2 ? 10:0);
++                vertices[k].color[i%3]=1; vertices[k].color[3]=1;
++            }
++            rect.pipe=flat_pipe;rect.vertices=vertices;rect.vertex_bytes=sizeof vertices;
++            rect.vertex_count=6;rect.instance_count=0;
++            rect.indices=first_indices;rect.index_count=i%2 ? 6:0;
++            if(i==2) {
++                rect.pipe=pipe;rect.vertices=draw_rows[2];rect.vertex_bytes=sizeof draw_rows[2];
++                rect.instance_count=1;rect.index_count=0;
++            }
++            CHECK(sg_queue_draw(&rect),"queue vertex binding case %u",i);
++        }
++        download_frame(); errors=0;
++        for(unsigned y=0;y<240;y++)for(unsigned x=0;x<320;x++){
++            uint32_t expected=0xff000000u,pixel;
++            for(unsigned i=0;i<5;i++)if(x>=10+i*30 && x<20+i*30 && y>=20 && y<30)expected=colors[i%3];
++            memcpy(&pixel,g_ram+0x400000+(y*320+x)*4,4);
++            errors+=pixel!=expected;
++        }
++        CHECK(!errors,"indexed, unindexed and instanced draws preserve all pixels across binding changes (%u errors)",errors);
++        SDL_ReleaseGPUGraphicsPipeline(s_sg.dev,flat_pipe);
++    }
 +    SDL_ReleaseGPUGraphicsPipeline(s_sg.dev,pipe);SDL_ReleaseGPUShader(s_sg.dev,vs);
 +}
 +
@@ -8191,7 +8240,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      g_ntris = 2; quad(0, 10, 20, 110, 70, 0, 0, 0, 0, 0xFF336699u, 0);
      run_scene("orientation + solid quad", 0);
-@@ -267,10 +1822,25 @@
+@@ -267,10 +1858,25 @@
          CHECK(px == 0xFF336699u, "quad not at its top-left position (y flipped?): %08X", px);
      }
 
@@ -8220,7 +8269,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
 
      s_gpu.tex.addr_u = s_gpu.tex.addr_v = 3;        /* clamp */
      g_ntris = 2; quad(0, 100, 100, 180, 160, 0, 0, 16, 12, 0xFFFFFFFFu, 1);
-@@ -308,12 +1878,48 @@
+@@ -308,12 +1914,48 @@
          SgTextureUse use;
          CHECK(sg_texture_stage0(&use) == 1 && use.upload == NULL, "unchanged texture was decoded again");
      }
@@ -8270,7 +8319,7 @@ diff --git a/tests/sdlgpu_posix/test_main.c b/tests/sdlgpu_posix/test_main.c
      s_gpu.tex.valid = 0;
 
      s_gpu.blend = 1; s_gpu.blend_sf = 0x8003; s_gpu.blend_df = 0x0303;
-@@ -322,6 +1928,87 @@
+@@ -322,6 +1964,87 @@
      CHECK(sg_draw_batch(1) == 0, "CONSTANT_ALPHA blend should fall back");
      s_gpu.blend = 0;
 

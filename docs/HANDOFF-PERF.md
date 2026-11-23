@@ -492,6 +492,45 @@ stadium windows ranged from 26.6 to 30.0 FPS. The longest Dawn batch was
 415 ms and both audio samples reported zero frames lost. The private captures
 are under `build-web-tests/upload-stall/retail-live-line-{first,final}`.
 
+### Vertex buffer binding during field draws
+
+The SDL GPU queue now keeps the vertex buffer bound while successive draws
+can address their packed vertex data using an integral vertex offset. Indexed
+draws use base vertex and unindexed draws use first vertex. An incompatible
+stride starts a new binding. Instanced line draws still bind their endpoint
+data at its exact byte offset and start vertex numbering at zero. A native
+Vulkan regression checks all 76,800 pixels after alternating these cases.
+
+An Intel Gen-12HP hardware Chrome benchmark alternated both binding patterns
+for nine rounds. Each sample issued 100 submissions with one indexed pass
+per submission. These are median milliseconds for the entire sample.
+
+| Draws per pass | Previous submit | Shared binding submit | Previous through GPU fence | Shared binding through GPU fence |
+| ---: | ---: | ---: | ---: | ---: |
+| 80 | 5.50 | 4.19 | 13.85 | 11.53 |
+| 240 | 8.09 | 4.79 | 14.75 | 13.50 |
+| 600 | 14.79 | 6.58 | 21.36 | 16.31 |
+
+The retail Quick Game script reached opening possession in both builds. The
+six complete five-second windows after the first play-selection transition
+ranged from 27.8 to 30.1 FPS on the candidate and 28.8 to 30.0 on the
+reference. The game selected different visiting teams and the windows
+contained 585,000 and 744,000 guest draws respectively. This comparison
+cannot establish a retail FPS gain. The candidate finished the kickoff
+return at SF 24 with 4:56 in the first quarter and zero audio frames lost.
+The reference recorded 4,096 frames lost before its first audio sample.
+Private captures are under `build-web-tests/upload-stall/quick-game-vertex-*`
+and benchmark samples under `build-web-tests/submit-profile/vertex-bench`.
+
+Three subsequent attract-mode runs all had audio underruns. The slowest
+stadium windows were 2.6 FPS on the candidate, 7.9 on the reference, and
+18.4 on the candidate repeat. The candidate's first slow run also spent
+17.5 ms per frame processing vertices and 65.3 ms processing textures in
+its 2.6 FPS window. A host sample during the comparison found other emulation
+processes using about five CPU cores. Their contribution to the individual
+stalls is unresolved. Captures are under
+`build-web-tests/upload-stall/{retail-shared-vertex,retail-vertex-countercheck,retail-vertex-repeat}`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
