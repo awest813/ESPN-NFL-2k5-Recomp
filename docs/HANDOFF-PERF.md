@@ -559,6 +559,43 @@ Submission is the next place to investigate. The 967 ms interval occurred
 in the timing-only run, so its cause is unknown. These two runs establish
 neither the production FPS floor nor the overhead of detailed profiling.
 
+### Stadium buffer-write comparison
+
+Three sequential runs on the same Intel Gen-12HP Chrome profile used the same
+attract-mode script and enabled the renderer, WebGPU submission, and APU lock
+timers. The private experiment split buffer writes larger than 256 KiB into
+ordered chunks. The reference used the released backend. The table includes
+the reporting window containing stadium entry and all subsequent complete
+reports before the script ended. Audio counters are cumulative at each sample.
+
+| Run order | Windows | Lowest window FPS | Longest flip (ms) | Flips over 100 ms | Missing audio frames at title / end |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Reference | 5 | 19.6 | 626.79 | 14 | 3,712 / 3,712 |
+| 256 KiB writes | 4 | 8.0 | 1,050.56 | 39 | 0 / 0 |
+| Reference repeat | 6 | 14.3 | 474.72 | 9 | 11,392 / 14,464 |
+
+In the first reference run, a 536.49 ms submission spent 535.17 ms in
+transfers. A separate 159.59 ms submission spent 157.96 ms writing uniforms.
+These are CPU-side waits observed at the API call. Splitting the buffer writes
+failed to improve stadium frame times in this comparison. The release retains
+the original writes.
+
+A fourth run timed individual browser queue calls with the original write
+sizes. After the stadium marker, 48 buffer writes and two texture writes took
+at least 50 ms. No queue submit call crossed that threshold. The 26 vertex
+buffer waits peaked at 582.59 ms for 2,544,544 bytes. The ten index buffer
+waits peaked at 370.22 ms for 73,584 bytes, and the twelve uniform buffer
+waits peaked at 400.81 ms for 1,472,768 bytes. Texture writes peaked at
+70.74 ms. The audit reported 4,224 missing audio frames. These durations
+include time waiting for the browser to accept earlier queued work. The cause
+of that backpressure still needs verification.
+
+When flip timing is enabled, the mode audit saves `frameWindows` in each
+completed case in `report.json`. Each entry contains the average FPS, interval
+counts, longest flip, and mode transitions observed since the previous report
+within that case. Detailed profiling also records phase times for that flip.
+The phase timers can overlap.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

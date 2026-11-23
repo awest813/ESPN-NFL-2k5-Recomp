@@ -17,6 +17,15 @@ const good=caseDiagnostics('pass',benign);
 assert.equal(good.result,'pass');
 assert.equal(good.failures.length,0);
 assert.deepEqual(good.diagnostics,[benign[3]]);
+assert.equal(good.frameWindows,undefined);
+const transition={at:10,line:'[MODE-FSM] #4 push object=00A84B18 descriptor=004E7EC0'};
+const timing='  [SDLGPU] 5s: frames 150 30.0 fps | flip intervals 149 over-budget 31 over-50ms 3 over-100ms 1 worst 124.20 ms';
+const timed=caseDiagnostics('pass',[transition,{at:11,line:timing},{at:5012,line:timing+' (texture 1.00 vertex 2.00 submit 100.00)'}]);
+assert.deepEqual(timed.frameWindows[0],{at:11,frames:150,fps:30,intervals:149,overBudget:31,
+  over50ms:3,over100ms:1,worstMs:124.2,transitions:[transition]});
+assert.deepEqual(timed.frameWindows[1].transitions,[]);
+assert.deepEqual(timed.frameWindows[1].worstFrameMs,{texture:1,vertex:2,submit:100});
+assert.equal(timed.result,'pass');
 
 for(const failure of [
   {line:'AUDIT wait-log timed out after 1000 ms: mode-ready',kind:'audit-error'},

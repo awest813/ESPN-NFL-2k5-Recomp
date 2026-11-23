@@ -15,9 +15,40 @@ function isAuditFailure(row) {
     || /GPUValidationError|Error while (?:parsing WGSL|validating)/i.test(line);
 }
 
+// Keep each reporting window intact. A mode change can happen partway
+// through a window, and a five-second mean can hide a single long flip.
+function frameWindows(rows) {
+  const windows = [];
+  const header = /\[SDLGPU\] 5s: frames (\d+) ([\d.]+) fps/;
+  const intervals = /\| flip intervals (\d+) over-budget (\d+) over-50ms (\d+) over-100ms (\d+) worst ([\d.]+) ms/;
+  let transitions = [];
+  for (const {at, line} of rows) {
+    if (!line) continue;
+    if (line.includes('[MODE-FSM]')) transitions.push({at, line});
+    if (!line.includes('flip intervals')) continue;
+    const counts = intervals.exec(line);
+    const sample = header.exec(line);
+    if (!counts || !sample) continue;
+    const phases = /worst [\d.]+ ms \(texture ([\d.]+) vertex ([\d.]+) submit ([\d.]+)\)/.exec(line);
+    windows.push({
+      at, frames: Number(sample[1]), fps: Number(sample[2]),
+      intervals: Number(counts[1]), overBudget: Number(counts[2]),
+      over50ms: Number(counts[3]), over100ms: Number(counts[4]),
+      worstMs: Number(counts[5]), transitions,
+      ...(phases && {worstFrameMs: {
+        texture: Number(phases[1]), vertex: Number(phases[2]), submit: Number(phases[3]),
+      }}),
+    });
+    transitions = [];
+  }
+  return windows;
+}
+
 function caseDiagnostics(result, rows) {
   const failures = rows.filter(isAuditFailure);
+  const windows = frameWindows(rows);
   return {
+    ...(windows.length ? {frameWindows: windows} : {}),
     result: failures.length && (result === 'pass' || result === 'partial') ? 'fail' : result,
     diagnostics: rows.filter(row => isAuditFailure(row)
       || /\[UNRESOLVED\]|\[FLAGS\]|\[TODO\]|unresolved guest/i.test(row.line || '')),
