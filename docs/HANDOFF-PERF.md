@@ -852,6 +852,31 @@ five-second windows from kickoff ranged from 10.4 to 24.2 FPS, with a
 The retail run did not time lock handoffs individually, so it establishes
 neither their frequency nor an end-to-end speedup.
 
+### WebGPU presentation between guest flips
+
+The framebuffer thread waits for each browser animation frame. WebGPU can
+keep compositing the last canvas image between game flips. The presenter
+redraws on a successful flip, a window-size or video-setting change, or
+after an unsuccessful presentation. On other animation frames it cancels
+the empty command before the backend acquires the actual canvas texture.
+
+The hardware Chrome pixel fixture changed the canvas aspect twice, drew a
+known green frame, then cancelled four successive idle presentation commands.
+The composited canvas still read back exactly `[0,192,48,255]` at its centre,
+and the fixture reported zero WebGPU validation errors.
+
+In two retail Quick Games an instrumented JavaScript loader counted actual
+WebGPU canvas texture acquisitions. Seven complete windows after kickoff
+recorded 1,765 acquisitions in 35.08 s before the change (50.3/s) and 523
+in 35.27 s after it (14.8/s). Guest flip reports averaged 16.1 and 14.9 FPS
+respectively over their own seven complete windows. Different matchups
+prevent a direct gameplay speed comparison.
+
+The changed build showed Philadelphia–San Francisco at first and ten on the
+SF 20. Across all eight windows including kickoff it ranged from 11.7 to
+25.4 FPS with a worst flip of 257.49 ms. The audio counter rose by 159,232
+missing frames between kickoff and the last sample.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

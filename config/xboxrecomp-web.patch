@@ -30534,11 +30534,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static struct {
      SDL_Mutex      *lock;             /* tex, w, h: replaced on the flip thread */
-@@ -9,7 +38,39 @@
+@@ -9,7 +38,42 @@
      int             registered;
      SDL_AtomicInt   failed;           /* the window could not be claimed */
      int             claimed;          /* fb_thread only */
 +    SDL_AtomicInt   aspect;           /* display aspect * 1e6, read by command thread */
++#ifdef __EMSCRIPTEN__
++    SDL_AtomicInt   needs_blit;       /* a new present snapshot was submitted */
++#endif
  } s_sgp;
 +
 +/* The built-in patch widens the world camera using this validated header
@@ -30574,7 +30577,20 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static int sg_present_wanted(void)
  {
-@@ -40,6 +101,14 @@
+@@ -33,6 +97,12 @@
+     SDL_GPUCommandBuffer *cmd;
+     SDL_GPUTexture *swap = NULL;
+     Uint32 sw = 0, sh = 0;
++    typedef struct { Uint32 width, height; int crop, wide, aspect, filter; } PresentState;
++#ifdef __EMSCRIPTEN__
++    /* Chrome composites the previous canvas image until it gets a new one. */
++    static PresentState last;
++    static bool displayed;
++#endif
+
+     if (letterbox < 0) {                          /* shutdown */
+         if (s_sgp.claimed)
+@@ -40,6 +110,14 @@
          s_sgp.claimed = 0;
          return 1;
      }
@@ -30589,13 +30605,36 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s_sgp.claimed) {
          if (!SDL_ClaimWindowForGPUDevice(s_sg.dev, win)) {
              fprintf(stderr, "  [SDLGPU] cannot present on the window (%s); frames go through guest RAM\n",
-@@ -65,22 +134,20 @@
+@@ -48,6 +126,9 @@
+             return 0;
+         }
+         s_sgp.claimed = 1;
++#ifdef __EMSCRIPTEN__
++        displayed = false;
++#endif
+         fprintf(stderr, "  [SDLGPU] presenting from the GPU\n");
+     }
+
+@@ -63,27 +144,36 @@
+     }
+     if (swap) {                                   /* NULL while minimised */
          SDL_LockMutex(s_sgp.lock);
++        PresentState current = { sw, sh, s_vs.crop, s_vs.widescreen, s_vs.aspect, s_vs.filter };
++#ifdef __EMSCRIPTEN__
++        /* The WebGPU swap handle is lazy. Cancel before recording a blit so
++         * the browser never acquires or clears the canvas on an idle tick. */
++        int changed = SDL_SetAtomicInt(&s_sgp.needs_blit, 0);
++        if (displayed && !changed && !memcmp(&last, &current, sizeof current)) {
++            SDL_UnlockMutex(s_sgp.lock);
++            SDL_CancelGPUCommandBuffer(cmd);
++            return 1;
++        }
++#endif
          if (s_sgp.tex) {
              SDL_GPUBlitInfo blit;
 -            float dw = (float)sw, dh = (float)sh;
 +            XboxPresentLayout layout = xbox_present_layout(s_sgp.w, s_sgp.h, sw, sh,
-+                s_vs.crop, s_vs.widescreen, s_vs.aspect);
++                current.crop, current.wide, current.aspect);
 +            SDL_SetAtomicInt(&s_sgp.aspect, (int)(layout.aspect * 1000000.0f + 0.5f));
              SDL_zero(blit);
 -            if (letterbox) {                      /* fit, keeping the frame's shape */
@@ -30622,25 +30661,37 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +            blit.destination.h = layout.dh;
              blit.load_op = SDL_GPU_LOADOP_CLEAR;  /* black outside the frame */
              blit.clear_color = (SDL_FColor){ 0.0f, 0.0f, 0.0f, 1.0f };
-             blit.filter = (s_vs.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-@@ -92,9 +159,14 @@
+-            blit.filter = (s_vs.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
++            blit.filter = (current.filter == SF_NEAREST) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+             SDL_BlitGPUTexture(cmd, &blit);
+         } else {                                  /* nothing flipped yet: black */
+             SDL_GPUColorTargetInfo t = {
+@@ -92,9 +182,22 @@
              };
              SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
          }
 +        /* Recording keeps raw texture handles until synchronous submission
 +         * replays the blit. Keep the snapshot alive across that handoff: the
 +         * flip thread may replace and release it as soon as we unlock. */
++#ifdef __EMSCRIPTEN__
++        displayed = SDL_SubmitGPUCommandBuffer(cmd);
++        last = current;
++#else
 +        SDL_SubmitGPUCommandBuffer(cmd);
++#endif
          SDL_UnlockMutex(s_sgp.lock);
 -    }
 -    SDL_SubmitGPUCommandBuffer(cmd);
 +    } else {
++#ifdef __EMSCRIPTEN__
++        displayed = false;
++#endif
 +        SDL_CancelGPUCommandBuffer(cmd);
 +    }
      return 1;
  }
 
-@@ -103,15 +175,22 @@
+@@ -103,15 +206,22 @@
   * renderer holds (the previous frame stays). */
  static void sg_present_flip(void)
  {
@@ -30666,7 +30717,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -127,44 +206,63 @@
+@@ -127,44 +237,66 @@
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
      }
 
@@ -30737,6 +30788,9 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +        SDL_UnlockMutex(s_sgp.lock);
 +        if (old) SDL_ReleaseGPUTexture(s_sg.dev, old);
 +    }
++#ifdef __EMSCRIPTEN__
++    SDL_SetAtomicInt(&s_sgp.needs_blit, 1);
++#endif
 +    return;
 +
 +failed:
@@ -30744,7 +30798,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
  }
 
  /* Once the renderer can draw: take over presenting (fb_thread claims the
-@@ -178,4 +276,4 @@
+@@ -178,4 +310,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);
@@ -32214,10 +32268,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..9b167cf
+index 0000000..533e641
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2111 @@
+@@ -0,0 +1,2112 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -33660,6 +33714,7 @@ index 0000000..9b167cf
 +            wgpuSurfaceGetCurrentTexture(s_surface, &st);
 +            r->swap_tex = st.texture;
 +            r->swap_view = st.texture ? wgpuTextureCreateView(st.texture, NULL) : NULL;
++            if (!r->swap_view) atomic_store(&r->failed, 1);
 +        }
 +        return r->swap_view;
 +    }
@@ -45935,10 +45990,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..ed291c0
+index 0000000..4e74040
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2595 @@
+@@ -0,0 +1,2604 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -48526,6 +48581,15 @@ index 0000000..ed291c0
 +            SDL_GPUFence *presented = SDL_SubmitGPUCommandBufferAndAcquireFence(c);
 +            CHECK(presented && SDL_WaitForGPUFences(dev, true, &presented, 1), "presented frame %d completes on the queue", frame);
 +            SDL_ReleaseGPUFence(dev, presented);
++        }
++        /* An idle presenter still waits for animation frames. Cancelling
++         * its empty command must preserve the last composited image. */
++        for (int frame = 0; frame < 4; frame++) {
++            SDL_GPUCommandBuffer *idle = SDL_AcquireGPUCommandBuffer(dev);
++            SDL_GPUTexture *swap = NULL;
++            CHECK(SDL_WaitAndAcquireGPUSwapchainTexture(idle, NULL, &swap, NULL, NULL) && swap,
++                  "idle presenter receives its swap handle");
++            CHECK(SDL_CancelGPUCommandBuffer(idle), "cancel empty presentation command");
 +        }
 +        printf("PRESENTED 00C030\n");   /* test_page.js reads the canvas now */
 +    }
