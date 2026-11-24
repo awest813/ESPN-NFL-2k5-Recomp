@@ -33,6 +33,9 @@ def main():
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
 #define NV_VERTEX_ATTRS 16
 typedef struct { uint32_t offset, type, size, stride; } VertexAttr;
 static struct { VertexAttr attr[16]; int inline_active; unsigned inline_count; void *inline_buf; uint16_t idx[64]; uint32_t idx_count; } s_gpu;
@@ -61,6 +64,29 @@ static uint32_t vp_input_mask(uint32_t start) { return test_input_mask; }
 /* CPU_FETCH */
 static uint32_t seed = 0x73519fab;
 static uint32_t rng(void) { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return seed; }
+
+static void check_index_ranges(void) {
+    for (uint32_t n=0; n<=4096; n++) {
+        uint32_t alignment=n%8, expected_min=UINT16_MAX, expected_max=0;
+        uint16_t storage[n+alignment+1];
+        uint16_t *indices=storage+alignment;
+        uint32_t count=n-n%3, out[count+2];
+        for (uint32_t i=0; i<n; i++) {
+            uint16_t index=(n&1) ? (uint16_t)rng() : (uint16_t)(UINT16_MAX-(rng()%23));
+            indices[i]=index;
+            if(index<expected_min)expected_min=index;
+            if(index>expected_max)expected_max=index;
+        }
+        uint32_t lo,hi;
+        sg_vp_index_range(indices,n,&lo,&hi);
+        assert(lo==expected_min && hi==expected_max);
+        out[0]=out[count+1]=0xfeedbeefu;
+        sg_vp_rebase_indices(out+1,indices,count,(uint16_t)lo);
+        assert(out[0]==0xfeedbeefu && out[count+1]==0xfeedbeefu);
+        for (uint32_t i=0; i<count; i++)assert(out[i+1]==(uint32_t)indices[i]-lo);
+    }
+}
+
 #ifdef __EMSCRIPTEN__
 /* Prior per-vertex packing loop, using the unchanged individual fetch path. */
 static void per_vertex_pack_range(uint32_t first,uint32_t count) {
@@ -103,6 +129,7 @@ static void benchmark_streams(void) {
 #endif
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
+    check_index_ranges();
     for (unsigned i = 0; i < sizeof memory; i++) memory[i] = rng();
     for (unsigned i = 0; i < sizeof inline_memory; i++) inline_memory[i] = rng();
     for (unsigned i = 0; i < 16; i++) for (unsigned k = 0; k < 4; k++) s_attr_inline[i][k] = (float)(i + k);
@@ -215,7 +242,7 @@ int main(int argc,char **argv) {
             }
         }
     }
-    puts("PASS 640000 CPU/GPU vertex fetches, sparse masks, generation wrap, all formats, constants, inline arrays, invalid ranges and guarded stream endpoints");
+    puts("PASS 640000 CPU/GPU vertex fetches and 4097 index ranges, including sparse inputs, all formats and guarded endpoints");
 #ifdef __EMSCRIPTEN__
     if(argc>1 && !strcmp(argv[1],"--benchmark"))benchmark_streams();
 #endif

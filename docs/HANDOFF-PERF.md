@@ -1241,6 +1241,54 @@ The audit recorded only audio-underrun failures. This game ran a different
 sequence of plays from the baseline. The local capture is under
 `build-web-tests/upload-stall/packers-49ers-atomic-fixed-claims`.
 
+### Preparing WebGPU triangle indices
+
+The vertex path reads eight unsigned 16-bit indices at a time when finding
+the bounds of a batch with at least 32 indices. Dense triangle lists subtract
+the lowest guest index in bulk and widen the result to the existing 32-bit
+index format. Tests cover every count through 4,096, including high unsigned
+indices, unaligned batches and incomplete triangles. The scalar Wasm,
+instrumented Wasm SIMD and native Linux fixtures produced identical outputs.
+
+In an alternating Wasm comparison at `-O2`, checking the bounds of roughly
+2.4 million indices in 255-index batches took median times of 0.29 ms before
+and 0.15 ms after. Dense triangle index remapping fell from 3.34 to 0.18 ms.
+The replay measures CPU index preparation with fixed input and excludes
+vertex attributes, texture verification, GPU submission and presentation.
+
+The candidate's retail Chrome run reached first down and finished its
+36-second sample with hardware WebGPU. The six complete windows averaged
+10.6–20.2 FPS, with a 289.37 ms longest flip. The renderer counted 272,235
+GPU vertex-program draws and zero software 3D draws. Audio missed another
+437,376 source frames during the sample. The final scanout shows the native
+Smith career-stat card over the field. The capture is under
+`build-web-tests/upload-stall/packers-49ers-dense-triangle-indices`.
+
+The next run used the unchanged runtime from the same Chrome profile.
+Five windows averaged 29.9–30.0 FPS and one fell to 20.8 FPS. Its longest
+flip was 1,951.49 ms, and the worklet lost zero additional frames during
+the opening-drive sample. The two runs played different sequences. The
+reference recheck is under
+`build-web-tests/upload-stall/packers-49ers-dense-triangle-reference-recheck`.
+
+The candidate recheck averaged 29.1–30.0 FPS across six complete windows,
+with a 113.65 ms longest flip and 4,352 additional missing audio frames.
+Both rechecks drew roughly 600,000 GPU vertex-program batches in the sampled
+windows. The rechecks varied in play sequence and audio, so only the fixed
+index replay isolates the optimization's effect. The candidate recheck is
+under `build-web-tests/upload-stall/packers-49ers-dense-triangle-candidate-recheck`.
+
+A private Wasm prototype also decoded groups of four packed
+11:11:10 normals in parallel. It matched 1,552 selected stream ranges byte for
+byte, including unaligned input, interleaved attribute strides and partial
+groups. Across the replay's 4-, 12-, 28- and 32-byte source strides, decoding
+one million normals in batches of 128 or 1,024 fell from 3.12–3.22 ms to
+0.56–0.69 ms. This decoder trial remains local.
+Linux UndefinedBehaviorSanitizer also flagged the existing scalar decoder's
+signed left shift on negative packed Z components. An unsigned extraction
+prototype with defined signed conversion passed 18,432 values across eight
+array strides and constant attributes, including unaligned source bytes.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

@@ -31524,9 +31524,56 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -377,15 +497,117 @@
+@@ -377,15 +497,164 @@
  }
 
++static void sg_vp_index_range(const uint16_t *indices, uint32_t count,
++                             uint32_t *minimum, uint32_t *maximum)
++{
++    uint32_t lo = UINT16_MAX, hi = 0, i = 0;
++#ifdef __wasm_simd128__
++    if (count >= 32) {
++        v128_t lower = wasm_i16x8_splat(-1), upper = wasm_i16x8_splat(0);
++        for (; i + 8 <= count; i += 8) {
++            v128_t packed = wasm_v128_load(indices + i);
++            lower = wasm_u16x8_min(lower, packed);
++            upper = wasm_u16x8_max(upper, packed);
++        }
++        lower = wasm_u16x8_min(lower, wasm_i16x8_shuffle(lower, lower, 4, 5, 6, 7, 0, 1, 2, 3));
++        lower = wasm_u16x8_min(lower, wasm_i16x8_shuffle(lower, lower, 2, 3, 0, 1, 6, 7, 4, 5));
++        lower = wasm_u16x8_min(lower, wasm_i16x8_shuffle(lower, lower, 1, 0, 3, 2, 5, 4, 7, 6));
++        upper = wasm_u16x8_max(upper, wasm_i16x8_shuffle(upper, upper, 4, 5, 6, 7, 0, 1, 2, 3));
++        upper = wasm_u16x8_max(upper, wasm_i16x8_shuffle(upper, upper, 2, 3, 0, 1, 6, 7, 4, 5));
++        upper = wasm_u16x8_max(upper, wasm_i16x8_shuffle(upper, upper, 1, 0, 3, 2, 5, 4, 7, 6));
++        lo = wasm_u16x8_extract_lane(lower, 0);
++        hi = wasm_u16x8_extract_lane(upper, 0);
++    }
++#endif
++    for (; i < count; i++) {
++        if (indices[i] < lo) lo = indices[i];
++        if (indices[i] > hi) hi = indices[i];
++    }
++    *minimum = lo;
++    *maximum = hi;
++}
++
++/* Preserve triangle order while widening the densely packed guest indices.
++ * The caller passes only complete triangles and their minimum guest index. */
++static void sg_vp_rebase_indices(uint32_t *out, const uint16_t *indices,
++                                uint32_t count, uint16_t first)
++{
++    uint32_t i = 0;
++#ifdef __wasm_simd128__
++    v128_t base = wasm_i16x8_splat((int16_t)first);
++    for (; i + 8 <= count; i += 8) {
++        v128_t rebased = wasm_i16x8_sub(wasm_v128_load(indices + i), base);
++        wasm_v128_store(out + i, wasm_u32x4_extend_low_u16x8(rebased));
++        wasm_v128_store(out + i + 4, wasm_u32x4_extend_high_u16x8(rebased));
++    }
++#endif
++    for (; i < count; i++) out[i] = (uint32_t)indices[i] - first;
++}
++
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
 - * CPU path instead: program still compiling or not translatable, points or
 - * lines, or out of memory. */
@@ -31645,7 +31692,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
          case NV_PRIM_TRIANGLE_STRIP:
-@@ -395,20 +617,52 @@
+@@ -395,20 +664,52 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
@@ -31706,24 +31753,33 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +675,15 @@
+@@ -421,7 +722,12 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
 -    s_sgvp.inmask = s_sg_vp[slot].inmask;
 +    s_sgvp.linear = 0;
-+    uint32_t max_index = 0, min_index = 65535;
-+    for (i = 0; i < n; i++) {
-+        if (src[i] > max_index) max_index = src[i];
-+        if (src[i] < min_index) min_index = src[i];
-+    }
++    uint32_t max_index, min_index;
++    sg_vp_index_range(src, n, &min_index, &max_index);
 +    sg_vp_prepare_inputs(max_index);
 +    uint32_t span = max_index - min_index + 1u;
 +    if (span <= n / 2u) sg_vp_pack_range(min_index, span);
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -466,39 +728,24 @@
+@@ -428,6 +734,11 @@
+                              s_sgvp.ix[ni++] = sg_vp_vertex(src[c_]); } while (0)
+     switch (s_gpu.prim) {
+         case NV_PRIM_TRIANGLES:
++            if (s_sgvp.linear) {
++                ni = n - n % 3;
++                sg_vp_rebase_indices(s_sgvp.ix, src, ni, min_index);
++                break;
++            }
+             for (i = 0; i + 2 < n; i += 3)
+                 VPT(i, i + 1, i + 2);
+             break;
+@@ -466,39 +777,24 @@
      {
          static SgVpUniforms u; /* 3 KB: not on the stack */
          SgXfShade shade;
@@ -31771,7 +31827,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          s_sg_stats.gpuvp++;
          return 1;
      }
-@@ -508,13 +755,13 @@
+@@ -508,13 +804,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -31787,7 +31843,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +779,43 @@
+@@ -532,31 +828,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -31837,7 +31893,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -564,20 +823,48 @@
+@@ -564,20 +872,48 @@
 
      {
          SgXfShade shade;
