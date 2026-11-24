@@ -30027,6 +30027,26 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
          xbox_ggl_leave();
      }
      return 0;
+@@ -3664,7 +3692,7 @@ static void bridge_NtReadFile(void)
+     /* What a read actually delivered. A decoder that rejects its input cannot
+      * say whether the bytes were wrong or the read was, and the two look
+      * identical from inside the title -- the first bytes settle it. */
+-    {
++    if (xbox_verbose()) {
+         const uint8_t *p = (const uint8_t *)XBOX_TO_NATIVE(buffer_va);
+         uint32_t got = (uint32_t)ios.Information;
+         /* The offset matters as much as the length. A title streaming a pack
+@@ -3672,9 +3700,7 @@ static void bridge_NtReadFile(void)
+          * whatever precedes the file it actually wants, and a read that stops
+          * early looks identical to one that never started -- until you can
+          * see where each one landed. */
+-        if (!xbox_verbose())
+-            ;
+-        else if (poff)
++        if (poff)
+             fprintf(stderr, "  [READ] @%lld want=%u got=%u st=0x%08X  %02X %02X %02X %02X  -> %08X h=%p\n",
+                     (long long)off.QuadPart, length, got,
+                     (uint32_t)ios.Status,
 diff --git a/src/kernel/irq_profile.h b/src/kernel/irq_profile.h
 new file mode 100644
 index 0000000..19351b0

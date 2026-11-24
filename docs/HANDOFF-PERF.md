@@ -1123,6 +1123,19 @@ faster to 1.1% slower despite more repeated bytes being covered. The
 single-span and no-span layouts also showed small slowdowns. The runtime
 retains the existing comparator.
 
+### File-read logging on the streaming path
+
+The shared `NtReadFile` bridge now flushes stderr only when it emits a
+verbose read log. A Wasm fixture ran 1,000 sequential and explicit-offset
+reads in each logging mode. Quiet reads made zero flush calls. Verbose
+reads retained their 1,000 log writes and flushes. The fixture checked
+status, byte counts and completion order for successful reads and EOF.
+
+The pre-cache renderer's opening-drive comparison ended at the game's
+disc-read error dialog before the first-down marker. A subsequent check
+found the original disc import absent from the test profile. That run
+provided no opening-drive timing comparison.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
