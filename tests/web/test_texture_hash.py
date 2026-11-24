@@ -33,7 +33,10 @@ typedef struct { unsigned width, height, color, pitch; } Texture;
 typedef struct { uint8_t *pixels; size_t bytes; int owned; uint32_t palette[256]; } TextureSnapshot;
 static Texture tx[4];
 static TextureSnapshot s_texture_snapshot[4];
-static struct { uint64_t texture_hash_bytes,texture_compare_bytes,texture_compare_ticks; } s_sg_stats;
+static struct {
+    uint64_t texture_hash_bytes,texture_compare_bytes,texture_compare_ticks;
+    uint64_t texture_match_ticks, texture_match_bytes[256];
+} s_sg_stats;
 static uint64_t sg_profile_now(void) { return 0; }
 static const Texture *sg_stage_texture(int st) { return &tx[st]; }
 static uint32_t levels[4] = {1,1,1,1};

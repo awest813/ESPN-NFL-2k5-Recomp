@@ -2913,13 +2913,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +195,38 @@
+@@ -185,9 +195,39 @@
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
 +    uint32_t frames;
 +    uint64_t texture_ticks, vertex_ticks, submit_ticks;
 +    uint64_t texture_decode_ticks, texture_compare_ticks;
++    uint64_t texture_match_ticks, texture_match_bytes[256];
 +    uint64_t staging_ticks, record_ticks, backend_submit_ticks, max_submit_ticks;
 +    uint64_t previous_texture_ticks, previous_vertex_ticks, previous_submit_ticks;
 +    uint64_t longest_flip_ticks, longest_flip_texture, longest_flip_vertex, longest_flip_submit;
@@ -2952,7 +2953,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -200,18 +239,98 @@
+@@ -200,18 +240,106 @@
 
  static void sg_stats_tick(void) {
      uint64_t now = SDL_GetTicks();
@@ -3012,6 +3013,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +        fprintf(stderr, " | vertices %.2f MiB/frame", (double)s_sg_stats.vertex_upload_bytes / (1048576.0 * s_sg_stats.frames));
 +        fprintf(stderr, " | texture-ms/frame verify %.2f decode %.2f",
 +                s_sg_stats.texture_compare_ticks * per_frame_ms, s_sg_stats.texture_decode_ticks * per_frame_ms);
++        if (s_sg_stats.texture_compare_bytes) {
++            double mib_per_frame = 1.0 / (1048576.0 * s_sg_stats.frames);
++            fprintf(stderr, " | texture match %.2f ms/frame, MiB/frame by format",
++                    s_sg_stats.texture_match_ticks * per_frame_ms);
++            for (unsigned fmt = 0; fmt < 256; fmt++)
++                if (s_sg_stats.texture_match_bytes[fmt])
++                    fprintf(stderr, " %02X=%.2f", fmt, s_sg_stats.texture_match_bytes[fmt] * mib_per_frame);
++        }
 +        fprintf(stderr, " | merged %.2f/frame", (double)s_sg_stats.merged_draws / s_sg_stats.frames);
 +        fprintf(stderr, " | VP fallback affine %u program %u pipeline %u",
 +                s_sg_stats.vp_affine, s_sg_stats.vp_program_pending, s_sg_stats.vp_pipeline_failed);
@@ -3052,7 +3061,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
  }
-@@ -246,7 +365,11 @@
+@@ -246,7 +374,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -3064,7 +3073,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +391,12 @@
+@@ -268,7 +400,12 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -3077,7 +3086,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +434,17 @@
+@@ -306,12 +443,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
@@ -4468,7 +4477,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +299,305 @@
+@@ -112,75 +299,312 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4603,7 +4612,14 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +            s_sg_stats.texture_compare_bytes+=snap->bytes;
 +            uint64_t started = sg_profile_now();
 +            unchanged=sg_texture_copy_equal(m,snap->pixels);
-+            if (started) s_sg_stats.texture_compare_ticks += sg_profile_now() - started;
++            if (started) {
++                uint64_t elapsed = sg_profile_now() - started;
++                s_sg_stats.texture_compare_ticks += elapsed;
++                if (unchanged) {
++                    s_sg_stats.texture_match_ticks += elapsed;
++                    if (tx->color < 256) s_sg_stats.texture_match_bytes[tx->color] += snap->bytes;
++                }
++            }
 +        }
 +        if(!unchanged) {
 +            uint64_t start=retained?m->copy_start:0;
@@ -4827,7 +4843,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +605,14 @@
+@@ -188,11 +612,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4844,7 +4860,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +628,36 @@
+@@ -208,23 +635,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4890,7 +4906,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,35 +678,42 @@
+@@ -245,35 +685,42 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4946,7 +4962,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -289,6 +729,6 @@
+@@ -289,6 +736,6 @@
  static void sg_texture_commit(SgTextureUse *use)
  {
      if (use->pending)

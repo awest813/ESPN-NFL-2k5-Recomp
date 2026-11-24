@@ -569,6 +569,19 @@ texture, vertex, and submission time for the longest interval in each window.
 Detailed timers run on the draw path and can affect the result. Both profiling
 modes are opt-in.
 
+The detailed texture report labels successful byte-for-byte checks as
+`texture match`, with time per frame and MiB per frame by hexadecimal NV2A
+texture format. The existing `verify` byte total counts the requested span
+of every comparison, including mismatches that may exit early. The matched
+bytes are the portion known to have required a complete comparison.
+
+A local Chrome run confirmed the new breakdown during the title screen
+(`0B`, paletted intro textures). Three attempts timed out before the main menu,
+including one with a 45-second warmup. The reference run on the same profile
+also timed out and reported an Emscripten `ASM_CONSTS` error. These captures
+provide no new stadium timing. They are under
+`build-web-tests/upload-stall/fixed-matchup-texture-formats*`.
+
 In two retail Chrome attract-mode runs on November 23, the window containing
 stadium entry and the next four windows showed the following results.
 
