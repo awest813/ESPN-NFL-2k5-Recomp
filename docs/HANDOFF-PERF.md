@@ -1058,6 +1058,37 @@ SF 20. Across all eight windows including kickoff it ranged from 11.7 to
 25.4 FPS with a worst flip of 257.49 ms. The audio counter rose by 159,232
 missing frames between kickoff and the last sample.
 
+### Reusing the WebGPU presentation binding
+
+The canvas blit retains one bind group for the current texture view, filter
+and source rectangle. Consecutive flips reuse the binding and the immutable
+crop uniform. The cache holds its own view reference until replacement.
+Offscreen blits and mipmap passes use the shared layout without displacing
+the presentation binding.
+
+A Wasm fixture with mock WebGPU calls exercised 121 successive cropped
+presentations using one bind group creation, one crop buffer creation and
+one crop upload. Previously each cropped presentation rebuilt all three.
+The fixture also checked crop and filter changes, view replacement, and
+allocation failure. Hardware Chrome passed the resize and crop/filter
+switches, with exact green pixels at both the canvas center and corner
+after the final crop and four idle presentation cancels.
+
+The local preview initially served a `304` for the cached launcher after
+switching to the older benchmark directory. Chrome then used the newer
+loader with the older Wasm. The preview server now ignores modification-time
+validators and sends `Cache-Control: no-store`. A retry fetched the reference
+loader at its own versioned URL and entered the match.
+
+Both hardware Chrome runs selected Green Bay at San Francisco. The cached
+build ended on the kickoff meter. Its seven complete windows after the
+kickoff transition averaged 25.2–30.1 FPS, with a 152.09 ms longest flip and
+53,120 additional missing audio frames. The preceding renderer reached the
+return and averaged 11.6–28.2 FPS across seven complete windows, with a
+2,809.22 ms longest flip and 294,144 additional missing audio frames. The
+different stages limit the comparison to the presentation call counts and
+pixel tests above. Both runs dipped below 30 FPS.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

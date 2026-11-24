@@ -32375,10 +32375,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..533e641
+index 0000000..9869c9b
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2113 @@
+@@ -0,0 +1,2151 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -32523,6 +32523,7 @@ index 0000000..533e641
 +static WGPUTextureView s_dummy_cube_view;
 +static WGPUSampler s_dummy_sampler, s_linear_sampler, s_nearest_sampler;
 +static WGPUShaderModule s_blit_module;
++static WGPUBindGroupLayout s_blit_layout;
 +
 +/* Material bindings recur across draws and frames. The cache owns these
 + * references; texture/sampler destruction invalidates entries that use it. */
@@ -33375,11 +33376,10 @@ index 0000000..533e641
 +        { .binding = 1, .visibility = WGPUShaderStage_Fragment, .sampler = { .type = WGPUSamplerBindingType_Filtering } },
 +        { .binding = 2, .visibility = WGPUShaderStage_Fragment, .buffer = { .type = WGPUBufferBindingType_Uniform } },
 +    };
-+    static WGPUBindGroupLayout bgl;
 +    static WGPUPipelineLayout pl;
-+    if (!bgl) {
-+        bgl = make_bgl(e, 3);
-+        WGPUPipelineLayoutDescriptor pd = { .bindGroupLayoutCount = 1, .bindGroupLayouts = &bgl };
++    if (!s_blit_layout) {
++        s_blit_layout = make_bgl(e, 3);
++        WGPUPipelineLayoutDescriptor pd = { .bindGroupLayoutCount = 1, .bindGroupLayouts = &s_blit_layout };
 +        pl = wgpuDeviceCreatePipelineLayout(s_dev, &pd);
 +    }
 +    WGPUColorTargetState ct = { .format = f, .writeMask = WGPUColorWriteMask_All };
@@ -33840,30 +33840,71 @@ index 0000000..533e641
 +    r->encoded = 0;
 +}
 +
++/* The presenter reuses the same view, filter and crop on successive flips.
++ * Keep one binding on the server thread, with an immutable crop buffer. */
++static WGPUBindGroup fullscreen_bind_group(WGPUTextureView src, WGPUSampler smp,
++                                           const float *source, bool present)
++{
++    static struct {
++        WGPUTextureView view;
++        WGPUSampler sampler;
++        float rect[4];
++        WGPUBindGroup group;
++    } last;
++    static WGPUBuffer whole_uv;
++    const float whole[4] = {0, 0, 1, 1};
++    const float *rect = source ? source : whole;
++    if (present && last.group && last.view == src && last.sampler == smp &&
++        memcmp(last.rect, rect, sizeof last.rect) == 0)
++        return last.group;
++
++    WGPUBufferDescriptor desc = { .usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst,
++                                  .size = sizeof whole };
++    WGPUBuffer uv = source ? NULL : whole_uv;
++    if (!uv) {
++        uv = wgpuDeviceCreateBuffer(s_dev, &desc);
++        if (!uv) return NULL;
++        wgpuQueueWriteBuffer(s_queue, uv, 0, rect, sizeof whole);
++        if (!source) whole_uv = uv;
++    }
++    WGPUBindGroupEntry entries[3] = {
++        { .binding = 0, .textureView = src },
++        { .binding = 1, .sampler = smp },
++        { .binding = 2, .buffer = uv, .size = sizeof whole },
++    };
++    WGPUBindGroupDescriptor binding = { .layout = s_blit_layout, .entryCount = 3, .entries = entries };
++    WGPUBindGroup group = wgpuDeviceCreateBindGroup(s_dev, &binding);
++    if (source) wgpuBufferRelease(uv);
++    if (present && group) {
++        /* Retain the view handle itself, so its ID cannot be reused while
++         * it is a cache key. The samplers are shared for the device lifetime. */
++        wgpuTextureViewAddRef(src);
++        if (last.group) {
++            wgpuBindGroupRelease(last.group);
++            wgpuTextureViewRelease(last.view);
++        }
++        last.view = src;
++        last.sampler = smp;
++        memcpy(last.rect, rect, sizeof last.rect);
++        last.group = group;
++    }
++    return group;
++}
++
 +static void fullscreen_pass(Replay *r, WGPUTextureView src, WGPUSampler smp, WGPUTextureView dst,
-+                            WGPUTextureFormat fmt, int clear, SDL_FColor cc, const float *viewport, const float *source)
++                            WGPUTextureFormat fmt, int clear, SDL_FColor cc, const float *viewport,
++                            const float *source, bool present)
 +{
 +    WGPURenderPassColorAttachment ca = { .view = dst, .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 +        .loadOp = clear ? WGPULoadOp_Clear : WGPULoadOp_Load, .storeOp = WGPUStoreOp_Store,
 +        .clearValue = { cc.r, cc.g, cc.b, cc.a } };
 +    WGPURenderPassDescriptor rp = { .colorAttachmentCount = 1, .colorAttachments = &ca };
 +    WGPURenderPipeline pipe = blit_pipeline(fmt);
-+    const float whole[4] = {0, 0, 1, 1};
-+    WGPUBufferDescriptor uv_desc = { .usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = sizeof whole };
-+    static WGPUBuffer whole_uv;
-+    if (!whole_uv) {
-+        whole_uv = wgpuDeviceCreateBuffer(s_dev, &uv_desc);
-+        wgpuQueueWriteBuffer(s_queue, whole_uv, 0, whole, sizeof whole);
++    WGPUBindGroup bg = fullscreen_bind_group(src, smp, source, present);
++    if (!bg) {
++        atomic_store(&r->failed, 1);
++        return;
 +    }
-+    WGPUBuffer uv = whole_uv;
-+    if (source) {
-+        uv = wgpuDeviceCreateBuffer(s_dev, &uv_desc);
-+        wgpuQueueWriteBuffer(s_queue, uv, 0, source, sizeof whole);
-+    }
-+    WGPUBindGroupEntry be[3] = { { .binding = 0, .textureView = src }, { .binding = 1, .sampler = smp },
-+                                { .binding = 2, .buffer = uv, .size = sizeof whole } };
-+    WGPUBindGroupDescriptor bd = { .layout = wgpuRenderPipelineGetBindGroupLayout(pipe, 0), .entryCount = 3, .entries = be };
-+    WGPUBindGroup bg = wgpuDeviceCreateBindGroup(s_dev, &bd);
 +    WGPURenderPassEncoder pe = wgpuCommandEncoderBeginRenderPass(r->enc, &rp);
 +    wgpuRenderPassEncoderSetPipeline(pe, pipe);
 +    wgpuRenderPassEncoderSetBindGroup(pe, 0, bg, 0, NULL);
@@ -33872,10 +33913,7 @@ index 0000000..533e641
 +    wgpuRenderPassEncoderDraw(pe, 3, 1, 0, 0);
 +    wgpuRenderPassEncoderEnd(pe);
 +    wgpuRenderPassEncoderRelease(pe);
-+    wgpuBindGroupRelease(bg);
-+    wgpuBindGroupLayoutRelease(bd.layout);
-+    if (source)
-+        wgpuBufferRelease(uv);
++    if (!present) wgpuBindGroupRelease(bg);
 +    r->encoded = 1;
 +}
 +
@@ -34227,7 +34265,7 @@ index 0000000..533e641
 +            for (uint32_t l = 1; l < t->levels; l++)
 +                fullscreen_pass(r, t->level_views[face * t->levels + l - 1], s_linear_sampler,
 +                                t->level_views[face * t->levels + l], t->format, 1,
-+                                (SDL_FColor){0, 0, 0, 0}, NULL, NULL);
++                                (SDL_FColor){0, 0, 0, 0}, NULL, NULL, false);
 +            break;
 +        }
 +        case OP_BLIT: {
@@ -34244,7 +34282,7 @@ index 0000000..533e641
 +            float vp[4] = { (float)dst->x, (float)dst->y, (float)dst->w, (float)dst->h };
 +            if (dv && s->view)
 +                fullscreen_pass(r, s->level_views[src->mip_level], o->blit.linear ? s_linear_sampler : s_nearest_sampler, dv, df,
-+                                o->blit.clear, o->blit.clear_color, vp, cropped ? uv : NULL);
++                                o->blit.clear, o->blit.clear_color, vp, cropped ? uv : NULL, d->swapchain);
 +            break;
 +        }
 +        case OP_BEGIN_PASS: {
@@ -46011,10 +46049,10 @@ index 0000000..277a811
 +</body></html>
 diff --git a/tests/sdlgpu_web/test_page.js b/tests/sdlgpu_web/test_page.js
 new file mode 100644
-index 0000000..be9bf1b
+index 0000000..b6c09b3
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_page.js
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,84 @@
 +// Runs test_web.c's build in headless Chromium with WebGPU (SwiftShader):
 +//   node test_page.js <build dir>
 +// Fails on any "FAIL:" line, on WebGPU validation errors the shim reports,
@@ -46064,9 +46102,11 @@ index 0000000..be9bf1b
 +      const k = document.createElement('canvas'); k.width = c.width; k.height = c.height;
 +      const g = k.getContext('2d'); g.drawImage(c, 0, 0);
 +      window.canvasReadback = { hidden: c.hidden, w: c.width, h: c.height,
-+               px: Array.from(g.getImageData(c.width >> 1, c.height >> 1, 1, 1).data) };
++               px: Array.from(g.getImageData(c.width >> 1, c.height >> 1, 1, 1).data),
++               corner: Array.from(g.getImageData(0, 0, 1, 1).data) };
 +      return L.some(l => /^FAILED/.test(l)) ||
-+        (!c.hidden && canvasReadback.px.every((value, i) => value === [0,192,48,255][i]));
++        (!c.hidden && [canvasReadback.px,canvasReadback.corner].every(px =>
++          px.every((value, i) => value === [0,192,48,255][i])));
 +    }, null, {timeout:15000, polling:'raf'}).catch(() => {});
 +    const canvas = await page.evaluate(() => window.canvasReadback);
 +    await page.waitForFunction(() => L.some((l) => /SDLGPU-WEB DONE/.test(l)), null, { timeout: 60000 }).catch(() => {});
@@ -46076,9 +46116,10 @@ index 0000000..be9bf1b
 +    const errors = log.filter((l) => /\[WebGPU\] (device error|device lost|no device|no adapter|download|fence)/.test(l));
 +    if (errors.length) { failures += errors.length; console.log('FAIL: WebGPU reported errors'); }
 +    else console.log('ok: no WebGPU validation errors');
-+    const ok = !canvas.hidden && canvas.px.every((value, i) => value === [0,192,48,255][i]);
++    const ok = !canvas.hidden && [canvas.px,canvas.corner].every(px =>
++      px.every((value, i) => value === [0,192,48,255][i]));
 +    if (!ok) failures++;
-+    console.log(`${ok ? 'ok' : 'FAIL'}: presented canvas ${canvas.w}x${canvas.h} visible=${!canvas.hidden} centre ${JSON.stringify(canvas.px)} (0,192,48,255 expected)`);
++    console.log(`${ok ? 'ok' : 'FAIL'}: presented canvas ${canvas.w}x${canvas.h} visible=${!canvas.hidden} centre ${JSON.stringify(canvas.px)} corner ${JSON.stringify(canvas.corner)} (0,192,48,255 expected)`);
 +    if (!log.some((l) => /SDLGPU-WEB DONE rc=0/.test(l))) failures++;
 +  } catch (error) {
 +    if (page && !page.isClosed()) {
@@ -46098,10 +46139,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..4e74040
+index 0000000..b5efe8d
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2604 @@
+@@ -0,0 +1,2608 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -48674,7 +48715,7 @@ index 0000000..4e74040
 +              "scaled source rectangle excludes the overscan border at both corners");
 +        wg_set_present_aspect(16.0f / 9.0f);
 +        CHECK(SDL_ClaimWindowForGPUDevice(dev, NULL), "claim the window (the GPU canvas)");
-+        for (int frame = 0; frame < 3; frame++) {
++        for (int frame = 0; frame < 4; frame++) {
 +            wg_set_present_aspect(frame == 1 ? 0 : 16.0f / 9.0f);
 +            SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
 +            SDL_GPUTexture *swap = NULL;
@@ -48685,6 +48726,10 @@ index 0000000..4e74040
 +            SDL_GPUBlitInfo b = { .source = crop.source,
 +                                  .destination = { .texture = swap, .x = 0, .y = 0, .w = sw, .h = sh },
 +                                  .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 }, .filter = SDL_GPU_FILTER_NEAREST };
++            if (frame == 2) {
++                b.source = (SDL_GPUBlitRegion){ .texture = frame_texture, .w = W, .h = H };
++                b.filter = SDL_GPU_FILTER_LINEAR;
++            }
 +            SDL_BlitGPUTexture(c, &b);
 +            SDL_GPUFence *presented = SDL_SubmitGPUCommandBufferAndAcquireFence(c);
 +            CHECK(presented && SDL_WaitForGPUFences(dev, true, &presented, 1), "presented frame %d completes on the queue", frame);
