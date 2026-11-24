@@ -3,7 +3,7 @@
 // node tools/audit-web-modes.cjs --profile build-web-render-lab --url http://127.0.0.1:8081/
 // {"action":"audio"} saves AudioContext timing and worklet counters in report.json.
 // wait-log watches fresh events after the last input; optional button/everyMs
-// retries one queued button until the expected transition appears.
+// retries a button or cycles through individual buttons until a transition appears.
 'use strict';
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
@@ -117,9 +117,12 @@ async function act(c){
       if(typeof c.pattern!=='string'||!c.pattern)throw Error('wait-log requires a pattern');
       const pattern=new RegExp(c.pattern),ms=Number(c.ms??30000);
       if(!Number.isFinite(ms)||ms<=0||ms>60000)throw Error('wait-log timeout must be between 0 and 60000 ms');
-      if(c.button!==undefined&&(typeof c.button!=='string'||!c.button||/\s/.test(c.button)))throw Error('wait-log retries one button');
+      const buttons=c.button===undefined?[]:[].concat(c.button);
+      const retry=buttons.length>0;
+      if(c.button!==undefined&&(!retry||buttons.some(button=>typeof button!=='string'||!button||/\s/.test(button))))
+        throw Error('wait-log requires individual retry buttons');
       const everyMs=Number(c.everyMs??2000);
-      if(c.button&&(!Number.isFinite(everyMs)||everyMs<700))throw Error('wait-log retry interval must be at least 700 ms');
+      if(retry&&(!Number.isFinite(everyMs)||everyMs<700))throw Error('wait-log retry interval must be at least 700 ms');
       const deadline=performance.now()+ms;
       let cursor=commandEventStart,nextPress=performance.now(),presses=0;
       for(;;){
@@ -137,9 +140,9 @@ async function act(c){
             writeReport();throw Error(event.line);
           }
         }
-        if(index>=0){result={matched:events[index].line,eventIndex:index,...(c.button?{presses}:{})};break;}
-        if(c.button&&performance.now()>=nextPress){
-          nextPress=performance.now()+everyMs;await press(c.button);presses++;continue;
+        if(index>=0){result={matched:events[index].line,eventIndex:index,...(retry?{presses}:{})};break;}
+        if(retry&&performance.now()>=nextPress){
+          nextPress=performance.now()+everyMs;await press(buttons[presses%buttons.length]);presses++;continue;
         }
         await page.waitForTimeout(Math.min(100,Math.max(1,deadline-performance.now())));
       }

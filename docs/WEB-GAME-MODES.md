@@ -83,11 +83,13 @@ releases for at least 250 ms. A polling stall expires the old press before
 returning another sample. Verify screenshots after transitions.
 wait-log accepts a regular expression and watches fresh events since the last
 play, input, begin or reload checkpoint. A timeout records an audit failure.
-For title startup, optional button/everyMs retries one button until the expected
-transition appears, bounded by ms (at most 60 seconds). For example:
+For title startup, optional `button` and `everyMs` retry an input until the
+expected transition appears, bounded by `ms` (at most 60 seconds). An array
+cycles through individual inputs. Use Start for the title and A for the VIP
+load confirmation.
 
 ```json
-{"action":"wait-log","pattern":"descriptor=00515660","button":"start","everyMs":3000,"ms":60000}
+{"action":"wait-log","pattern":"descriptor=00515660","button":["start","a"],"everyMs":3000,"ms":60000}
 ```
 
 This waits for the main menu; after Quick Game A, descriptor 0052728C identifies

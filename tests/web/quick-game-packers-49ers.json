@@ -1,7 +1,7 @@
 [
   {"id": "quick-game", "title": "Quick Game stadium entry and timed kickoff sampling", "action": "begin"},
   {"action": "play"},
-  {"button": "start", "everyMs": 2400, "pattern": "descriptor=00515660", "ms": 60000, "action": "wait-log"},
+  {"button": ["start", "a"], "everyMs": 2400, "pattern": "descriptor=00515660", "ms": 60000, "action": "wait-log"},
   {"ms": 30000, "pattern": "descriptor=0052728C", "action": "wait-log", "button": "a", "everyMs": 3500},
   {"ms": 2400, "action": "wait"},
   {"action": "matchup", "away": "10", "home": "25"},
