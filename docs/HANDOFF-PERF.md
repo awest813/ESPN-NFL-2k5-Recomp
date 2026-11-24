@@ -731,6 +731,39 @@ kickoff onward, eight windows averaged 24.8–30.1 FPS, with a longest flip
 of 239.94 ms and zero missing audio frames. The capture and opening-drive
 image are under `build-web-tests/upload-stall/quick-game-geometry-candidate`.
 
+### SIMD verification of geometry upload blocks
+
+WebGPU's geometry upload cache now uses the renderer's exact SIMD byte
+comparison for each 4 KiB block. The scalar fallback retains `memcmp`.
+Replay kept identical destination bytes and write counts, including short
+and offset writes, separated changes, and allocation failure.
+
+In an alternating Wasm replay of 120 submissions with 2,544,544-byte
+buffers, unchanged uploads took a median 10.38 ms with SIMD, down from
+25.70 ms. When half of the blocks changed per submission, the median went
+from 88.58 to 78.59 ms. With one in sixteen blocks changed, it went from
+27.03 to 12.84 ms. This replay measures CPU comparison and copying with a
+memory-backed queue write. It does not time browser submission or gameplay.
+
+The SIMD-enabled hardware Chrome pixel suite passed, including separated
+geometry changes and cycled index backing. The forced SwiftShader attempt
+crashed at browser startup on this Windows host.
+
+Both retail captures verified Packers at 49ers and ended at the kickoff
+meter at 5:00. The preceding build timed out on its first attempt and
+reached kickoff after an extra 35-second startup wait. Seven full windows
+after kickoff entry measured the following.
+
+| Build | Five-second FPS averages | Worst flip | Missing audio frames after kickoff |
+| --- | ---: | ---: | ---: |
+| SIMD comparison | 7.8–10.0 | 187.77 ms | 1,048,832 |
+| Preceding build | 6.3–12.1 | 230.36 ms | 1,038,080 |
+
+The minimum window average was higher with SIMD, while the highest was
+lower. Audio underruns failed both audits. This pair provides no consistent
+gameplay speedup. Captures are under
+`build-web-tests/upload-stall/{fixed-matchup-geometry-simd,fixed-matchup-geometry-simd-reference-retry}`.
+
 ### Controller polling during gameplay
 
 The port discovery call now updates SDL once and checks which slots are

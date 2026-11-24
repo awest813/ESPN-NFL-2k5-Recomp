@@ -15,10 +15,15 @@ def main():
     args=parser.parse_args()
     src = (args.runtime / "src/kernel/sdlgpu/sdlgpu_texture.inc.c").read_text(encoding="utf-8")
     memo = src[src.index("#define SG_HASH_MEMO"):src.index("/* One decode buffer")]
-    start=src.find("static int sg_texture_bytes_equal(")
     if "s_sg_hash_copy_cursor" in memo:memo="#define TEST_PERSISTENT_COPY 1\n"+memo
-    hashing=src[start if start>=0 else src.index("static uint64_t sg_hash("):src.index("/* Decode each DXT block")]
-    if start<0:hashing='static int sg_texture_bytes_equal(const uint8_t*a,const uint8_t*b,size_t n){return memcmp(a,b,n)==0;}\n'+hashing
+    end=src.index("/* Decode each DXT block")
+    if '#include "sg_bytes_equal.h"' in src:
+        start=src.index('#include "sg_bytes_equal.h"')
+        hashing=src[start:end]+"#define sg_texture_bytes_equal sg_bytes_equal\n"
+    else:
+        start=src.find("static int sg_texture_bytes_equal(")
+        hashing=src[start if start>=0 else src.index("static uint64_t sg_hash("):end]
+        if start<0:hashing='static int sg_texture_bytes_equal(const uint8_t*a,const uint8_t*b,size_t n){return memcmp(a,b,n)==0;}\n'+hashing
     if 'static int sg_texture_copy_equal(' in hashing:
         hashing = '#define TEST_PATTERN_COPY 1\n' + hashing
     if 'static uint64_t sg_texture_palette_key(' in hashing:
