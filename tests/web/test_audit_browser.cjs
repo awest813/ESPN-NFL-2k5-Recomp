@@ -154,6 +154,7 @@ const server=http.createServer((req,res)=>{
     const matches=waiting.output.split(/\r?\n/).filter(l=>l.startsWith('RESULT ')).map(l=>JSON.parse(l.slice(7))).filter(x=>x?.matched);
     assert.deepEqual(matches.map(x=>x.matched),['[MODE] phase=1','[MODE] phase=2']);
     assert.ok(waiting.report.failures.some(row=>row.kind==='audit-error'&&row.line.includes('timed out')));
+    assert.equal(waiting.report.cases[2].result,'fail');
     assert.equal(waiting.report.cases[2].requestedResult,undefined,'timeout must stop the remaining script');
     const closed=await runWaitAudit('interactive-close',[
       {action:'begin',id:'interactive'}, {action:'play'}, {action:'wait-log',pattern:'phase=1',ms:5000},

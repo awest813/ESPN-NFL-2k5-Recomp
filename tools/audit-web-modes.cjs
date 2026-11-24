@@ -8,7 +8,7 @@
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
 const {isAuditFailure,isGameStop,caseDiagnostics}=require('./web-audit-diagnostics.cjs');
-const {readQuickGameTeams,selectMatchup}=require('./web-audit-matchup.cjs');
+const {readQuickGameTeams,readQuickGameScrimmage,selectMatchup}=require('./web-audit-matchup.cjs');
 const {drainAuditRows}=require('./web-audit-audio.cjs');
 const {drainApuTraceRows}=require('./web-audit-apu-trace.cjs');
 const args=process.argv.slice(2);
@@ -116,7 +116,7 @@ async function act(c){
     case 'wait-log':{
       if(typeof c.pattern!=='string'||!c.pattern)throw Error('wait-log requires a pattern');
       const pattern=new RegExp(c.pattern),ms=Number(c.ms??30000);
-      if(!Number.isFinite(ms)||ms<=0||ms>60000)throw Error('wait-log timeout must be between 0 and 60000 ms');
+      if(!Number.isFinite(ms)||ms<=0||ms>120000)throw Error('wait-log timeout must be between 0 and 120000 ms');
       const buttons=c.button===undefined?[]:[].concat(c.button);
       const retry=buttons.length>0;
       if(c.button!==undefined&&(!retry||buttons.some(button=>typeof button!=='string'||!button||/\s/.test(button))))
@@ -129,7 +129,9 @@ async function act(c){
         await flush();
         if(performance.now()>=deadline){
           const message=`AUDIT wait-log timed out after ${ms} ms: ${c.pattern}`;
-          browserEvent(message,'audit-error');writeReport();throw Error(message);
+          browserEvent(message,'audit-error');
+          if(currentCase)Object.assign(currentCase,caseDiagnostics('fail',events.slice(currentCase.eventStart)));
+          writeReport();throw Error(message);
         }
         let index=-1;
         for(;cursor<events.length;cursor++){
@@ -174,6 +176,24 @@ async function act(c){
         if(currentCase)currentCase.matchup=result;
       }catch(error){
         browserEvent('AUDIT matchup: '+error.message,'audit-error');
+        if(currentCase)Object.assign(currentCase,caseDiagnostics('fail',events.slice(currentCase.eventStart)));
+        writeReport();throw error;
+      }
+      writeReport();
+      break;
+    }
+    case 'wait-scrimmage':{
+      await flush();
+      if(!captureMemory || report.guestMemoryOffset===undefined)
+        throw Error('wait-scrimmage requires --capture-memory and an initialized guest');
+      try{
+        const sample=await page.waitForFunction(readQuickGameScrimmage,
+          report.guestMemoryOffset,{polling:250,timeout:180000});
+        try{result=await sample.jsonValue();}finally{await sample.dispose();}
+        if(currentCase)currentCase.scrimmage=result;
+      }catch(error){
+        browserEvent('AUDIT wait-scrimmage: '+error.message,'audit-error');
+        await flush();
         if(currentCase)Object.assign(currentCase,caseDiagnostics('fail',events.slice(currentCase.eventStart)));
         writeReport();throw error;
       }

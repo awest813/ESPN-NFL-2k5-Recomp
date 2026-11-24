@@ -1089,6 +1089,23 @@ return and averaged 11.6–28.2 FPS across seven complete windows, with a
 different stages limit the comparison to the presentation call counts and
 pixel tests above. Both runs dipped below 30 FPS.
 
+### Measuring the CPU-vs-CPU opening drive
+
+The fixed Packers–49ers fixture centers the controller and lets the intro
+and kickoff run. It starts sampling once guest memory shows first-quarter
+scrimmage, a valid down and time elapsed on the quarter clock. The report
+records that timestamp so the window that straddles it can be excluded.
+
+With the presentation binding cache on Intel hardware Chrome, the fixture
+found first down at 295.17 seconds on the quarter clock. The next six
+complete windows averaged 27.0, 14.9, 17.7, 19.0, 19.2 and 13.3 FPS.
+The worst flip was 147.53 ms, with 24 intervals over 100 ms across those
+windows. The worklet missed 167,552 additional source frames over the
+36-second sampling period. The final screenshot shows the native Ulbrich
+player card between plays. The audit failed on audio underruns. The local
+report and capture are under
+`build-web-tests/upload-stall/packers-49ers-opening-drive-final`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

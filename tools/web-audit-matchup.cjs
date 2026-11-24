@@ -20,6 +20,23 @@ function readQuickGameTeams(offset){
   return {home:team(0),away:team(1)};
 }
 
+// Serialized by Playwright. Uses the match state fields from
+// src/nfl2k5_presentation.cpp and the browser clock used for frame reports.
+function readQuickGameScrimmage(offset){
+  const memory=new DataView(window.auditMemory.buffer);
+  const word=va=>memory.getUint32(offset+va,true);
+  const phase=word(0xE602B4),period=word(0xE602C4);
+  if(phase!==4 || period!==1)return false;
+  const clock=word(0xE6028C),downs=word(0xE602EC);
+  if(!clock || !downs || offset+clock+0x14>memory.byteLength ||
+    offset+downs+8>memory.byteLength)return false;
+  const down=word(downs+4);
+  const seconds=memory.getFloat32(offset+clock+0x10,true);
+  const quarter=memory.getFloat32(offset+0xE602B0,true);
+  if(down<1 || down>4 || !(seconds>0 && seconds<quarter && quarter<4000))return false;
+  return {at:performance.now(),period,down,seconds};
+}
+
 async function selectMatchup(requested,readTeams,press,wait){
   let result=await readTeams();
   for(const [side,other,direction] of [['away','home','left'],['home','away','right']]){
@@ -61,4 +78,4 @@ async function selectMatchup(requested,readTeams,press,wait){
   return result;
 }
 
-module.exports={readQuickGameTeams,selectMatchup};
+module.exports={readQuickGameTeams,readQuickGameScrimmage,selectMatchup};
