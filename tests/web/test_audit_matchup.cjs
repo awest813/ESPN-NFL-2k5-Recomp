@@ -33,9 +33,10 @@ async function run(){
   await assert.rejects(selectMatchup({home:'10'}, read, async () => {}, wait), /No team change/);
   let triggers = 0;
   const retry = await selectMatchup({home:'10'}, read, async button => {
-    if(button === 'rt' && ++triggers === 2) index.home = 1;
+    if(button === 'rt' && ++triggers === 4) index.home = 1;
   }, wait);
   assert.equal(retry.home.code, '10');
+  assert.equal(triggers, 4);
   index.home = 0;
   await assert.rejects(selectMatchup({home:'10'}, read, async button => {
     if(button === 'rt') index.away = 0;

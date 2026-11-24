@@ -937,9 +937,27 @@ cause to all missing audio samples or measure DSP CPU time.
 
 The optimized Wasm build linked and reached Team Select in Chrome. The
 controller script failed to advance the away team. A second run timed out
-at startup. Both reported audio underruns, so there is no stadium A/B timing
-for this change. The captures are under
+at startup. Both reported audio underruns. The initial captures are under
 `build-web-tests/upload-stall/{fixed-matchup-dsp-dual-load,dsp-dual-load-retail-smoke}`.
+
+The fixture now allows up to four trigger pulses per team change. The failed
+capture showed the correct controller side and a team card mid-animation.
+With the longer retry window, three sequential Chrome runs verified Green
+Bay at San Francisco and reached first-and-ten. Frame windows start after
+the kickoff transition's reporting window. Missing audio frames are the
+increase between the kickoff and final samples.
+
+| Build | Full windows | Five-second FPS averages | Worst flip | Missing audio frames |
+| --- | ---: | ---: | ---: | ---: |
+| Specialized DSP handler | 7 | 10.6–22.1 | 378.70 ms | 510,976 |
+| Preceding runtime | 7 | 15.3–23.7 | 172.38 ms | 190,464 |
+| Specialized DSP handler, repeat | 6 | 12.2–27.7 | 181.64 ms | 261,632 |
+
+The return ended at the SF 20, 16 and 22 respectively. The draws per frame
+and camera cuts differed. Both handler runs had a lower minimum average and
+more missing audio frames than the reference. The retail measurements do
+not show an end-to-end improvement. Captures are under
+`build-web-tests/upload-stall/{fixed-matchup-dsp-retimed,fixed-matchup-palette-retimed-reference,fixed-matchup-dsp-retimed-repeat}`.
 
 ### Comparing browser builds in an existing profile
 

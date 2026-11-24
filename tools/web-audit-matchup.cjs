@@ -37,8 +37,10 @@ async function selectMatchup(requested,readTeams,press,wait){
       if(seen.has(key)||seen.size>=100)throw Error('Could not reach '+side+' club '+requested[side]);
       seen.add(key);
       const before=result;
-      for(let attempt=0;attempt<2;attempt++){
-        if(attempt){await press(direction);await wait(700);}
+      // The roster changes before Team Select finishes animating. On a slow
+      // frame the next trigger can arrive while the menu still ignores input.
+      for(let attempt=0;attempt<4;attempt++){
+        if(attempt===1){await press(direction);await wait(700);}
         await press(trigger);
         for(let i=0;i<12;i++){
           result=await readTeams();
