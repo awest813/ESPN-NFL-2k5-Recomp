@@ -144,6 +144,14 @@ the requested comparison spans, including comparisons that exit early.
 already used that frame, plus the number and requested span of mismatches.
 Use flip timing alone to measure the frame-rate floor.
 
+Add `&env=RECOMP_SDLGPU_PACE_PROFILE=1` to measure guest-lock release,
+requested sleep, elapsed sleep and guest-lock reacquisition. `worstPaceMs`
+describes the pacing during the longest completed flip interval. `paceMsPerFlip`
+averages all intervals, including ones that did not wait. Requested and
+elapsed sleep describe the same wait. Subtract the requested time from the
+elapsed time to estimate overshoot. Combine the diagnostics with renderer
+timing to investigate long intervals.
+
 ## Regression checks
 
 - Full local web build passes.

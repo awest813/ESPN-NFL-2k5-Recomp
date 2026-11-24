@@ -26,6 +26,10 @@ def main():
     source = root / 'external/xboxrecomp/src/kernel/sdlgpu/sdlgpu_present.inc.c'
     present = source.read_text(encoding='utf-8')
     pacer = present[present.index('static void sg_frame_pace('):present.index('static struct {')]
+    core = source.with_name('sdlgpu.inc.c')
+    stats = core.read_text(encoding='utf-8')
+    begin = stats.index('typedef struct {\n    uint64_t release_ns')
+    pace_profile = stats[begin:stats.index('static struct {', begin)]
     sdl = root / 'dependencies/sdl3-wasm'
     library = sdl / 'lib/libSDL3.a'
     code = r'''
@@ -91,10 +95,10 @@ int main(void){
     }
     SDL_Quit();puts("WAITBENCH DONE");return 0;
 }
-'''.replace('/* PRODUCTION */', pacer)
+'''.replace('/* PRODUCTION */', pace_profile + pacer)
     generated = out / 'benchmark.c'
     generated.write_bytes(code.encode('utf-8'))
-    inputs = [source, library, generated, Path(__file__).resolve(),
+    inputs = [source, core, library, generated, Path(__file__).resolve(),
               root / 'tools/benchmark-web-waits.cjs', root / 'config/xboxrecomp-web.patch',
               root / 'config/sdl-web.patch']
     manifest = {

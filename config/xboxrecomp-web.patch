@@ -3032,7 +3032,28 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  } SgQueuedUpload;
 
  typedef struct {
-@@ -185,9 +195,41 @@
+@@ -180,14 +190,63 @@
+ static const char *const k_sg_fallback_names[SG_FB_COUNT] = {
+     "target", "blend", "texture", "resources", "shaders", "disabled",
+ };
+
++typedef struct {
++    uint64_t release_ns, requested_ns, sleep_ns, reacquire_ns;
++} SgPaceTiming;
++
++static SgPaceTiming s_sg_last_pace;
++
++static int sg_pace_profile_enabled(void) {
++#ifdef __EMSCRIPTEN__
++    static int enabled = -1;
++    if (enabled < 0) enabled = getenv("RECOMP_SDLGPU_PACE_PROFILE") != NULL;
++    return enabled;
++#else
++    return 0;
++#endif
++}
++
+ static struct {
      uint32_t gpu2d, gpu3d;          /* batches drawn on the GPU */
      uint32_t gpuvp;                 /* ...of which with the vertex program on the GPU */
      uint32_t sw2d, sw3d; /* batches left to software */
@@ -3045,6 +3066,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    uint64_t staging_ticks, record_ticks, backend_submit_ticks, max_submit_ticks;
 +    uint64_t previous_texture_ticks, previous_vertex_ticks, previous_submit_ticks;
 +    uint64_t longest_flip_ticks, longest_flip_texture, longest_flip_vertex, longest_flip_submit;
++    SgPaceTiming pace_total, longest_flip_pace;
 +    uint32_t intervals, over_30fps_budget, over_50ms, over_100ms;
 +    uint32_t flushes;
 +    uint64_t texture_hash_bytes, texture_compare_bytes;
@@ -3074,7 +3096,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 
  /* Record why a batch stays in software. Returns 0 so callers can
   * `return sg_fallback(...)`. */
-@@ -200,18 +242,110 @@
+@@ -200,18 +259,129 @@
 
  static void sg_stats_tick(void) {
      uint64_t now = SDL_GetTicks();
@@ -3082,7 +3104,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +    static int frame_profile = -1;
 +    if (frame_profile < 0) frame_profile = getenv("RECOMP_SDLGPU_FRAME_PROFILE") != NULL;
 +    uint64_t profile = sg_profile_now();
-+    uint64_t flip = profile ? profile : frame_profile ? SDL_GetPerformanceCounter() : 0;
++    int pace_profile = sg_pace_profile_enabled();
++    uint64_t flip = profile ? profile : (frame_profile || pace_profile) ? SDL_GetPerformanceCounter() : 0;
      int i;
 
 +    if (flip) {
@@ -3093,11 +3116,19 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +            s_sg_stats.over_30fps_budget += interval > frequency / 30;
 +            s_sg_stats.over_50ms += interval > frequency / 20;
 +            s_sg_stats.over_100ms += interval > frequency / 10;
++            /* Pacing happens after the preceding flip was recorded. */
++            if (pace_profile) {
++                s_sg_stats.pace_total.release_ns += s_sg_last_pace.release_ns;
++                s_sg_stats.pace_total.requested_ns += s_sg_last_pace.requested_ns;
++                s_sg_stats.pace_total.sleep_ns += s_sg_last_pace.sleep_ns;
++                s_sg_stats.pace_total.reacquire_ns += s_sg_last_pace.reacquire_ns;
++            }
 +            if (interval > s_sg_stats.longest_flip_ticks) {
 +                s_sg_stats.longest_flip_ticks = interval;
 +                s_sg_stats.longest_flip_texture = s_sg_stats.texture_ticks - s_sg_stats.previous_texture_ticks;
 +                s_sg_stats.longest_flip_vertex = s_sg_stats.vertex_ticks - s_sg_stats.previous_vertex_ticks;
 +                s_sg_stats.longest_flip_submit = s_sg_stats.submit_ticks - s_sg_stats.previous_submit_ticks;
++                if (pace_profile) s_sg_stats.longest_flip_pace = s_sg_last_pace;
 +            }
 +        }
 +        last_flip = flip; /* carry the interval across five-second report boundaries */
@@ -3163,6 +3194,16 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
 +        if (profile)
 +            fprintf(stderr," (texture %.2f vertex %.2f submit %.2f)", s_sg_stats.longest_flip_texture * ms,
 +                    s_sg_stats.longest_flip_vertex * ms, s_sg_stats.longest_flip_submit * ms);
++        if (pace_profile) {
++            const SgPaceTiming *worst = &s_sg_stats.longest_flip_pace, *total = &s_sg_stats.pace_total;
++            const double per_flip = 1e-6 / s_sg_stats.intervals;
++            fprintf(stderr, " | worst pace ms release %.2f requested %.2f sleep %.2f reacquire %.2f",
++                    worst->release_ns * 1e-6, worst->requested_ns * 1e-6,
++                    worst->sleep_ns * 1e-6, worst->reacquire_ns * 1e-6);
++            fprintf(stderr, " | pace ms/flip release %.2f requested %.2f sleep %.2f reacquire %.2f",
++                    total->release_ns * per_flip, total->requested_ns * per_flip,
++                    total->sleep_ns * per_flip, total->reacquire_ns * per_flip);
++        }
 +    }
 +#ifdef __EMSCRIPTEN__
 +    if (s_sg_stats.gpuvp && getenv("RECOMP_WEBGPU_UNIFORM_PROFILE"))
@@ -3186,7 +3227,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
      memset(&s_sg_stats, 0, sizeof s_sg_stats);
      s_sg_stats.since_ms = now;
  }
-@@ -246,7 +380,11 @@
+@@ -246,7 +416,11 @@
      if (!sg_wanted() || s_sg.tried || !xbox_FramebufferWindowHwnd())
          return 0;
      s_sg.tried = 1;
@@ -3198,7 +3239,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
                                 getenv("RECOMP_SDLGPU_DEBUG") != NULL,   // <- remove for release
                                 NULL);
      if (!s_sg.dev) {
-@@ -268,7 +406,12 @@
+@@ -268,7 +442,12 @@
  #include "sdlgpu_texture.inc.c"
  #include "sdlgpu_compile.inc.c"
  #include "sdlgpu_vp.inc.c"
@@ -3211,7 +3252,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu.inc.c b/src/kernel/sdlgpu/sdlgpu.inc.c
  #include "sdlgpu_pipeline.inc.c"
  #include "sdlgpu_draw.inc.c"
  #include "sdlgpu_present.inc.c"
-@@ -306,12 +449,17 @@
+@@ -306,12 +485,17 @@
      if (s_sg.dev) {
          sg_queue_flush();
          sg_present_register();
@@ -30757,7 +30798,7 @@ diff --git a/src/apu/apu_env.h b/src/apu/apu_env.h
 diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_present.inc.c
 --- a/src/kernel/sdlgpu/sdlgpu_present.inc.c
 +++ b/src/kernel/sdlgpu/sdlgpu_present.inc.c
-@@ -1,6 +1,35 @@
+@@ -1,6 +1,49 @@
 
  void xbox_FramebufferSetGpuPresenter(int (*fn)(void *window, int letterbox));
 -uint32_t xbox_FramebufferWindowVa(void);
@@ -30772,6 +30813,8 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +#ifdef __EMSCRIPTEN__
 +    static uint64_t deadline;
 +    static int previous_limit;
++    int profile = sg_pace_profile_enabled();
++    if (profile) s_sg_last_pace = (SgPaceTiming){0};
 +    int limit = xbox_VideoFpsLimit();
 +    if (limit != 30) { deadline = 0; previous_limit = limit; return; }
 +    uint64_t now = SDL_GetTicksNS();
@@ -30779,13 +30822,25 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 +    if (previous_limit != limit || !deadline) deadline = now;
 +    previous_limit = limit;
 +    if (now < deadline) {
++        uint64_t before_release = now;
 +        int depth = xbox_ggl_release_all();
 +        /* Releasing the guest lock can yield the worker. Only sleep for
 +         * the time still remaining when it can actually start the wait. */
 +        now = SDL_GetTicksNS();
-+        if (now < deadline) SDL_DelayNS(deadline - now);
++        if (profile) s_sg_last_pace.release_ns = now - before_release;
++        uint64_t before_reacquire = now;
++        if (now < deadline) {
++            uint64_t requested = deadline - now;
++            SDL_DelayNS(requested);
++            if (profile) {
++                before_reacquire = SDL_GetTicksNS();
++                s_sg_last_pace.requested_ns = requested;
++                s_sg_last_pace.sleep_ns = before_reacquire - now;
++            }
++        }
 +        xbox_ggl_reacquire(depth);
 +        now = SDL_GetTicksNS();
++        if (profile) s_sg_last_pace.reacquire_ns = now - before_reacquire;
 +    }
 +    if (now > deadline + period) deadline = now;
 +    deadline += period;
@@ -30794,7 +30849,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static struct {
      SDL_Mutex      *lock;             /* tex, w, h: replaced on the flip thread */
-@@ -9,7 +38,42 @@
+@@ -9,7 +52,42 @@
      int             registered;
      SDL_AtomicInt   failed;           /* the window could not be claimed */
      int             claimed;          /* fb_thread only */
@@ -30837,7 +30892,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
  static int sg_present_wanted(void)
  {
-@@ -33,6 +97,12 @@
+@@ -33,6 +111,12 @@
      SDL_GPUCommandBuffer *cmd;
      SDL_GPUTexture *swap = NULL;
      Uint32 sw = 0, sh = 0;
@@ -30850,7 +30905,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
 
      if (letterbox < 0) {                          /* shutdown */
          if (s_sgp.claimed)
-@@ -40,6 +110,14 @@
+@@ -40,6 +124,14 @@
          s_sgp.claimed = 0;
          return 1;
      }
@@ -30865,7 +30920,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s_sgp.claimed) {
          if (!SDL_ClaimWindowForGPUDevice(s_sg.dev, win)) {
              fprintf(stderr, "  [SDLGPU] cannot present on the window (%s); frames go through guest RAM\n",
-@@ -48,6 +126,9 @@
+@@ -48,6 +140,9 @@
              return 0;
          }
          s_sgp.claimed = 1;
@@ -30875,7 +30930,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
          fprintf(stderr, "  [SDLGPU] presenting from the GPU\n");
      }
 
-@@ -63,27 +144,36 @@
+@@ -63,27 +158,36 @@
      }
      if (swap) {                                   /* NULL while minimised */
          SDL_LockMutex(s_sgp.lock);
@@ -30926,7 +30981,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
              SDL_BlitGPUTexture(cmd, &blit);
          } else {                                  /* nothing flipped yet: black */
              SDL_GPUColorTargetInfo t = {
-@@ -92,9 +182,22 @@
+@@ -92,9 +196,22 @@
              };
              SDL_EndGPURenderPass(SDL_BeginGPURenderPass(cmd, &t, 1, NULL));
          }
@@ -30951,7 +31006,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      return 1;
  }
 
-@@ -103,15 +206,22 @@
+@@ -103,15 +220,22 @@
   * renderer holds (the previous frame stays). */
  static void sg_present_flip(void)
  {
@@ -30977,7 +31032,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
      if (!s)
          return;
      sg_queue_flush();                             /* its last draws land first */
-@@ -127,44 +237,66 @@
+@@ -127,44 +251,66 @@
          SDL_UnmapGPUTransferBuffer(s_sg.dev, s_sg.upload);
      }
 
@@ -31058,7 +31113,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_present.inc.c b/src/kernel/sdlgpu/sdlgpu_p
  }
 
  /* Once the renderer can draw: take over presenting (fb_thread claims the
-@@ -178,4 +310,4 @@
+@@ -178,4 +324,4 @@
          return;
      s_sgp.registered = 1;
      xbox_FramebufferSetGpuPresenter(sg_present_window);

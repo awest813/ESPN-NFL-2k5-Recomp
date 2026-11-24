@@ -1337,6 +1337,38 @@ sampled 3D draws used GPU vertex programs. The play sequences differed, so
 the fixed-input replay is the isolated performance comparison. The recheck
 is under `build-web-tests/upload-stall/packers-49ers-reused-strip-indices-recheck`.
 
+### Separating frame pacing from renderer stalls
+
+The opt-in pacing profile records elapsed guest-lock release, scheduled
+sleep, elapsed sleep and guest-lock reacquisition. The interval timing
+consumes the previous flip's pacing and retains it across window boundaries.
+The test injects lock delays and sleep overshoot and checks the resulting
+worst-interval and average records. Production timing policy is unchanged.
+
+In the retail Packers–49ers trace with pacing and per-draw renderer timers,
+six complete opening-drive windows averaged 27.7–30.1 FPS with no new
+missing audio frames. The worst interval took 72.55 ms. The pacer requested
+12.32 ms and spent 27.33 ms in sleep, plus 0.01 ms on each lock handoff.
+Texture, vertex and submission timings in that same interval were 18.92,
+6.76 and 15.63 ms. The average requested and elapsed waits were 6.31 and
+11.89 ms across all intervals, weighted by interval count.
+
+The same trace caught a 1,397.66 ms interval during stadium presentation
+with zero pacing time. Submission accounted for 1,072.23 ms in that
+interval, and the largest flush in its reporting window took 1,066.71 ms.
+The known stadium line pipeline was ready before this stall. Earlier audio
+underruns still failed the full audit. The capture is under
+`build-web-tests/upload-stall/packers-49ers-pace-phase-breakdown`.
+
+A second stadium capture enabled the WebGPU backend's slow-submission log.
+The window containing a 1,108.92 ms flip included a logged 1,019.08 ms
+submission, with 1,013.78 ms inside transfer replay. A separate 320.17 ms
+submission spent 286.08 ms writing uniforms. These are measured CPU-side
+calls into WebGPU and include any wait for the browser to accept earlier
+work. The shorter capture stopped during the pregame route and failed on
+audio underruns. It is under
+`build-web-tests/upload-stall/packers-49ers-stadium-submit-attribution`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

@@ -25,6 +25,9 @@ function frameWindows(rows) {
   const windows = [];
   const header = /\[SDLGPU\] 5s: frames (\d+) ([\d.]+) fps/;
   const intervals = /\| flip intervals (\d+) over-budget (\d+) over-50ms (\d+) over-100ms (\d+) worst ([\d.]+) ms/;
+  const paceFields = ([, release, requested, sleep, reacquire]) => ({
+    release: Number(release), requested: Number(requested), sleep: Number(sleep), reacquire: Number(reacquire),
+  });
   let transitions = [];
   for (const {at, line} of rows) {
     if (!line) continue;
@@ -37,11 +40,15 @@ function frameWindows(rows) {
     const renderer = /\| ms\/frame texture ([\d.]+) vertex ([\d.]+) submit ([\d.]+)/.exec(line);
     const texture = /\| hash ([\d.]+) MiB\/frame verify ([\d.]+) decode .*?\| texture-ms\/frame verify ([\d.]+) decode ([\d.]+)/.exec(line);
     const reuse = /\| texture reuse MiB\/frame same-frame match ([\d.]+) changed ([\d.]+) \((\d+) changes\)/.exec(line);
+    const worstPace = /\| worst pace ms release ([\d.]+) requested ([\d.]+) sleep ([\d.]+) reacquire ([\d.]+)/.exec(line);
+    const pace = /\| pace ms\/flip release ([\d.]+) requested ([\d.]+) sleep ([\d.]+) reacquire ([\d.]+)/.exec(line);
     windows.push({
       at, frames: Number(sample[1]), fps: Number(sample[2]),
       intervals: Number(counts[1]), overBudget: Number(counts[2]),
       over50ms: Number(counts[3]), over100ms: Number(counts[4]),
       worstMs: Number(counts[5]), transitions,
+      ...(worstPace && {worstPaceMs: paceFields(worstPace)}),
+      ...(pace && {paceMsPerFlip: paceFields(pace)}),
       ...(phases && {worstFrameMs: {
         texture: Number(phases[1]), vertex: Number(phases[2]), submit: Number(phases[3]),
       }}),

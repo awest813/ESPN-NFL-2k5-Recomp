@@ -32,12 +32,12 @@ static struct {int fps_limit;} s_vs={60};
 #define SG_MAX_TEXTURES 512
 typedef struct { uint64_t key; uint32_t w,h,layers,epoch_used; } SgCachedTexture;
 static SgCachedTexture s_sg_textures[SG_MAX_TEXTURES];
-static uint64_t clock_ns, waited, release_ns;
+static uint64_t clock_ns, waited, release_ns, sleep_extra_ns, reacquire_ns;
 static int releases, reacquires;
 static uint64_t SDL_GetTicksNS(void) { return clock_ns; }
-static void SDL_DelayNS(uint64_t n) { clock_ns+=n; waited+=n; }
+static void SDL_DelayNS(uint64_t n) { clock_ns+=n+sleep_extra_ns; waited+=n; }
 static int xbox_ggl_release_all(void) { releases++; clock_ns+=release_ns; return 3; }
-static void xbox_ggl_reacquire(int depth) { assert(depth==3); reacquires++; }
+static void xbox_ggl_reacquire(int depth) { assert(depth==3); reacquires++; clock_ns+=reacquire_ns; }
 /* PRODUCTION */
 static struct {void *dev;} s_sg;
 #define VP_CONSTS 192
@@ -45,6 +45,7 @@ static uint64_t SDL_GetTicks(void) {return clock_ns/1000000;}
 static uint64_t SDL_GetPerformanceCounter(void) {return clock_ns;}
 static uint64_t SDL_GetPerformanceFrequency(void) {return 1000000000;}
 /* FRAME_STATS */
+/* PACER */
 static unsigned s_sg_frame;
 static int camera_updates,queue_flushes;
 static void sg_queue_flush(void) {queue_flushes++;}
@@ -57,6 +58,7 @@ static void sg_probe_flip(void) {}
 /* FLIP */
 int main(void) {
     setenv("NFL2K5_FPS_LIMIT","30",1);
+    setenv("RECOMP_SDLGPU_PACE_PROFILE","1",1);
     assert(xbox_VideoFpsLimit()==30);
     assert(!xbox_WebSetFpsLimit(29) && xbox_VideoFpsLimit()==30);
     for (int i=0;i<512;i++) s_sg_textures[i]=(SgCachedTexture){1u+(uint64_t)i*2048u,64,64,1};
@@ -93,15 +95,24 @@ int main(void) {
         sg_frame_pace();
         assert(clock_ns-begin==(late?55000000u:33333333u));
         assert(waited-previous==(late?0u:15333333u));
+        assert(s_sg_last_pace.release_ns==release_ns);
+        assert(s_sg_last_pace.sleep_ns==(late?0u:15333333u));
         assert(releases==reacquires);
     }
     release_ns=0;
     puts("ok: lock handoff consumes the remaining wait and an expired deadline never sleeps");
     assert(xbox_WebSetFpsLimit(0)); previous=waited; sg_frame_pace();
     assert(waited==previous);
+    assert(!(s_sg_last_pace.release_ns|s_sg_last_pace.requested_ns|
+             s_sg_last_pace.sleep_ns|s_sg_last_pace.reacquire_ns));
     assert(xbox_WebSetFpsLimit(30)); sg_frame_pace();
     assert(waited==previous);
     puts("ok: uncapped mode and re-enabling the cap reset timing");
+    clock_ns+=10000000u; release_ns=8000000u; sleep_extra_ns=3000000u; reacquire_ns=6000000u;
+    sg_frame_pace();
+    assert(s_sg_last_pace.release_ns==8000000u && s_sg_last_pace.requested_ns==15333333u);
+    assert(s_sg_last_pace.sleep_ns==18333333u && s_sg_last_pace.reacquire_ns==6000000u);
+    release_ns=sleep_extra_ns=reacquire_ns=0;
     assert(xbox_WebSetFpsLimit(0));sg_frame_pace();assert(xbox_WebSetFpsLimit(30));
     sg_flip();
     for(unsigned i=0;i<120;i++) {uint64_t previous=clock_ns;clock_ns+=10000000u;sg_flip();assert(clock_ns-previous==33333333u);}
@@ -117,12 +128,18 @@ int main(void) {
     assert(s_sg_stats.over_50ms==1 && !s_sg_stats.over_100ms);
     clock_ns+=5000000000ull; sg_stats_tick();
     assert(!s_sg_stats.intervals && !s_sg_stats.longest_flip_ticks);
+    s_sg_last_pace=(SgPaceTiming){8000000u,15333333u,18333333u,6000000u};
     clock_ns+=120000000; s_sg_stats.submit_ticks=17000000; sg_stats_tick();
     assert(s_sg_stats.intervals==1 && s_sg_stats.over_100ms==1);
     assert(s_sg_stats.longest_flip_ticks==120000000 && s_sg_stats.longest_flip_submit==17000000);
+    s_sg_last_pace=(SgPaceTiming){0};
+    clock_ns+=33333333; sg_stats_tick();
+    assert(s_sg_stats.longest_flip_pace.reacquire_ns==6000000u);
+    assert(s_sg_stats.pace_total.sleep_ns==18333333u);
+    puts("ok: wake overshoot and guest lock phases follow the preceding flip across report boundaries");
     puts("ok: flip intervals retain the boundary frame and reset window phase totals");
 }
-'''.replace("/* PRODUCTION */", lookup + cap + pacer).replace("/* FLIP */",flip).replace("/* FRAME_STATS */",stats)
+'''.replace("/* PRODUCTION */", lookup + cap).replace("/* FLIP */",flip).replace("/* FRAME_STATS */",stats).replace("/* PACER */",pacer)
 (out / "test.c").write_text(source, encoding="utf-8")
 subprocess.run([shutil.which("emcc") or "emcc", str(out / "test.c"), "-O2", "-sENVIRONMENT=node", "-o", str(out / "test.js")],check=True)
 subprocess.run([shutil.which("node") or "node", str(out / "test.js")],check=True)
