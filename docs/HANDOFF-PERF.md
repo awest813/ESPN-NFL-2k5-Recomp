@@ -1106,6 +1106,23 @@ player card between plays. The audit failed on audio underruns. The local
 report and capture are under
 `build-web-tests/upload-stall/packers-49ers-opening-drive-final`.
 
+The detailed pass reached first down at 296.76 seconds and logged six
+complete opening-drive windows at 7.6–22.7 FPS. The longest flip took
+269.08 ms, including 214.75 ms in texture processing. In the 7.6 FPS
+window the renderer checked 120.27 MiB of guest texture data per frame
+and spent 59.27 ms per frame verifying it and 1.23 ms decoding new data.
+The worklet missed another 332,544 source frames during the sample. The
+detailed timers add draw-path overhead. The capture is under
+`build-web-tests/upload-stall/packers-49ers-verified-drive-phase-profile`.
+
+A private Wasm fixture tried reusing one expected 16-byte vector for up to
+four periodic spans per texture while still reading every guest byte. It
+detected a mutation at every byte position of each test layout. Across
+paired runs, the 64 KiB textures with three spans ranged from about 5.5%
+faster to 1.1% slower despite more repeated bytes being covered. The
+single-span and no-span layouts also showed small slowdowns. The runtime
+retains the existing comparator.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

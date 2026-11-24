@@ -26,6 +26,14 @@ assert.deepEqual(timed.frameWindows[0],{at:11,frames:150,fps:30,intervals:149,ov
 assert.deepEqual(timed.frameWindows[1].transitions,[]);
 assert.deepEqual(timed.frameWindows[1].worstFrameMs,{texture:1,vertex:2,submit:100});
 assert.equal(timed.result,'pass');
+const detailedTiming='  [SDLGPU] 5s: frames 38 7.6 fps | ms/frame texture 79.36 vertex 23.26 submit 22.67'
+  +' | hash 0.25 MiB/frame verify 120.27 decode 2.03 readback 0.00 gpu-copy 1.00'
+  +' | texture-ms/frame verify 59.27 decode 1.23 | flip intervals 38 over-budget 38 over-50ms 38 over-100ms 25'
+  +' worst 239.83 ms (texture 141.18 vertex 5.57 submit 81.57)';
+const [detailed]=caseDiagnostics('pass',[{at:5020,line:detailedTiming}]).frameWindows;
+assert.deepEqual(detailed.rendererMsPerFrame,{texture:79.36,vertex:23.26,submit:22.67});
+assert.deepEqual(detailed.texturePerFrame,{hashMiB:0.25,verifyMiB:120.27,verifyMs:59.27,decodeMs:1.23});
+assert.deepEqual(detailed.worstFrameMs,{texture:141.18,vertex:5.57,submit:81.57});
 
 for(const failure of [
   {line:'The game stopped: RuntimeError: unreachable',kind:'error'},

@@ -34,6 +34,8 @@ function frameWindows(rows) {
     const sample = header.exec(line);
     if (!counts || !sample) continue;
     const phases = /worst [\d.]+ ms \(texture ([\d.]+) vertex ([\d.]+) submit ([\d.]+)\)/.exec(line);
+    const renderer = /\| ms\/frame texture ([\d.]+) vertex ([\d.]+) submit ([\d.]+)/.exec(line);
+    const texture = /\| hash ([\d.]+) MiB\/frame verify ([\d.]+) decode .*?\| texture-ms\/frame verify ([\d.]+) decode ([\d.]+)/.exec(line);
     windows.push({
       at, frames: Number(sample[1]), fps: Number(sample[2]),
       intervals: Number(counts[1]), overBudget: Number(counts[2]),
@@ -41,6 +43,13 @@ function frameWindows(rows) {
       worstMs: Number(counts[5]), transitions,
       ...(phases && {worstFrameMs: {
         texture: Number(phases[1]), vertex: Number(phases[2]), submit: Number(phases[3]),
+      }}),
+      ...(renderer && {rendererMsPerFrame: {
+        texture: Number(renderer[1]), vertex: Number(renderer[2]), submit: Number(renderer[3]),
+      }}),
+      ...(texture && {texturePerFrame: {
+        hashMiB: Number(texture[1]), verifyMiB: Number(texture[2]),
+        verifyMs: Number(texture[3]), decodeMs: Number(texture[4]),
       }}),
     });
     transitions = [];

@@ -135,6 +135,12 @@ Check both the longest flip interval and the change in missing audio frames
 between the opening-drive audio samples. Removing `--skip-screenshots`
 captures Team Select and gameplay for visual checks.
 
+For an attribution run, add `&env=RECOMP_SDLGPU_PROFILE=1` to the URL.
+The detailed report adds `rendererMsPerFrame`, `texturePerFrame`, and
+`worstFrameMs` to each timed window. `texturePerFrame.verifyMiB` counts
+the requested comparison spans, including comparisons that exit early.
+Use flip timing alone to measure the frame-rate floor.
+
 ## Regression checks
 
 - Full local web build passes.
