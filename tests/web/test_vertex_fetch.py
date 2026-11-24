@@ -87,6 +87,42 @@ static void check_index_ranges(void) {
     }
 }
 
+static void check_triangle_strips(void) {
+    const uint16_t dense_first=65512;
+    static uint16_t indices[4096];
+    static uint32_t remapped[4096], triangles[2+4096*3];
+    s_sgvp.in=packed_input;
+    s_sgvp.input_stride=16;
+    s_sgvp.inmask=0;
+    s_sgvp.inputs.active_count=0;
+    for(unsigned dense=0;dense<2;dense++) {
+        s_sgvp.linear=dense;
+        s_sgvp.linear_first=dense_first;
+        unsigned slots[24], next_slot=0;
+        for(unsigned k=0;k<24;k++)slots[k]=UINT32_MAX;
+        for(unsigned i=0;i<4096;i++) {
+            unsigned k=rng()%24;
+            if(slots[k]==UINT32_MAX)slots[k]=next_slot++;
+            indices[i]=dense ? dense_first+k : k*2849u;
+            remapped[i]=dense ? k : slots[k];
+        }
+        for(unsigned n=0;n<=4096;n++) {
+            s_sgvp.gen++;
+            s_sgvp.nv=0;
+            unsigned expected=n>=3 ? 3*(n-2) : 0;
+            triangles[0]=triangles[1+expected]=0xfeedbeefu;
+            assert(sg_vp_expand_strip(triangles+1,indices,n)==expected);
+            for(unsigned i=0;i+2<n;i++) {
+                const uint32_t *triangle=triangles+1+3*i;
+                assert(triangle[0]==remapped[i+(i&1)]);
+                assert(triangle[1]==remapped[i+1-(i&1)]);
+                assert(triangle[2]==remapped[i+2]);
+            }
+            assert(triangles[0]==0xfeedbeefu && triangles[1+expected]==0xfeedbeefu);
+        }
+    }
+}
+
 static void expected_normal(uint32_t bits, int constant, float out[4]) {
     const unsigned x=bits%2048, y=(bits>>11)%2048, z=bits>>22;
     out[0]=(x<1024 ? (int)x : (int)x-2048)/1023.0f;
@@ -196,6 +232,7 @@ static void benchmark_streams(void) {
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     check_index_ranges();
+    check_triangle_strips();
     for (unsigned i = 0; i < sizeof memory; i++) memory[i] = rng();
     for (unsigned i = 0; i < sizeof inline_memory; i++) inline_memory[i] = rng();
     check_packed_normals();
@@ -309,7 +346,7 @@ int main(int argc,char **argv) {
             }
         }
     }
-    puts("PASS CPU/GPU vertex fetches, 4097 index ranges and packed normals with signed endpoints and guarded strides");
+    puts("PASS CPU/GPU vertex fetches, packed normals, index ranges and dense/sparse triangle-strip order");
 #ifdef __EMSCRIPTEN__
     if(argc>1 && !strcmp(argv[1],"--benchmark"))benchmark_streams();
 #endif

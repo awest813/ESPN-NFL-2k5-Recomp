@@ -31596,7 +31596,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      s_sgvp.map_gen[index] = s_sgvp.gen;
      s_sgvp.map[index] = k;
-@@ -377,15 +497,164 @@
+@@ -377,15 +497,192 @@
  }
 
 +static void sg_vp_index_range(const uint16_t *indices, uint32_t count,
@@ -31644,6 +31644,34 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 +    }
 +#endif
 +    for (; i < count; i++) out[i] = (uint32_t)indices[i] - first;
++}
++
++/* Adjacent triangles share two indices. Carry their remapped values forward
++ * and emit the even and odd winding together. */
++static uint32_t sg_vp_expand_strip(uint32_t *out, const uint16_t *indices, uint32_t count)
++{
++    if (count < 3) return 0;
++    uint32_t a = sg_vp_vertex(indices[0]);
++    uint32_t b = sg_vp_vertex(indices[1]);
++    uint32_t i = 2, written = 0;
++    for (; i + 1 < count; i += 2, written += 6) {
++        uint32_t c = sg_vp_vertex(indices[i]);
++        uint32_t d = sg_vp_vertex(indices[i + 1]);
++        out[written] = a;
++        out[written + 1] = b;
++        out[written + 2] = c;
++        out[written + 3] = c;
++        out[written + 4] = b;
++        out[written + 5] = d;
++        a = c;
++        b = d;
++    }
++    if (i < count) {
++        out[written++] = a;
++        out[written++] = b;
++        out[written++] = sg_vp_vertex(indices[i]);
++    }
++    return written;
 +}
 +
  /* Draw the batch with its vertex program on the GPU. Returns 0 to use the
@@ -31764,7 +31792,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
          case NV_PRIM_TRIANGLE_STRIP:
-@@ -395,20 +664,52 @@
+@@ -395,20 +692,52 @@
          case NV_PRIM_QUAD_STRIP:
              break;
          default:
@@ -31825,7 +31853,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      }
      if (3 * n > s_sgvp.ix_cap) {
          void *g = realloc(s_sgvp.ix, (size_t) 3 * n * sizeof *s_sgvp.ix);
-@@ -421,7 +722,12 @@
+@@ -421,7 +750,12 @@
          s_sgvp.gen = 1;
      }
      s_sgvp.nv = 0;
@@ -31839,7 +31867,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
 
  #define VPT(a_, b_, c_) do { s_sgvp.ix[ni++] = sg_vp_vertex(src[a_]); \
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[b_]); \
-@@ -428,6 +734,11 @@
+@@ -428,16 +762,16 @@
                               s_sgvp.ix[ni++] = sg_vp_vertex(src[c_]); } while (0)
      switch (s_gpu.prim) {
          case NV_PRIM_TRIANGLES:
@@ -31851,7 +31879,18 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
              for (i = 0; i + 2 < n; i += 3)
                  VPT(i, i + 1, i + 2);
              break;
-@@ -466,39 +777,24 @@
+         case NV_PRIM_TRIANGLE_STRIP:
+-            for (i = 0; i + 2 < n; i++) {
+-                if (i & 1)
+-                    VPT(i + 1, i, i + 2);
+-                else
+-                    VPT(i, i + 1, i + 2);
+-            }
++            ni = sg_vp_expand_strip(s_sgvp.ix, src, n);
+             break;
+         case NV_PRIM_TRIANGLE_FAN:
+         case NV_PRIM_POLYGON:
+@@ -466,39 +800,24 @@
      {
          static SgVpUniforms u; /* 3 KB: not on the stack */
          SgXfShade shade;
@@ -31899,7 +31938,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          s_sg_stats.gpuvp++;
          return 1;
      }
-@@ -508,13 +804,13 @@
+@@ -508,13 +827,13 @@
  /* gpu_draw_batch(0). Returns 0 to leave the batch to the software path. */
  static int sg_draw_xf(void) {
      static SgXfList list;
@@ -31915,7 +31954,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
          return 0;
      sg_vp_selfcheck();
      /* RECOMP_SDLGPU_SKIPCUBE=1: don't draw batches whose texture stage 1 is
-@@ -532,31 +828,43 @@
+@@ -532,31 +851,43 @@
      s = sg_surface_current();
      if (!s)
          return sg_fallback(SG_FB_TARGET, 1);
@@ -31965,7 +32004,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_xf.inc.c b/src/kernel/sdlgpu/sdlgpu_xf.inc
      if (s_probe.hit)
          sg_probe_print();
      if (!list.count)
-@@ -564,20 +872,48 @@
+@@ -564,20 +895,48 @@
 
      {
          SgXfShade shade;

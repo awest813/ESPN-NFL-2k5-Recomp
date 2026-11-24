@@ -1309,11 +1309,33 @@ failed the full audit. The renderer processed 610,103 GPU vertex-program
 draws in the sampled windows with zero software 3D draws. The capture is
 under `build-web-tests/upload-stall/packers-49ers-packed-normal-simd`.
 
-A separate dense-strip prototype expanded two adjacent triangles at a time
-with the original winding and index order. It matched all 4,097 tested
-strip lengths. Replaying 2.4 million indices in 395-index batches took a
-median 11.34 ms in the original loop and 1.05 ms in the prototype. This
-prototype remains local.
+### Reusing remapped triangle-strip indices
+
+The vertex path now carries the two shared indices forward when expanding a
+strip into triangles. It remaps each source index once and preserves the
+original winding, order and first-encounter vertex assignment. Scalar Wasm,
+instrumented SIMD Wasm and native Linux tests check every strip length from
+zero through 4,096 in both dense and sparse modes, including repeated indices.
+
+An alternating Wasm replay processed about 2.4 million indices in 395-index
+batches. Median preparation dropped from 12.81 to 6.03 ms in the sparse case
+and from 35.52 to 8.99 ms in the dense case. The replay used the integrated
+expansion and checked identical indices. It measures the CPU step with
+fixed input.
+
+The first retail run reached first down and completed its 36-second sample.
+The six complete windows averaged 15.2–21.5 FPS, with a 271.82 ms longest
+flip and 334,208 additional missing audio frames. All 342,281 sampled 3D
+draws used GPU vertex programs. The final scanout shows players and the
+referee during a play. The capture is under
+`build-web-tests/upload-stall/packers-49ers-reused-strip-indices`.
+
+The recheck on the same Chrome profile averaged 29.7–30.1 FPS across six
+complete opening-drive windows. Its longest flip was 83.24 ms, with zero
+intervals over 100 ms and 128 additional missing audio frames. All 563,945
+sampled 3D draws used GPU vertex programs. The play sequences differed, so
+the fixed-input replay is the isolated performance comparison. The recheck
+is under `build-web-tests/upload-stall/packers-49ers-reused-strip-indices-recheck`.
 
 ## Historical measurements
 
