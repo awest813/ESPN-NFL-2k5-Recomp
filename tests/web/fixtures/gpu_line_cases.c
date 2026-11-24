@@ -1,6 +1,9 @@
 #include <math.h>
 #include <float.h>
 #include <stdint.h>
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>

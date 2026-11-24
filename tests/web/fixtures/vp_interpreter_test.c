@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
 #define VP_CONSTS 192
 #define VP_PROG_LEN 136
 typedef unsigned DWORD;
