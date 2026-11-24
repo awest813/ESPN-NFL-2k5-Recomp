@@ -1208,6 +1208,13 @@ In a separate run, 750,000 byte writes took 2.64 ms directly and 9.41 ms
 with both page-version updates. Those measurements motivate limiting
 tracking to texture pages while preserving coverage for every writer.
 
+A second fixture filtered tracked stores to one fixed address window. With
+one in 32 of 750,000 writes in that window, direct writes took 2.71 ms,
+tracking every write took 10.13 ms, and the filter took 4.18 ms. With every
+write in the window, the filter took 11.53 ms. The test controls the share of
+writes in the window. Retail coverage still needs to include typed stores,
+stack pushes, string operations, atomics and runtime writers.
+
 xemu's Vulkan renderer checks dirty physical pages for both textures and
 palettes. Its CPU memory implementation marks writes and its surface backend
 marks downloaded render targets. This recomp needs coverage for translated
@@ -1225,6 +1232,14 @@ checked the mapping endpoints, heap ceiling and zeroing on reuse.
 In a paired Wasm fixture, 98,304 boundary checks agreed across both versions.
 Median time for 1.2 million reads rose from 6.22 to 7.33 ms when looking up
 RAM and the contiguous window, and from 13.32 to 13.51 ms across six claims.
+
+The patched runtime reached first down with 298.78 seconds left on the
+quarter clock and completed a 36-second sample with the 30 FPS lock and only
+flip timing enabled. Six complete windows averaged 18.4–27.7 FPS, with a
+242.85 ms longest flip. The worklet missed another 22,528 source frames.
+The audit recorded only audio-underrun failures. This game ran a different
+sequence of plays from the baseline. The local capture is under
+`build-web-tests/upload-stall/packers-49ers-atomic-fixed-claims`.
 
 ## Historical measurements
 
