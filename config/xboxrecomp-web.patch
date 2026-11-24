@@ -32375,10 +32375,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..533e641
+index 0000000..38c1a11
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2113 @@
+@@ -0,0 +1,2110 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -32447,7 +32447,7 @@ index 0000000..533e641
 +    OP_UPLOAD_BUFFER, OP_UPLOAD_TEXTURE, OP_DOWNLOAD_TEXTURE, OP_COPY_TEXTURE,
 +    OP_MIPMAPS, OP_BLIT, OP_BEGIN_PASS, OP_END_PASS, OP_VIEWPORT, OP_SCISSOR,
 +    OP_BLEND_CONSTANT, OP_STENCIL_REF, OP_PIPELINE, OP_VERTEX_BUFFER,
-+    OP_INDEX_BUFFER, OP_SAMPLERS, OP_UNIFORM, OP_DRAW, OP_DRAW_INDEXED,
++    OP_INDEX_BUFFER, OP_SAMPLERS, OP_DRAW, OP_DRAW_INDEXED,
 +} OpKind;
 +
 +typedef struct {
@@ -32473,8 +32473,8 @@ index 0000000..533e641
 +            SDL_GPUSampler *smp[WG_MAX_SAMPLERS];
 +            uint32_t texture_mask, sampler_mask;
 +        } samplers;
-+        struct { int fragment; uint32_t off; } uniform;
-+        struct { uint32_t count, instances, first, first_instance; int32_t vertex_offset; } draw;
++        struct { uint32_t count, instances, first, first_instance; int32_t vertex_offset;
++                 uint32_t uniform_offset[2]; } draw;
 +    };
 +} Op;
 +
@@ -32483,6 +32483,7 @@ index 0000000..533e641
 +    uint8_t *uniforms; uint32_t ubytes, ucap;   /* pushed uniform data, 256-aligned */
 +    struct { uint32_t offset, size; int valid; } last_uniform[2];
 +    WgUniformCache uniform_cache;
++    uint32_t pass_uniform_offset[2];
 +    uint64_t uniform_pushed;
 +    uint64_t uniform_uncached_bytes;
 +    uint32_t uniform_last_hits, uniform_cache_hits;
@@ -33611,6 +33612,9 @@ index 0000000..533e641
 +    Op *o = push(c, OP_BEGIN_PASS);
 +    if (!o) return NULL;
 +    memset(c->bound_samplers, 0, sizeof c->bound_samplers);
++    /* A pass starts with both stages bound to offset zero. Pushes before
++     * this pass do not change the offsets used by its draws. */
++    c->pass_uniform_offset[0] = c->pass_uniform_offset[1] = 0;
 +    if (n) {
 +        WgTextureStorage *color = texture_for_write(ct[0].texture, ct[0].cycle && ct[0].load_op != SDL_GPU_LOADOP_LOAD);
 +        if (!color) { cmd_fail(c, "color target cycling failed"); return NULL; }
@@ -33717,8 +33721,7 @@ index 0000000..533e641
 +    c->uniform_pushed += len;
 +    if (c->last_uniform[fragment].valid && c->last_uniform[fragment].size == len
 +        && wg_uniform_bytes_equal(c->uniforms + c->last_uniform[fragment].offset, data, len)) {
-+        Op *o = push(c, OP_UNIFORM);
-+        if (o) o->uniform = (typeof(o->uniform)){ fragment, c->last_uniform[fragment].offset };
++        c->pass_uniform_offset[fragment] = c->last_uniform[fragment].offset;
 +        c->uniform_last_hits++;
 +        return;
 +    }
@@ -33734,8 +33737,7 @@ index 0000000..533e641
 +            c->last_uniform[fragment].offset = found;
 +            c->last_uniform[fragment].size = len;
 +            c->last_uniform[fragment].valid = 1;
-+            Op *o = push(c, OP_UNIFORM);
-+            if (o) o->uniform = (typeof(o->uniform)){ fragment, found };
++            c->pass_uniform_offset[fragment] = found;
 +            c->uniform_cache_hits++;
 +            return;
 +        }
@@ -33762,8 +33764,7 @@ index 0000000..533e641
 +    c->last_uniform[fragment].size = len;
 +    c->last_uniform[fragment].valid = 1;
 +    if (cacheable) wg_uniform_insert(&c->uniform_cache, key, off, tag);
-+    Op *o = push(c, OP_UNIFORM);
-+    if (o) o->uniform = (typeof(o->uniform)){ fragment, off };
++    c->pass_uniform_offset[fragment] = off;
 +}
 +void WG_PushGPUVertexUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 0, d, len); }
 +void WG_PushGPUFragmentUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 1, d, len); }
@@ -33772,7 +33773,8 @@ index 0000000..533e641
 +    SDL_GPUCommandBuffer *c = CMD(p);
 +    Op *o = push(c, OP_DRAW);
 +    if (o) {
-+        o->draw = (typeof(o->draw)){ n, inst, first_v, first_i, 0 };
++        o->draw = (typeof(o->draw)){ n, inst, first_v, first_i, 0,
++            { c->pass_uniform_offset[0], c->pass_uniform_offset[1] } };
 +        c->has_draw = 1;
 +    }
 +}
@@ -33781,7 +33783,8 @@ index 0000000..533e641
 +    SDL_GPUCommandBuffer *c = CMD(p);
 +    Op *o = push(c, OP_DRAW_INDEXED);
 +    if (o) {
-+        o->draw = (typeof(o->draw)){ n, inst, first_idx, first_i, voff };
++        o->draw = (typeof(o->draw)){ n, inst, first_idx, first_i, voff,
++            { c->pass_uniform_offset[0], c->pass_uniform_offset[1] } };
 +        c->has_draw = 1;
 +    }
 +}
@@ -33919,7 +33922,7 @@ index 0000000..533e641
 +    SDL_GPUSampler *smp[WG_MAX_SAMPLERS] = {0};
 +    uint32_t vs_off = 0, fs_off = 0;
 +    int samplers_dirty = 1;
-+    int vs_dirty = 1, fs_dirty = 1;
++    int first_draw = 1;
 +    if (c->has_draw) wgpuRenderPassEncoderSetBindGroup(pe, 0, s_empty_group, 0, NULL);
 +
 +    for ((*ip)++; *ip < c->n && c->ops[*ip].kind != OP_END_PASS; (*ip)++) {
@@ -33960,35 +33963,29 @@ index 0000000..533e641
 +            }
 +            samplers_dirty = 1;
 +            break;
-+        case OP_UNIFORM:
-+            if (o->uniform.fragment) {
-+                fs_dirty |= fs_off != o->uniform.off;
-+                fs_off = o->uniform.off;
-+            } else {
-+                vs_dirty |= vs_off != o->uniform.off;
-+                vs_off = o->uniform.off;
-+            }
-+            break;
 +        case OP_DRAW:
-+        case OP_DRAW_INDEXED:
++        case OP_DRAW_INDEXED: {
++            uint32_t vs = o->draw.uniform_offset[0], fs = o->draw.uniform_offset[1];
 +            if (samplers_dirty) {
 +                wgpuRenderPassEncoderSetBindGroup(pe, 2, material_group(tex, smp), 0, NULL);
 +                samplers_dirty = 0;
 +            }
-+            if (vs_dirty) {
-+                wgpuRenderPassEncoderSetBindGroup(pe, 1, s_draw_uniforms.vs_group, 1, &vs_off);
-+                vs_dirty = 0;
++            if (first_draw || vs != vs_off) {
++                wgpuRenderPassEncoderSetBindGroup(pe, 1, s_draw_uniforms.vs_group, 1, &vs);
++                vs_off = vs;
 +            }
-+            if (fs_dirty) {
-+                wgpuRenderPassEncoderSetBindGroup(pe, 3, s_draw_uniforms.fs_group, 1, &fs_off);
-+                fs_dirty = 0;
++            if (first_draw || fs != fs_off) {
++                wgpuRenderPassEncoderSetBindGroup(pe, 3, s_draw_uniforms.fs_group, 1, &fs);
++                fs_off = fs;
 +            }
++            first_draw = 0;
 +            if (o->kind == OP_DRAW)
 +                wgpuRenderPassEncoderDraw(pe, o->draw.count, o->draw.instances, o->draw.first, o->draw.first_instance);
 +            else
 +                wgpuRenderPassEncoderDrawIndexed(pe, o->draw.count, o->draw.instances, o->draw.first,
 +                                                 o->draw.vertex_offset, o->draw.first_instance);
 +            break;
++        }
 +        default:
 +            break;
 +        }
@@ -46098,10 +46095,10 @@ index 0000000..be9bf1b
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..4e74040
+index 0000000..b3ae91a
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2604 @@
+@@ -0,0 +1,2624 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -46677,13 +46674,14 @@ index 0000000..4e74040
 +        .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
 +        .target_info = { .num_color_targets = 1, .color_target_descriptions = &format } };
 +    SDL_GPUGraphicsPipeline *pipe = SDL_CreateGPUGraphicsPipeline(dev, &info);
-+    const uint32_t expected[] = {0xFFFF0000, 0xFF0000FF, 0xFF00FF00, 0xFF000000, 0xFFFF0000, 0xFF0000FF};
++    const uint32_t expected[] = {0xFFFF0000, 0xFF0000FF, 0xFF00FF00, 0xFF000000, 0xFFFF0000, 0xFF0000FF,
++                                 0xFF00FF00, 0xFF00FF00, 0xFFFF0000};
 +    SDL_GPUTexture *targets[SDL_arraysize(expected)];
 +    float uniforms[1024] = {0};
 +
 +    /* Submit all of these before reading any results. The sequence grows the
 +     * backing buffer, shrinks it, and then reads a tail beyond the last clear. */
-+    for (unsigned i = 0; i < SDL_arraysize(expected); i++) {
++    for (unsigned i = 0; i < 6; i++) {
 +        targets[i] = make_tex(format.format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 1, 1, 1);
 +        SDL_GPUColorTargetInfo color = { .texture = targets[i], .load_op = SDL_GPU_LOADOP_CLEAR,
 +            .store_op = SDL_GPU_STOREOP_STORE };
@@ -46714,6 +46712,25 @@ index 0000000..4e74040
 +        SDL_EndGPURenderPass(pass);
 +        CHECK(SDL_SubmitGPUCommandBuffer(command), "uniform submission %u", i);
 +    }
++    /* Consecutive passes reuse the same nonzero offset only after it is set
++     * in each pass. A pass with no push reads the default binding at zero. */
++    SDL_GPUCommandBuffer *multi = SDL_AcquireGPUCommandBuffer(dev);
++    const float red[4] = {1,0,0,0}, green[4] = {0,1,0,0};
++    for (unsigned i = 6; i < SDL_arraysize(expected); i++) {
++        targets[i] = make_tex(format.format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 1, 1, 1);
++        SDL_GPUColorTargetInfo color = { .texture = targets[i], .load_op = SDL_GPU_LOADOP_CLEAR,
++            .store_op = SDL_GPU_STOREOP_STORE };
++        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(multi, &color, 1, NULL);
++        SDL_BindGPUGraphicsPipeline(pass, pipe);
++        if (i == 6) SDL_PushGPUFragmentUniformData(multi, 0, red, sizeof red);
++        if (i < 8) {
++            SDL_PushGPUFragmentUniformData(multi, 0, green, sizeof green);
++            SDL_PushGPUFragmentUniformData(multi, 0, green, sizeof green);
++        }
++        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
++        SDL_EndGPURenderPass(pass);
++    }
++    CHECK(SDL_SubmitGPUCommandBuffer(multi), "uniform offsets are independent across passes");
 +    for (unsigned i = 0; i < SDL_arraysize(expected); i++) {
 +        uint32_t actual = 0;
 +        download(targets[i], 0, 1, 1, &actual);

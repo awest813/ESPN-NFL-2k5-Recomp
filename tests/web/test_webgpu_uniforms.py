@@ -28,6 +28,7 @@ def function(signature):
 start=text.index('struct SDL_GPUCommandBuffer {');end=text.index('\n};',start)+3
 production=text[start:end]+'\n'+function('static void cmd_fail(')+'\n'+function('static Op *push(')
 production+='\nstatic atomic_int s_uniform_cache_on=-1;\n'+function('static int uniform_cache_enabled(')+'\n'+function('static void push_uniform(')
+production+='\n'+function('void WG_DrawGPUPrimitives(')+'\n'+function('void WG_DrawGPUIndexedPrimitives(')
 legacy=function('static void push_uniform(').replace('static void push_uniform(', 'static void legacy_push_uniform(')
 legacy=legacy.replace('int cacheable = fragment && uniform_cache_enabled();','int cacheable = 0;')
 legacy=legacy.replace('wg_uniform_bytes_equal(c->uniforms + c->last_uniform[fragment].offset, data, len)',
@@ -47,9 +48,15 @@ source=r'''
 #include <emscripten/emscripten.h>
 #endif
 typedef uint32_t Uint32;
-typedef enum {OP_UNIFORM=1} OpKind;
-typedef struct {OpKind kind;struct {int fragment;uint32_t off;} uniform;} Op;
+typedef int32_t Sint32;
+typedef enum {OP_DRAW=1,OP_DRAW_INDEXED} OpKind;
+typedef struct {
+ OpKind kind;
+ struct {uint32_t count,instances,first,first_instance;int32_t vertex_offset;uint32_t uniform_offset[2];} draw;
+} Op;
 typedef struct SDL_GPUCommandBuffer SDL_GPUCommandBuffer;
+typedef SDL_GPUCommandBuffer SDL_GPURenderPass;
+#define CMD(pass) (pass)
 typedef struct WgTextureStorage WgTextureStorage;
 typedef struct SDL_GPUSampler SDL_GPUSampler;
 #define SDL_max(a, b) (((a) > (b)) ? (a) : (b))
@@ -78,6 +85,9 @@ static struct {uint32_t len;int stage;uint8_t data[4096];} expected[1024];
 static uint8_t payload[256][4096];
 static unsigned checks,seed=0x6e69666f;
 static unsigned random32(void){seed=seed*1664525u+1013904223u;return seed;}
+static uint32_t draw_offset(const SDL_GPUCommandBuffer *c,unsigned draw){
+ return c->ops[draw].draw.uniform_offset[expected[draw].stage];
+}
 static void verify(SDL_GPUCommandBuffer *c){
  if(c->ubytes){
    size_t reserved=0;
@@ -85,18 +95,21 @@ static void verify(SDL_GPUCommandBuffer *c){
    assert(reserved >= (((size_t)c->ubytes+3u)&~(size_t)3u) + WG_UNIFORM_TAIL);
  }
  for(unsigned i=0;i<c->n;i++){
-   Op *o=c->ops+i;assert(o->kind==OP_UNIFORM && o->uniform.fragment==expected[i].stage);
-   assert(!(o->uniform.off&255u) && o->uniform.off<=c->ubytes && expected[i].len<=c->ubytes-o->uniform.off);
-   assert(!memcmp(c->uniforms+o->uniform.off,expected[i].data,expected[i].len));checks++;
+   assert(c->ops[i].kind==OP_DRAW);
+   uint32_t off=draw_offset(c,i);
+   assert(!(off&255u) && off<=c->ubytes && expected[i].len<=c->ubytes-off);
+   assert(!memcmp(c->uniforms+off,expected[i].data,expected[i].len));checks++;
  }
 }
 static void emit(SDL_GPUCommandBuffer *c,int stage,const void *data,unsigned len){
  unsigned n=c->n,used=c->ubytes;push_uniform(c,stage,data,len);
+ assert(c->n==n);
  if(!c->failed && len){
+   WG_DrawGPUPrimitives(c,3,1,0,0);
    assert(c->uniform_uncached_bytes>=c->ubytes);
    if(!atomic_load(&s_uniform_cache_on))assert(c->uniform_uncached_bytes==c->ubytes);
    assert(c->n==n+1 && n<1024);expected[n].len=len;expected[n].stage=stage;memcpy(expected[n].data,data,len);
-   if(c->ubytes>used){unsigned off=c->ops[n].uniform.off;for(unsigned i=used;i<off;i++)assert(!c->uniforms[i]);
+   if(c->ubytes>used){unsigned off=draw_offset(c,n);for(unsigned i=used;i<off;i++)assert(!c->uniforms[i]);
      for(unsigned i=0;i<((4u-(len&3u))&3u);i++)assert(!c->uniforms[off+len+i]);}
  }else assert(c->n==n);
 }
@@ -115,6 +128,20 @@ static void tests(void){
  environment="0";atomic_store(&s_uniform_cache_on,-1);assert(!uniform_cache_enabled());
  environment=NULL;atomic_store(&s_uniform_cache_on,-1);assert(uniform_cache_enabled());
  SDL_GPUCommandBuffer c={0};
+ /* Draws retain both selected stages, indexed or not. The pass
+  * boundary resets the current offsets even though the cache is live. */
+ push_uniform(&c,0,payload[0],16);push_uniform(&c,1,payload[1],16);
+ WG_DrawGPUPrimitives(&c,3,1,0,0);
+ push_uniform(&c,0,payload[2],16);
+ WG_DrawGPUIndexedPrimitives(&c,9,2,4,-3,1);
+ c.pass_uniform_offset[0]=c.pass_uniform_offset[1]=0;
+ push_uniform(&c,1,payload[1],16);
+ WG_DrawGPUPrimitives(&c,3,1,0,0);
+ assert(c.n==3 && c.ops[0].draw.uniform_offset[0]==0 && c.ops[0].draw.uniform_offset[1]==256);
+ assert(c.ops[1].kind==OP_DRAW_INDEXED && c.ops[1].draw.uniform_offset[0]==512 &&
+        c.ops[1].draw.uniform_offset[1]==256 && c.ops[1].draw.vertex_offset==-3);
+ assert(c.ops[2].draw.uniform_offset[0]==0 && c.ops[2].draw.uniform_offset[1]==256);
+ destroy(&c);
  for(int enabled=0;enabled<2;enabled++){
    atomic_store(&s_uniform_cache_on,enabled);
    for(int stage=0;stage<2;stage++){
@@ -122,11 +149,11 @@ static void tests(void){
      while(wg_uniform_entry(&c.uniform_cache,key)==wg_uniform_entry(&c.uniform_cache,wg_uniform_key(payload[other],16,stage)))other++;
      emit(&c,stage,payload[0],16);emit(&c,stage,payload[other],16);emit(&c,stage,payload[0],16);
      int reused=enabled && stage;
-     assert(reused?(c.ops[0].uniform.off==c.ops[2].uniform.off):(c.ops[0].uniform.off!=c.ops[2].uniform.off));
+     assert(reused?(draw_offset(&c,0)==draw_offset(&c,2)):(draw_offset(&c,0)!=draw_offset(&c,2)));
      assert(c.uniform_cache_hits==(unsigned)reused);emit(&c,stage,payload[0],16);assert(c.uniform_last_hits==1);
      verify(&c);destroy(&c);
    }
-   emit(&c,0,payload[0],16);emit(&c,1,payload[0],16);assert(c.ops[0].uniform.off!=c.ops[1].uniform.off);verify(&c);destroy(&c);
+   emit(&c,0,payload[0],16);emit(&c,1,payload[0],16);assert(draw_offset(&c,0)!=draw_offset(&c,1));verify(&c);destroy(&c);
    for(unsigned len=1;len<=4096;len++){
      emit(&c,(len>>1)&1,payload[len&255],len);if(c.n==128){verify(&c);destroy(&c);}
    }
@@ -141,37 +168,37 @@ static void tests(void){
  uint8_t first[64]={0},second[64]={0},third[64]={0};second[12]=1;third[16]=1;
  assert(wg_uniform_key(first,64,1)==wg_uniform_key(second,64,1));
  emit(&c,1,first,64);emit(&c,1,second,64);emit(&c,1,first,64);emit(&c,1,second,64);
- assert(c.ops[0].uniform.off==c.ops[2].uniform.off && c.ops[1].uniform.off==c.ops[3].uniform.off && c.uniform_cache_hits==2);
+ assert(draw_offset(&c,0)==draw_offset(&c,2) && draw_offset(&c,1)==draw_offset(&c,3) && c.uniform_cache_hits==2);
  emit(&c,1,third,64);unsigned after_third=c.ubytes;emit(&c,1,first,64);assert(c.ubytes>after_third);verify(&c);destroy(&c);
  /* A forged hash collision still requires exact bytes, stage, size and range. */
  emit(&c,1,payload[0],32);unsigned before=c.ubytes;c.last_uniform[1].valid=0;
  uint64_t key=wg_uniform_key(payload[1],32,1);WgUniformEntry *entry=wg_uniform_entry(&c.uniform_cache,key);
- *entry=(WgUniformEntry){key,c.ops[0].uniform.off,wg_uniform_tag(32,1)};
+ *entry=(WgUniformEntry){key,draw_offset(&c,0),wg_uniform_tag(32,1)};
  emit(&c,1,payload[1],32);assert(c.ubytes>before);verify(&c);
  c.last_uniform[1].valid=0;key=wg_uniform_key(payload[2],32,1);entry=wg_uniform_entry(&c.uniform_cache,key);
  *entry=(WgUniformEntry){key,UINT32_MAX,wg_uniform_tag(32,1)};emit(&c,1,payload[2],32);verify(&c);destroy(&c);
  unsigned other=1;
  while(wg_uniform_entry(&c.uniform_cache,wg_uniform_key(payload[0],4096,1))==wg_uniform_entry(&c.uniform_cache,wg_uniform_key(payload[other],4096,1)))other++;
  emit(&c,1,payload[0],4096);emit(&c,1,payload[other],4096);emit(&c,1,payload[0],4096);
- assert(c.ops[0].uniform.off==c.ops[2].uniform.off);verify(&c);destroy(&c);
+ assert(draw_offset(&c,0)==draw_offset(&c,2));verify(&c);destroy(&c);
  /* Changing client data never mutates earlier records; allocator always moves. */
  uint8_t client[4096];memset(client,17,sizeof client);emit(&c,0,client,sizeof client);
  memset(client,99,sizeof client);emit(&c,0,client,sizeof client);verify(&c);destroy(&c);
  memset(client,17,sizeof client);emit(&c,1,client,sizeof client);
  client[4095]^=1;emit(&c,1,client,sizeof client);client[4095]^=1;emit(&c,1,client,sizeof client);
- assert(c.ops[0].uniform.off==c.ops[2].uniform.off && c.uniform_cache_hits==1);verify(&c);destroy(&c);
+ assert(draw_offset(&c,0)==draw_offset(&c,2) && c.uniform_cache_hits==1);verify(&c);destroy(&c);
  unsigned old_errors=errors;push_uniform(NULL,0,payload[0],4);push_uniform(&c,0,NULL,0);assert(!c.n && !c.failed && errors==old_errors);
  push_uniform(&c,0,NULL,4);assert(c.failed && errors==old_errors+1);destroy(&c);
  push_uniform(&c,0,payload[0],4097);assert(c.failed);destroy(&c);
  c.ubytes=UINT32_MAX-256;push_uniform(&c,0,payload[0],4096);assert(c.failed);destroy(&c);
  c.ubytes=UINT32_MAX-1024;fail_after=0;push_uniform(&c,0,payload[0],16);
  assert(c.failed && fail_after==0);fail_after=-1;destroy(&c); /* reserve the full GPU binding before allocation */
- for(int failure=0;failure<2;failure++){
-   fail_after=failure;push_uniform(&c,0,payload[0],16);assert(c.failed && !c.n);
-   push_uniform(&c,1,payload[1],16);assert(!c.n);destroy(&c);
- }
+ fail_after=0;push_uniform(&c,0,payload[0],16);assert(c.failed && !c.n);
+ push_uniform(&c,1,payload[1],16);assert(!c.n);destroy(&c);
+ fail_after=1;push_uniform(&c,0,payload[0],16);assert(!c.failed);
+ WG_DrawGPUPrimitives(&c,3,1,0,0);assert(c.failed && !c.n);destroy(&c);
  for(unsigned i=0;i<64;i++)emit(&c,0,payload[0],16);
- fail_after=0;push_uniform(&c,0,payload[0],16);assert(c.failed && c.n==64);verify(&c);destroy(&c);
+ fail_after=0;push_uniform(&c,0,payload[0],16);WG_DrawGPUPrimitives(&c,3,1,0,0);assert(c.failed && c.n==64);verify(&c);destroy(&c);
  for(unsigned i=0;i<128;i++)assert(!allocations[i].p);
  printf("PASS uniform recording: %u immutable-history checks, both cache modes/stages, all 4096 sizes, forced collisions, moved allocations, padding and allocation failures\n",checks);
 }
@@ -189,6 +216,7 @@ static void benchmark(void){
      for(unsigned i=0;i<256;i++){
        unsigned stage=trace?i&1:0,index=trace==0?0:trace==1?i%8:trace==2?i:stage?(i/2)%8:64+i/2;
        record(&c,stage,payload[index],stage?784:3328);
+       WG_DrawGPUPrimitives(&c,3,1,0,0);
      }
      bytes+=c.ubytes;hits+=c.uniform_cache_hits;destroy(&c);
    }
