@@ -130,6 +130,8 @@ int main(int argc,char **argv) {
         /* Overlap the destination with each possible ALU source register. */
         for (unsigned dst = 0; dst < 4; dst++)
             one(0x4cd800u | (dst << 16) | alu, 0);
+        for (unsigned dst = 0; dst < 4; dst++)
+            one(0xf08800u | ((dst & 2u) << 17) | ((dst & 1u) << 16) | alu, 0);
         for(unsigned mode=0;mode<32;mode++)one(0x204000|(mode<<8)|alu,0);
         for(unsigned src=4;src<16;src++)for(unsigned dst=4;dst<16;dst++)
             one(0x200000|(src<<13)|(dst<<8)|alu,0);
@@ -182,6 +184,23 @@ int main(int argc,char **argv) {
                         initial.registers[DSP_REG_A0 + acc] = 0x800000;
                         one(0x565800u | operands, 0);
                     }
+                }
+            }
+        }
+    }
+    /* Dual loads cover both register banks, N-based updates and X aliases. */
+    initialize(&initial);
+    for (unsigned xr = 0; xr < 8; xr++) {
+        for (unsigned yr = 0; yr < 4; yr++) {
+            unsigned y = yr | ((xr ^ 4u) & 4u);
+            for (unsigned m = 0; m < ARRAY_SIZE(modifiers); m++) {
+                initial.registers[DSP_REG_R0 + y] = 0x107;
+                initial.registers[DSP_REG_M0 + y] = modifiers[m];
+                initial.registers[DSP_REG_M0 + xr] = modifiers[m];
+                initial.registers[DSP_REG_N0 + xr] = 3;
+                for (unsigned a = 0; a < ARRAY_SIZE(addresses); a++) {
+                    initial.registers[DSP_REG_R0 + xr] = addresses[a];
+                    one(0xf088dau | (xr << 8) | (yr << 13), 0);
                 }
             }
         }

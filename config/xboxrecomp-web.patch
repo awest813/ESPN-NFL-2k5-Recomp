@@ -9721,7 +9721,7 @@ new file mode 100644
 index 0000000..fcdf3f0
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1496 @@
+@@ -0,0 +1,1518 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -10298,6 +10298,26 @@ index 0000000..fcdf3f0
 +    dsp->registers[DSP_REG_A2 + accumulator] = (value & 0x800000u) ? 0xffu : 0;
 +}
 +
++/* Read X:(Rn)+Nn and Y:(Rm)+ into data registers alongside an ALU op.
++ * Read both operands first, then publish both destinations after the ALU. */
++static void execute_pm8_read_xy_postinc_alu(dsp_core_t *dsp)
++{
++    uint32_t instruction = dsp->cur_inst;
++    unsigned x_rn = (instruction >> 8) & 7u;
++    unsigned y_rn = ((instruction >> 13) & 3u) | ((x_rn ^ 4u) & 4u);
++    unsigned x_destination = (instruction & (1u << 18)) ? DSP_REG_X1 : DSP_REG_X0;
++    unsigned y_destination = (instruction & (1u << 16)) ? DSP_REG_Y1 : DSP_REG_Y0;
++    uint32_t x_address = dsp->registers[DSP_REG_R0 + x_rn];
++    uint32_t y_address = dsp->registers[DSP_REG_R0 + y_rn];
++    emu_update_rn(dsp, x_rn, dsp->registers[DSP_REG_N0 + x_rn]);
++    emu_update_rn(dsp, y_rn, 1);
++    uint32_t x = dsp56k_read_memory(dsp, DSP_SPACE_X, x_address);
++    uint32_t y = dsp56k_read_memory(dsp, DSP_SPACE_Y, y_address);
++    opcodes_alu[instruction & 255u](dsp);
++    dsp->registers[x_destination] = x;
++    dsp->registers[y_destination] = y;
++}
++
 +static dsp_exec_func_t decode_executor(uint32_t instruction)
 +{
 +    if (instruction < 0x100000) {
@@ -10327,6 +10347,8 @@ index 0000000..fcdf3f0
 +            return execute_pm5_load_x_accumulator;
 +        return (instruction & 255u) ? emu_pm_5 : execute_pm5_move;
 +    }
++    if ((instruction & 0xfa9800u) == 0xf08800u)
++        return execute_pm8_read_xy_postinc_alu;
 +    return opcodes_parmove[(instruction >> 20) & 15u];
 +}
 +

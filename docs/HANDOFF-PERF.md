@@ -907,6 +907,40 @@ missed 500,352 additional audio frames, bottomed out at 4.2 FPS and had a
 draw workloads and the two builds came from different build environments.
 Only the paired DSP replay isolates the handler's performance.
 
+### Parallel X/Y loads in the effects processor
+
+The DSP dispatcher now caches a specialized handler for the parallel
+`X:(Rn)+Nn` and `Y:(Rm)+` loads into data registers. Both address updates and
+memory reads precede the ALU operation. Both destinations are written after
+it, preserving ALU reads of their old values. The general memory accessors
+still handle the X mix-buffer aliases and peripheral addresses.
+
+The paired captured firmware replay reproduced the original state and DMA
+transfers. Over seven alternating pairs of 1,000 frames, the EP median went
+from 74.02 to 69.68 ms. The GP median was 73.56 and 74.13 ms. The dispatch
+fixture passed 149,024 cold and warm comparisons in Wasm and native Windows,
+and the GP/EP fixture passed its PCM, timing and reset checks.
+
+The retail reference with APU tracing measured 6.5 to 16.7 FPS across
+seven complete windows after kickoff entry. It missed 623,232 audio frames
+between kickoff and the final sample. Post-kickoff trace reports reached
+123 ms between producer frames, 66 ms of wake lateness, and 34 ms waiting
+for a register-access handoff. DSP stage durations reached 121 ms and
+include time when the worker was descheduled. The reference trace is in the
+local temporary archive `nfl2k5-captures-20261124/fixed-matchup-current-apu-lock`.
+
+Using the AudioContext output timestamp to estimate each report's last missing
+sample, 22 of 42 post-transition samples overlapped a traced DSP stage. One
+overlapped a timed wake wait and one overlapped an MMIO handoff. These counts
+describe sampled points, and intervals can overlap. They do not assign a
+cause to all missing audio samples or measure DSP CPU time.
+
+The optimized Wasm build linked and reached Team Select in Chrome. The
+controller script failed to advance the away team. A second run timed out
+at startup. Both reported audio underruns, so there is no stadium A/B timing
+for this change. The captures are under
+`build-web-tests/upload-stall/{fixed-matchup-dsp-dual-load,dsp-dual-load-retail-smoke}`.
+
 ### Comparing browser builds in an existing profile
 
 After serving a published runtime and switching back to a local build on
