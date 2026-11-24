@@ -32,6 +32,9 @@ code = r'''
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
 #include "d3d/d3d8_swizzle.h"
 typedef struct {uint32_t valid,width,height,color,pitch,palette,offset,addr_u,addr_v;} Texture;
 typedef struct {int ready;uint8_t *pixels;uint32_t palette[256];} TextureSnapshot;

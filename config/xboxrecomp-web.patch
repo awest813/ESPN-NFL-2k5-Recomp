@@ -4477,7 +4477,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +299,312 @@
+@@ -112,75 +299,341 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4777,6 +4777,35 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +    switch(fmt) {
 +    case 0x06:case 0x07: {
 +        uint32_t alpha=fmt==0x07?0xFF000000u:0;
++#ifdef __wasm_simd128__
++        if (w >= 4 && h >= 2) {
++            /* A Morton 4x2 tile is two consecutive 2x2 quads. Remove
++             * their low coordinate bits from the tile-origin masks. */
++            uint32_t tile_x = mask_x & ~5u, tile_y = mask_y & ~2u;
++            v128_t force_alpha = wasm_i32x4_splat((int32_t)alpha);
++            uint32_t oy = 0;
++            for (uint32_t y = 0; y < h; y += 2) {
++                uint32_t *top = dst + (size_t)y * w;
++                uint32_t *bottom = top + w;
++                uint32_t ox = 0;
++                for (uint32_t x = 0; x < w; x += 4) {
++                    const uint8_t *tile = src + (size_t)(ox | oy) * 4u;
++                    v128_t left = wasm_v128_load(tile);
++                    v128_t right = wasm_v128_load(tile + 16);
++                    /* Join matching rows and swap B and R in the same shuffle. */
++                    v128_t row0 = wasm_i8x16_shuffle(left, right,
++                        2, 1, 0, 3, 6, 5, 4, 7, 18, 17, 16, 19, 22, 21, 20, 23);
++                    v128_t row1 = wasm_i8x16_shuffle(left, right,
++                        10, 9, 8, 11, 14, 13, 12, 15, 26, 25, 24, 27, 30, 29, 28, 31);
++                    wasm_v128_store(top + x, wasm_v128_or(row0, force_alpha));
++                    wasm_v128_store(bottom + x, wasm_v128_or(row1, force_alpha));
++                    ox = (ox - tile_x) & tile_x;
++                }
++                oy = (oy - tile_y) & tile_y;
++            }
++            return 1;
++        }
++#endif
 +        SG_MORTON_PIXELS(4,((v>>16)&255u)|(v&0xFF00FF00u)|((v&255u)<<16)|alpha);break;
 +    }
 +    case 0x02:case 0x03: {
@@ -4843,7 +4872,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +612,14 @@
+@@ -188,11 +641,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4860,7 +4889,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +635,36 @@
+@@ -208,23 +664,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4906,7 +4935,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,35 +685,42 @@
+@@ -245,35 +714,42 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4962,7 +4991,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -289,6 +736,6 @@
+@@ -289,6 +765,6 @@
  static void sg_texture_commit(SgTextureUse *use)
  {
      if (use->pending)

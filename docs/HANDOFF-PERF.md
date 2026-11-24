@@ -597,6 +597,28 @@ averaged 7.3 to 25.0 FPS, with a longest flip of 395.39 ms. The final audio
 sample counted 1,750,912 missing frames since launch. The capture is under
 `build-web-tests/upload-stall/fixed-matchup-stadium-entry-branches`.
 
+### SIMD decode for swizzled 32-bit textures
+
+The Wasm upload decoder uses two 16-byte loads per 4×2 Morton tile. Two SIMD
+shuffles assemble the output rows and rearrange the color channels. The
+X8 format still forces opaque alpha. Narrow textures use the scalar decoder.
+
+Both implementations produced identical bytes in a paired Wasm benchmark with
+unaligned, randomized images. At 512×512, the median time for 96 decodes went
+from 27.23 to 6.32 ms for format `06` and from 27.28 to 6.27 ms for `07`.
+The sampler regression fixture also passed all 635 cases. These measurements
+cover texture decoding after a cache miss. Full-texture comparison work on a
+cache hit remains a separate cost.
+
+The full optimized build linked and ran in Chrome. Packers at 49ers took the
+alternate kickoff transition and the final capture showed the kick meter at
+5:00. Seven complete windows after the transition averaged 6.5 to 8.5 FPS,
+with a longest flip of 525.14 ms. The audit failed on audio underruns and
+counted 3,002,880 missing frames since launch. This scene differs from the
+reference kickoff return, so the isolated decode benchmark is the measured
+speedup. The capture is under
+`build-web-tests/upload-stall/fixed-matchup-morton-simd`.
+
 In two retail Chrome attract-mode runs on November 23, the window containing
 stadium entry and the next four windows showed the following results.
 
