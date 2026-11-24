@@ -25,8 +25,9 @@ async function selectMatchup(requested,readTeams,press,wait){
   for(const [side,other,direction] of [['away','home','left'],['home','away','right']]){
     if(requested[side]===undefined)continue;
     if(typeof requested[side]!=='string'||!/^\d{2}$/.test(requested[side]))throw Error('Expected a two-digit team code');
-    // Two presses reach the requested edge from either side or the center.
-    for(let i=0;i<2;i++){await press(direction);await wait(700);}
+    // Crossing from the opposite side takes two presses. Allow one missed
+    // input during a guest stall. Pressing again at the edge stays there.
+    for(let i=0;i<3;i++){await press(direction);await wait(700);}
     result=await readTeams();
     const seen=new Set();
     let trigger='rt';

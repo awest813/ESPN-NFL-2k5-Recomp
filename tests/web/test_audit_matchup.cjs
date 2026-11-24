@@ -10,12 +10,18 @@ async function run(){
     {slot: 3, code: '10', category: 4},
   ];
   const index = {home: 1, away: 2};
-  let assigned = 'home';
+  const sides = ['away', 'neutral', 'home'];
+  let position = 2;
+  let dropDirection = true;
   const read = async () => ({home: clubs[index.home], away: clubs[index.away]});
   const press = async button => {
-    if(button === 'left') assigned = 'away';
-    else if(button === 'right') assigned = 'home';
-    else index[assigned] = (index[assigned] + (button === 'rt' ? 1 : 2)) % clubs.length;
+    if(button === 'left' || button === 'right'){
+      if(dropDirection){dropDirection = false;return;}
+      position = Math.max(0, Math.min(2, position + (button === 'left' ? -1 : 1)));
+    }else if(position !== 1){
+      const side = sides[position];
+      index[side] = (index[side] + (button === 'rt' ? 1 : 2)) % clubs.length;
+    }
   };
   const wait = async () => {};
   assert.deepEqual(await selectMatchup({home:'25', away:'10'}, read, press, wait),

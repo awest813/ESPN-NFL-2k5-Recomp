@@ -543,9 +543,9 @@ Audio losses are cumulative at the end of each run.
 
 | Timing enabled | Windows | Five-second averages (FPS) | Worst flip | Missing audio frames |
 | --- | ---: | ---: | ---: | ---: |
-| Flip intervals | 7 | 19.9–30.0 | 212.92 ms | 283,904 |
-| Flip intervals, repeat | 6 | 18.3–30.0 | 125.30 ms | 215,936 |
-| Detailed draw and WebGPU submission | 7 | 6.0–27.2 | 681.68 ms | 286,336 |
+| Flip intervals | 7 | 19.9â€“30.0 | 212.92 ms | 283,904 |
+| Flip intervals, repeat | 6 | 18.3â€“30.0 | 125.30 ms | 215,936 |
+| Detailed draw and WebGPU submission | 7 | 6.0â€“27.2 | 681.68 ms | 286,336 |
 
 In the 6.0 FPS window, texture verification averaged 77.28 ms and 117.65 MiB
 per frame. Texture decoding averaged 1.37 ms. The longest flip spent 409.48 ms
@@ -575,12 +575,27 @@ texture format. The existing `verify` byte total counts the requested span
 of every comparison, including mismatches that may exit early. The matched
 bytes are the portion known to have required a complete comparison.
 
-A local Chrome run confirmed the new breakdown during the title screen
-(`0B`, paletted intro textures). Three attempts timed out before the main menu,
-including one with a 45-second warmup. The reference run on the same profile
-also timed out and reported an Emscripten `ASM_CONSTS` error. These captures
-provide no new stadium timing. They are under
-`build-web-tests/upload-stall/fixed-matchup-texture-formats*`.
+The first local profiling package replaced its runtime files while retaining
+the reference launcher's build URL. Both packages therefore shared cache keys,
+and the subsequent reference run reported an Emscripten `ASM_CONSTS` error.
+Those runs are excluded. The deployment packager now supports separate output
+directories for A/B tests, and each package uses a digest of its JS/Wasm pair.
+
+With the corrected package, the instrumented Packers at 49ers run reached the
+kickoff return. The screenshot confirmed gameplay even though the script timed
+out waiting for the kickoff play-selection descriptor. Across 16 complete
+stadium windows, five-second averages ranged from 4.0 to 10.3 FPS and the
+longest flip was 855.03 ms. Successful comparisons took 5.71 to 88.97 ms
+per frame. Swizzled `A8R8G8B8` (`06`) accounted for 70.2% of the verified
+bytes, with paletted `0B` accounting for 23.2%. The run also reported audio
+underruns. The capture is under
+`build-web-tests/upload-stall/fixed-matchup-texture-formats-probe`.
+
+A repeat with flip timing only completed the script and captured a kickoff
+return. Seven complete windows after the kickoff play-selection transition
+averaged 7.3 to 25.0 FPS, with a longest flip of 395.39 ms. The final audio
+sample counted 1,750,912 missing frames since launch. The capture is under
+`build-web-tests/upload-stall/fixed-matchup-stadium-entry-branches`.
 
 In two retail Chrome attract-mode runs on November 23, the window containing
 stadium entry and the next four windows showed the following results.

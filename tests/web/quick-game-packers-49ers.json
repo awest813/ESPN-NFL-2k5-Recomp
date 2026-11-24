@@ -1,5 +1,5 @@
 [
-  {"id": "quick-game", "title": "Quick Game from kickoff through opening possession", "action": "begin"},
+  {"id": "quick-game", "title": "Quick Game stadium entry and timed kickoff sampling", "action": "begin"},
   {"action": "play"},
   {"button": "start", "everyMs": 2400, "pattern": "descriptor=00515660", "ms": 60000, "action": "wait-log"},
   {"ms": 30000, "pattern": "descriptor=0052728C", "action": "wait-log", "button": "a", "everyMs": 3500},
@@ -14,7 +14,7 @@
   {"buttons": "a", "action": "press"},
   {"tag": "coin-toss", "action": "shot"},
   {"ms": 9000, "action": "wait"},
-  {"button": "a", "everyMs": 2500, "pattern": "descriptor=0050FF70", "ms": 60000, "action": "wait-log"},
+  {"button": "a", "everyMs": 2500, "pattern": "descriptor=(0050FF70|0050FD20)", "ms": 60000, "action": "wait-log"},
   {"tag": "kickoff", "action": "shot"},
   {"action": "audio"},
   {"ms": 16000, "action": "wait"},
@@ -22,10 +22,10 @@
   {"ms": 1200, "action": "wait"},
   {"buttons": "a", "action": "press"},
   {"ms": 8000, "action": "wait"},
-  {"tag": "scrimmage", "action": "shot"},
+  {"tag": "gameplay-sample-1", "action": "shot"},
   {"ms": 12000, "action": "wait"},
-  {"tag": "opening-drive", "action": "shot"},
+  {"tag": "gameplay-sample-2", "action": "shot"},
   {"action": "audio"},
-  {"detail": "Completed scripted stadium entry, kickoff and opening possession sampling.", "result": "pass", "action": "end"},
+  {"detail": "Completed stadium entry and timed gameplay sampling after the kickoff transition.", "result": "pass", "action": "end"},
   {"action": "close"}
 ]
