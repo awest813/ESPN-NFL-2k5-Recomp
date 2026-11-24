@@ -45163,10 +45163,10 @@ index 2324386..e0d477c 100644
      return false;
 diff --git a/src/platform/wasm_fixed.c b/src/platform/wasm_fixed.c
 new file mode 100644
-index 0000000..2a4cc10
+index 0000000..bf8b90c
 --- /dev/null
 +++ b/src/platform/wasm_fixed.c
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,149 @@
 +/* Fixed-address memory for WebAssembly builds. See wasm_fixed.h. */
 +#ifdef __EMSCRIPTEN__
 +#include "wasm_fixed.h"
@@ -45184,20 +45184,29 @@ index 0000000..2a4cc10
 +
 +typedef struct { uintptr_t lo, hi; } Range;
 +
-+/* Writers (map, unmap) serialise on s_lock. Readers (wasm_fixed_claimed, on
-+ * the checked-copy path the GPU uses per draw) take no lock: slots are never
-+ * moved, a slot is published by storing hi last, and an unmapped slot is
-+ * emptied by storing hi = 0 first. A reader racing an unmap may still see
-+ * the claim, which is harmless -- the memory does not go anywhere. */
++/* The GPU checks claims per draw. Publish both wasm32 bounds with one atomic
++ * store so a lock-free reader cannot combine bounds from two claims when a
++ * slot is reused. Released claims do not remove the underlying linear memory. */
 +static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
-+static Range s_claims[MAX_CLAIMS];
-+static int   s_claim_count;   /* slots ever used; empty slots have hi == 0 */
++static uint64_t s_claims[MAX_CLAIMS];
++static int s_claim_count;     /* slots ever used; zero is an empty slot */
 +/* Ranges that were claimed and released: the guest wrote there, so a new
 + * claim over them must zero them. Everything else is still pristine. */
 +static Range s_released[MAX_RELEASED];
 +static int   s_released_count;
 +
 +static int overlaps(Range a, Range b) { return a.lo < b.hi && b.lo < a.hi; }
++
++static uint64_t pack_claim(Range range)
++{
++    return ((uint64_t)range.hi << 32) | range.lo;
++}
++
++static Range read_claim(int slot)
++{
++    uint64_t bits = __atomic_load_n(&s_claims[slot], __ATOMIC_ACQUIRE);
++    return (Range){(uint32_t)bits, (uint32_t)(bits >> 32)};
++}
 +
 +static int in_fixed_window(uintptr_t lo, uintptr_t hi)
 +{
@@ -45225,8 +45234,9 @@ index 0000000..2a4cc10
 +    pthread_mutex_lock(&s_lock);
 +    int slot = -1;
 +    for (int i = 0; i < s_claim_count; i++) {
-+        if (!s_claims[i].hi) { if (slot < 0) slot = i; continue; }
-+        if (overlaps(s_claims[i], r))
++        Range claim = read_claim(i);
++        if (!claim.hi) { if (slot < 0) slot = i; continue; }
++        if (overlaps(claim, r))
 +            goto out;
 +    }
 +    if (slot < 0 && s_claim_count == MAX_CLAIMS)
@@ -45247,8 +45257,7 @@ index 0000000..2a4cc10
 +    }
 +    if (slot < 0)
 +        slot = s_claim_count;
-+    __atomic_store_n(&s_claims[slot].lo, r.lo, __ATOMIC_RELAXED);
-+    __atomic_store_n(&s_claims[slot].hi, r.hi, __ATOMIC_RELEASE);
++    __atomic_store_n(&s_claims[slot], pack_claim(r), __ATOMIC_RELEASE);
 +    if (slot == s_claim_count)
 +        __atomic_store_n(&s_claim_count, s_claim_count + 1, __ATOMIC_RELEASE);
 +    result = address;
@@ -45262,10 +45271,10 @@ index 0000000..2a4cc10
 +    size_t size = 0;
 +    pthread_mutex_lock(&s_lock);
 +    for (int i = 0; i < s_claim_count; i++) {
-+        if (s_claims[i].hi && s_claims[i].lo == (uintptr_t)address) {
-+            Range gone = s_claims[i];
++        Range gone = read_claim(i);
++        if (gone.hi && gone.lo == (uintptr_t)address) {
 +            size = gone.hi - gone.lo;
-+            __atomic_store_n(&s_claims[i].hi, 0, __ATOMIC_RELEASE);
++            __atomic_store_n(&s_claims[i], 0, __ATOMIC_RELEASE);
 +            if (s_released_count < MAX_RELEASED)
 +                s_released[s_released_count++] = gone;
 +            else  /* out of bookkeeping: zero now rather than track it */
@@ -45282,9 +45291,8 @@ index 0000000..2a4cc10
 +    uintptr_t lo = (uintptr_t)address;
 +    int n = __atomic_load_n(&s_claim_count, __ATOMIC_ACQUIRE);
 +    for (int i = 0; i < n; i++) {
-+        uintptr_t hi = __atomic_load_n(&s_claims[i].hi, __ATOMIC_ACQUIRE);
-+        uintptr_t c_lo = __atomic_load_n(&s_claims[i].lo, __ATOMIC_RELAXED);
-+        if (hi && lo >= c_lo && lo < hi && size <= hi - lo)
++        Range claim = read_claim(i);
++        if (lo >= claim.lo && lo < claim.hi && size <= claim.hi - lo)
 +            return 1;
 +    }
 +    return 0;
@@ -48834,10 +48842,10 @@ index 0000000..b5efe8d
 +}
 diff --git a/tests/wasm_fixed/CMakeLists.txt b/tests/wasm_fixed/CMakeLists.txt
 new file mode 100644
-index 0000000..44fdac2
+index 0000000..73621f9
 --- /dev/null
 +++ b/tests/wasm_fixed/CMakeLists.txt
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,11 @@
 +# Emscripten only: emcmake cmake -S . -B build && cmake --build build && ctest --test-dir build
 +cmake_minimum_required(VERSION 3.20)
 +project(wasm_fixed_test C)
@@ -48845,19 +48853,22 @@ index 0000000..44fdac2
 +target_include_directories(test_wasm_fixed PRIVATE ../../src/platform)
 +target_compile_options(test_wasm_fixed PRIVATE -pthread)
 +target_link_options(test_wasm_fixed PRIVATE -pthread -Wl,--wrap=sbrk -sGLOBAL_BASE=135266304
-+    -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sENVIRONMENT=node,worker -sEXIT_RUNTIME=1)
++    -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sENVIRONMENT=node,worker -sEXIT_RUNTIME=1
++    -sPTHREAD_POOL_SIZE=1)
 +enable_testing()
 +add_test(NAME wasm_fixed COMMAND node $<TARGET_FILE:test_wasm_fixed>)
 diff --git a/tests/wasm_fixed/test_wasm_fixed.c b/tests/wasm_fixed/test_wasm_fixed.c
 new file mode 100644
-index 0000000..48c0d26
+index 0000000..3c16a32
 --- /dev/null
 +++ b/tests/wasm_fixed/test_wasm_fixed.c
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,107 @@
 +/* wasm_fixed: fixed claims land where asked, refuse host memory and double
 + * claims, and the host heap never grows into a fixed window -- even when the
 + * program allocates until malloc gives up. Run under Node (see CMakeLists). */
 +#include "wasm_fixed.h"
++#include <pthread.h>
++#include <stdatomic.h>
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -48867,6 +48878,42 @@ index 0000000..48c0d26
 +static int failures;
 +#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)
 +
++static atomic_int gap_reader_started;
++static atomic_int stop_gap_reader;
++
++static void *read_unclaimed_gap(void *address)
++{
++    atomic_store(&gap_reader_started, 1);
++    while (!atomic_load(&stop_gap_reader)) {
++        if (wasm_fixed_claimed(address, 4))
++            return (void *)1;
++    }
++    return NULL;
++}
++
++static void check_reused_claim(void)
++{
++    void *low = (void *)0x00210000u;
++    void *gap = (void *)0x00310000u;
++    void *high = (void *)0x00410000u;
++    const size_t bytes = 4096;
++    pthread_t reader;
++    int error = pthread_create(&reader, NULL, read_unclaimed_gap, gap);
++    CHECK(error == 0);
++    if (error) return;
++    while (!atomic_load(&gap_reader_started)) {}
++    for (int i = 0; i < 40000; i++) {
++        void *address = i % 2 ? low : high;
++        CHECK(wasm_fixed_map(address, bytes) == address);
++        CHECK(wasm_fixed_claimed(address, bytes));
++        CHECK(wasm_fixed_unmap(address) == bytes);
++    }
++    atomic_store(&stop_gap_reader, 1);
++    void *result = NULL;
++    CHECK(pthread_join(reader, &result) == 0);
++    CHECK(result == NULL);
++}
++
 +int main(void)
 +{
 +    uint8_t *ram    = (uint8_t *)0x00010000u;   /* guest RAM view */
@@ -48874,6 +48921,7 @@ index 0000000..48c0d26
 +    uint8_t *top    = (uint8_t *)0xFD010000u;   /* device apertures */
 +    const size_t MB = 1024u * 1024u;
 +
++    check_reused_claim();
 +    CHECK((uintptr_t)&__global_base >= 0x10000u + 128u * MB);
 +    CHECK(wasm_fixed_map(ram, 128 * MB) == ram);
 +    CHECK(wasm_fixed_map(contig, 64 * MB) == contig);
@@ -48882,6 +48930,9 @@ index 0000000..48c0d26
 +    CHECK(wasm_fixed_map((void *)0x09000000u, MB) == NULL); /* host memory */
 +    CHECK(wasm_fixed_map((void *)0x7FF00000u, 2 * MB) == NULL); /* straddles the ceiling */
 +    CHECK(wasm_fixed_claimed(contig + 4, 4));
++    CHECK(wasm_fixed_claimed(contig + 64 * MB - 1, 1));
++    CHECK(!wasm_fixed_claimed(contig + 64 * MB - 1, 2));
++    CHECK(!wasm_fixed_claimed(contig + 64 * MB, 0));
 +    CHECK(!wasm_fixed_claimed(contig + 64 * MB, 4));
 +
 +    /* Fresh claims read as zero; then fill the windows with a pattern. */

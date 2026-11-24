@@ -1189,6 +1189,15 @@ matches (92.9%). Comparisons cost 10.20 ms per frame on average and caught
 averaged 14.49, 5.55 and 8.23 ms per frame. The detailed profile adds timing
 overhead. The local capture is under
 `build-web-tests/upload-stall/packers-49ers-same-frame-texture-reuse-verified-neutral`.
+Swizzled A8R8G8B8 (`0x06`) accounted for 99.68 MiB per frame, or 80.1% of
+the matched bytes across all comparisons. Paletted `0x0B` contributed another
+21.88 MiB per frame.
+
+The same build with only flip timing enabled averaged 20.6–29.4 FPS over
+seven complete opening-drive windows. The longest flip was 148.18 ms. The
+worklet missed 9,600 source frames during the 36-second sample. The run used
+the 30 FPS lock and completed a different sequence of plays. Its report is
+under `build-web-tests/upload-stall/packers-49ers-verified-neutral-frame-only`.
 
 A private Wasm fixture with instrumented writers compared 12,000 unchanged
 256 KiB texture checks. Median time was 334.69 ms to compare the bytes and
@@ -1204,6 +1213,18 @@ palettes. Its CPU memory implementation marks writes and its surface backend
 marks downloaded render targets. This recomp needs coverage for translated
 stores, guest RAM aliases, kernel copies and device writes before a clean
 page can stand in for a byte comparison. [Texture dirty checks](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/vk/texture.c) · [CPU memory writes](https://github.com/xemu-project/xemu/blob/master/system/memory_ldst.c.inc) · [Surface downloads](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/gl/surface.c)
+
+### Publishing WebAssembly fixed memory claims atomically
+
+The fixed-memory table now publishes both wasm32 bounds in one atomic
+value. This keeps a range check from combining an old upper bound with a
+new lower bound when a mapping slot is reused. A forced interleaving
+reproduced the old check falsely accepting a gap. The threaded Wasm test
+ran 40,000 map and unmap cycles with a simultaneous reader and also
+checked the mapping endpoints, heap ceiling and zeroing on reuse.
+In a paired Wasm fixture, 98,304 boundary checks agreed across both versions.
+Median time for 1.2 million reads rose from 6.22 to 7.33 ms when looking up
+RAM and the contiguous window, and from 13.32 to 13.51 ms across six claims.
 
 ## Historical measurements
 
