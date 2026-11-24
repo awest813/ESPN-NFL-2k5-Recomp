@@ -36,6 +36,7 @@ function frameWindows(rows) {
     const phases = /worst [\d.]+ ms \(texture ([\d.]+) vertex ([\d.]+) submit ([\d.]+)\)/.exec(line);
     const renderer = /\| ms\/frame texture ([\d.]+) vertex ([\d.]+) submit ([\d.]+)/.exec(line);
     const texture = /\| hash ([\d.]+) MiB\/frame verify ([\d.]+) decode .*?\| texture-ms\/frame verify ([\d.]+) decode ([\d.]+)/.exec(line);
+    const reuse = /\| texture reuse MiB\/frame same-frame match ([\d.]+) changed ([\d.]+) \((\d+) changes\)/.exec(line);
     windows.push({
       at, frames: Number(sample[1]), fps: Number(sample[2]),
       intervals: Number(counts[1]), overBudget: Number(counts[2]),
@@ -50,6 +51,10 @@ function frameWindows(rows) {
       ...(texture && {texturePerFrame: {
         hashMiB: Number(texture[1]), verifyMiB: Number(texture[2]),
         verifyMs: Number(texture[3]), decodeMs: Number(texture[4]),
+      }}),
+      ...(reuse && {sameFrameTextureReuse: {
+        matchMiBPerFrame: Number(reuse[1]), changedMiBPerFrame: Number(reuse[2]),
+        changes: Number(reuse[3]),
       }}),
     });
     transitions = [];

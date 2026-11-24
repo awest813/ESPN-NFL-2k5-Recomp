@@ -28,6 +28,8 @@ def main():
         hashing = '#define TEST_PATTERN_COPY 1\n' + hashing
     if 'static uint64_t sg_texture_palette_key(' in hashing:
         hashing = "#define TEST_PALETTE_MEMO 1\n" + hashing
+    if 'texture_same_frame_match_bytes' in hashing:
+        hashing = "#define TEST_REUSE_COUNTERS 1\n" + hashing
     harness = r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -43,8 +45,11 @@ static TextureSnapshot s_texture_snapshot[4];
 static struct {
     uint64_t texture_hash_bytes,texture_compare_bytes,texture_compare_ticks;
     uint64_t texture_match_ticks, texture_match_bytes[256];
+    uint64_t texture_same_frame_match_bytes, texture_same_frame_changed_bytes;
+    uint32_t texture_same_frame_changes;
 } s_sg_stats;
-static uint64_t sg_profile_now(void) { return 0; }
+static uint64_t profile_clock;
+static uint64_t sg_profile_now(void) { return profile_clock ? ++profile_clock : 0; }
 static const Texture *sg_stage_texture(int st) { return &tx[st]; }
 static uint32_t levels[4] = {1,1,1,1};
 static uint32_t texture_mip_levels(int st, const Texture *texture) { (void)texture; return levels[st]; }
@@ -222,6 +227,25 @@ int main(void) {
     memset(data,15,8);SgTextureKey frozen=sg_texture_key_snapshot(0,0);
     data[0]=16;CHECK(frozen.pixels!=data && frozen.pixels[0]==15);
     CHECK(sg_texture_key(0,0)!=frozen.key);free(large);
+#endif
+#ifdef TEST_REUSE_COUNTERS
+    s->pixels=data; s->bytes=8; s->owned=0;
+    uint64_t start_key=sg_texture_key(0,1);
+    memset(&s_sg_stats,0,sizeof s_sg_stats);
+    profile_clock=1;
+    CHECK(sg_texture_key(0,0)==start_key);
+    CHECK(s_sg_stats.texture_same_frame_match_bytes==8);
+    data[7]^=1;
+    CHECK(sg_texture_key(0,0)!=start_key);
+    CHECK(s_sg_stats.texture_same_frame_changed_bytes==8);
+    CHECK(s_sg_stats.texture_same_frame_changes==1);
+    s_sg_frame++;
+    data[7]^=1;
+    CHECK(sg_texture_key(0,0)==start_key);
+    CHECK(s_sg_stats.texture_same_frame_changed_bytes==8);
+    CHECK(s_sg_stats.texture_same_frame_changes==1);
+    CHECK(s_sg_stats.texture_same_frame_match_bytes==8);
+    puts("PASS reuse counters distinguish same-frame matches and changes from cross-frame checks");
 #endif
     free(data);
     puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes, every-byte same-frame rewrites, aliases, allocation failure, bounded ring eviction, oversized images, frame/cursor wrap and cross-frame reuse");

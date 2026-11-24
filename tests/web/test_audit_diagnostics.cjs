@@ -28,11 +28,13 @@ assert.deepEqual(timed.frameWindows[1].worstFrameMs,{texture:1,vertex:2,submit:1
 assert.equal(timed.result,'pass');
 const detailedTiming='  [SDLGPU] 5s: frames 38 7.6 fps | ms/frame texture 79.36 vertex 23.26 submit 22.67'
   +' | hash 0.25 MiB/frame verify 120.27 decode 2.03 readback 0.00 gpu-copy 1.00'
-  +' | texture-ms/frame verify 59.27 decode 1.23 | flip intervals 38 over-budget 38 over-50ms 38 over-100ms 25'
+  +' | texture-ms/frame verify 59.27 decode 1.23 | texture reuse MiB/frame same-frame match 114.50 changed 0.03 (17 changes)'
+  +' | flip intervals 38 over-budget 38 over-50ms 38 over-100ms 25'
   +' worst 239.83 ms (texture 141.18 vertex 5.57 submit 81.57)';
 const [detailed]=caseDiagnostics('pass',[{at:5020,line:detailedTiming}]).frameWindows;
 assert.deepEqual(detailed.rendererMsPerFrame,{texture:79.36,vertex:23.26,submit:22.67});
 assert.deepEqual(detailed.texturePerFrame,{hashMiB:0.25,verifyMiB:120.27,verifyMs:59.27,decodeMs:1.23});
+assert.deepEqual(detailed.sameFrameTextureReuse,{matchMiBPerFrame:114.5,changedMiBPerFrame:0.03,changes:17});
 assert.deepEqual(detailed.worstFrameMs,{texture:141.18,vertex:5.57,submit:81.57});
 
 for(const failure of [

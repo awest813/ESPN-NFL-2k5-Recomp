@@ -1160,6 +1160,35 @@ and cube states. It found identical footprints. For 500,000 calls with
 varying amounts of repeated state, medians were 8.21–8.84 ms with the loop
 and 3.34–3.64 ms with the new calculation. This measures footprint computation.
 
+### Texture checks repeated within one frame
+
+Private Wasm trials grouped full comparisons into 256-byte, 1 KiB and 4 KiB
+tiles. All three detected mutations at every tested byte position, including
+unaligned windows and tile boundaries. A separate trial reduced an all-zero
+span directly, without XORing each guest vector against the expected zero
+vector. Both approaches produced mixed timings across image sizes and
+content layouts. The game retains the existing comparison loop.
+
+Detailed renderer reports now count complete matches against a retained
+copy used earlier in the frame. They count same-frame mismatches and the
+requested spans separately. The match total bounds the bytes that reliable
+write tracking might save. Every current draw still verifies the span.
+
+A private Wasm fixture with instrumented writers compared 12,000 unchanged
+256 KiB texture checks. Median time was 334.69 ms to compare the bytes and
+0.43 ms to validate the page versions. It also detected 6,144 page mutations
+and rejected pages with overlapping writes in progress. This fixture measures
+the reader and has complete control over its writers.
+In a separate run, 750,000 byte writes took 2.64 ms directly and 9.41 ms
+with both page-version updates. Those measurements motivate limiting
+tracking to texture pages while preserving coverage for every writer.
+
+xemu's Vulkan renderer checks dirty physical pages for both textures and
+palettes. Its CPU memory implementation marks writes and its surface backend
+marks downloaded render targets. This recomp needs coverage for translated
+stores, guest RAM aliases, kernel copies and device writes before a clean
+page can stand in for a byte comparison. [Texture dirty checks](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/vk/texture.c) · [CPU memory writes](https://github.com/xemu-project/xemu/blob/master/system/memory_ldst.c.inc) · [Surface downloads](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/gl/surface.c)
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
