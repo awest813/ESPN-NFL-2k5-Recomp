@@ -4477,7 +4477,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  static int sg_stage_sample(int st, uint32_t x, uint32_t y, uint32_t *argb)
-@@ -112,75 +299,341 @@
+@@ -112,75 +299,362 @@
      return st == 0 ? sample_texture(x, y, argb) : sample_stage(st, x, y, argb);
  }
 
@@ -4566,6 +4566,26 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +#include "sg_xxhash64.h"
 +static uint64_t sg_hash(const uint8_t *p,size_t n,uint64_t h) {return sg_xxh64(p,n,h);}
 
++/* Each stage keeps its last palette and seeded key. The seed is the image
++ * hash and can change independently of the palette, especially for movies. */
++static uint64_t sg_texture_palette_key(int st, const uint32_t palette[256], uint64_t image_hash)
++{
++    static struct {
++        uint32_t colors[256];
++        uint64_t seed, key;
++        int valid;
++    } memo[4];
++    if (!memo[st].valid || memo[st].seed != image_hash ||
++        !sg_texture_bytes_equal((const uint8_t *)memo[st].colors, (const uint8_t *)palette,
++                                sizeof memo[st].colors)) {
++        memcpy(memo[st].colors, palette, sizeof memo[st].colors);
++        memo[st].seed = image_hash;
++        memo[st].key = sg_hash((const uint8_t *)palette, sizeof memo[st].colors, image_hash);
++        memo[st].valid = 1;
++    }
++    return memo[st].key;
++}
++
  /* Everything that decides the decoded texels: raw bytes, palette, format,
   * size, row pitch. Wrap and clamp are shader state, not part of the key. */
 -static uint64_t sg_texture_key(int st)
@@ -4580,6 +4600,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -    uint64_t h;
 +    uint32_t shape[5] = { tx->width, tx->height, tx->color, tx->pitch, texture_mip_levels(st,tx) };
 +    uint64_t h;const uint8_t *pixels=snap->pixels;
++    int unchanged=0;
 
      if (!snap->owned) {
 -        SgHashMemo *m = &s_sg_hash_memo[(((uintptr_t)snap->pixels >> 6) ^ tx->width ^ (tx->height << 7))
@@ -4607,7 +4628,6 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 +        int identity=m!=NULL;
 +        if(!m)m=victim;
 +        int retained=identity && sg_hash_copy_valid(m);
-+        int unchanged=0;
 +        if(retained && !refresh) {
 +            s_sg_stats.texture_compare_bytes+=snap->bytes;
 +            uint64_t started = sg_profile_now();
@@ -4643,8 +4663,11 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
                      sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
 +        s_sg_stats.texture_hash_bytes += snap->bytes;
      }
-     if (tx->color == 0x0B)                    /* 1 KB palette: cheap, hashed every time */
-         h = sg_hash((const uint8_t *)snap->palette, sizeof snap->palette, h);
+-    if (tx->color == 0x0B)                    /* 1 KB palette: cheap, hashed every time */
+-        h = sg_hash((const uint8_t *)snap->palette, sizeof snap->palette, h);
++    if (tx->color == 0x0B)
++        h = unchanged ? sg_texture_palette_key(st, snap->palette, h)
++                      : sg_hash((const uint8_t *)snap->palette, sizeof snap->palette, h);
 -    return h ? h : 1;
 -}
 -
@@ -4872,7 +4895,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
  }
 
  /* The GPU texture for stage st. Returns 0 to leave the batch to software. */
-@@ -188,11 +641,14 @@
+@@ -188,11 +662,14 @@
  {
      const Texture *tx = sg_stage_texture(st);
      uint32_t w = tx->width, h = tx->height;
@@ -4889,7 +4912,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
          return 0;
      if (!s_texture_snapshot[st].ready || !s_texture_snapshot[st].pixels)
          return 0;
-@@ -208,23 +664,36 @@
+@@ -208,23 +685,36 @@
              SgSurface *s = &s_sg.surf[i];
              uint32_t slo = s->guest & 0x03FFFFFFu, shi = slo + s->pitch * s->h;
              if (s->color && s->owner == SG_OWNER_GPU && lo < shi && slo < hi) {
@@ -4935,7 +4958,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      }
 
      /* Evict the least recently used slot that no queued draw still needs;
-@@ -245,35 +714,42 @@
+@@ -245,35 +735,42 @@
                  slot = &s_sg_textures[i];
      }
 
@@ -4991,7 +5014,7 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
      };
 
      return 1;
-@@ -289,6 +765,6 @@
+@@ -289,6 +786,6 @@
  static void sg_texture_commit(SgTextureUse *use)
  {
      if (use->pending)

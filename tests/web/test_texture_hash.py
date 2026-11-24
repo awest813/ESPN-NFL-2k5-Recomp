@@ -21,6 +21,8 @@ def main():
     if start<0:hashing='static int sg_texture_bytes_equal(const uint8_t*a,const uint8_t*b,size_t n){return memcmp(a,b,n)==0;}\n'+hashing
     if 'static int sg_texture_copy_equal(' in hashing:
         hashing = '#define TEST_PATTERN_COPY 1\n' + hashing
+    if 'static uint64_t sg_texture_palette_key(' in hashing:
+        hashing = "#define TEST_PALETTE_MEMO 1\n" + hashing
     harness = r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -70,6 +72,21 @@ int main(void) {
         }
         sg_texture_pattern(&m,NULL,length); CHECK(!m.pattern_bytes);
         free(stored);free(guest);
+    }
+#endif
+#ifdef TEST_PALETTE_MEMO
+    {
+        uint32_t palette[256] = {0};
+        CHECK(sg_texture_palette_key(0, palette, 0) == sg_hash((const uint8_t *)palette, sizeof palette, 0));
+        for (unsigned i = 0; i < 256; i++) {
+            palette[i] ^= 0xff010203u;
+            uint64_t seed = i % 3;
+            uint64_t expected = sg_hash((const uint8_t *)palette, sizeof palette, seed);
+            CHECK(sg_texture_palette_key(0, palette, seed) == expected);
+            CHECK(sg_texture_palette_key(0, palette, seed) == expected);
+            CHECK(sg_texture_palette_key(1, palette, seed + 1) ==
+                  sg_hash((const uint8_t *)palette, sizeof palette, seed + 1));
+        }
     }
 #endif
     /* Misalignment, vector boundaries, tails and exact allocation ends. */

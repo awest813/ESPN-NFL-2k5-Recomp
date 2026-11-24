@@ -619,6 +619,28 @@ reference kickoff return, so the isolated decode benchmark is the measured
 speedup. The capture is under
 `build-web-tests/upload-stall/fixed-matchup-morton-simd`.
 
+### Palette verification on image cache hits
+
+The P8 texture path can reuse a stage's last seeded palette hash after matching
+all 256 palette entries and the image hash. Changed and uncached images still
+hash their palettes directly. Palette changes within a draw sequence continue
+to produce the same keys as the previous implementation.
+
+In a paired Wasm benchmark of 250,000 lookups, a stable palette and image hash
+took a median of 8.33 ms with the memo, down from 49.64 ms. When a palette
+entry changed every 64 inputs across four stages, the medians were 11.21 and
+46.46 ms. Changing the palette on every stage lookup made the memo slower
+in the synthetic test. The timing excludes image verification and rendering.
+
+The full palette build reached the kickoff play-selection screen in a
+Packers at 49ers Chrome run. The six complete windows after the kickoff
+transition averaged 2.3 to 7.0 FPS, with a longest flip of 658.83 ms. The
+audit failed on audio underruns and counted 3,146,496 missing frames since
+launch. The capture ended in a different lighting and camera configuration
+from the previous kickoff-meter run, so this timing does not isolate the
+memo's effect on gameplay. The capture is under
+`build-web-tests/upload-stall/fixed-matchup-palette-memo-repeat`.
+
 In two retail Chrome attract-mode runs on November 23, the window containing
 stadium entry and the next four windows showed the following results.
 
