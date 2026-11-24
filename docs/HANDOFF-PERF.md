@@ -1278,16 +1278,42 @@ windows. The rechecks varied in play sequence and audio, so only the fixed
 index replay isolates the optimization's effect. The candidate recheck is
 under `build-web-tests/upload-stall/packers-49ers-dense-triangle-candidate-recheck`.
 
-A private Wasm prototype also decoded groups of four packed
-11:11:10 normals in parallel. It matched 1,552 selected stream ranges byte for
-byte, including unaligned input, interleaved attribute strides and partial
-groups. Across the replay's 4-, 12-, 28- and 32-byte source strides, decoding
-one million normals in batches of 128 or 1,024 fell from 3.12–3.22 ms to
-0.56–0.69 ms. This decoder trial remains local.
-Linux UndefinedBehaviorSanitizer also flagged the existing scalar decoder's
-signed left shift on negative packed Z components. An unsigned extraction
-prototype with defined signed conversion passed 18,432 values across eight
-array strides and constant attributes, including unaligned source bytes.
+### Decoding packed vertex normals
+
+The scalar 11:11:10 reader now loads unaligned words safely and extracts
+signed fields without shifting signed values. Linux UndefinedBehaviorSanitizer
+flagged the previous Z shift. The corrected scalar reader passed 18,432
+checks across eight array strides and constant attributes.
+
+WebAssembly SIMD decodes four normals at a time from validated streams.
+The test checks the exact floating-point results, including clamp behavior
+for constant inputs, distinct source and destination strides, unaligned
+reads, partial groups and retained padding. Native Linux, scalar Wasm
+and instrumented SIMD Wasm produced the same outputs.
+The normalized array values and the constant endpoint clamp follow xemu's
+separate paths. [Array decode](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/vsh.c) · [Constant decode](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/vertex.c)
+
+The integrated Wasm replay packed 1.28 million normals into 64-vertex
+batches with a 16-byte source stride. Median times went from 5.20–5.25 ms
+with per-vertex fetches to 1.00–1.01 ms with the new stream path. This replay
+measures normal decoding and packing on the CPU.
+
+A 600-draw retail stadium trace found 338 draws with packed normals bound.
+All 338 were triangle strips. Their bound normal streams used 8-, 10- and
+16-byte strides. The trace finished before the timed opening drive.
+
+The retail run reached first down and averaged 29.9–30.0 FPS in six complete
+opening-drive windows. Its longest flip was 70.41 ms. The worklet lost
+no frames during the 36-second sample. Six earlier underrun reports still
+failed the full audit. The renderer processed 610,103 GPU vertex-program
+draws in the sampled windows with zero software 3D draws. The capture is
+under `build-web-tests/upload-stall/packers-49ers-packed-normal-simd`.
+
+A separate dense-strip prototype expanded two adjacent triangles at a time
+with the original winding and index order. It matched all 4,097 tested
+strip lengths. Replaying 2.4 million indices in 395-index batches took a
+median 11.34 ms in the original loop and 1.05 ms in the prototype. This
+prototype remains local.
 
 ## Historical measurements
 

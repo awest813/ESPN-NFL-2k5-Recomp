@@ -87,6 +87,72 @@ static void check_index_ranges(void) {
     }
 }
 
+static void expected_normal(uint32_t bits, int constant, float out[4]) {
+    const unsigned x=bits%2048, y=(bits>>11)%2048, z=bits>>22;
+    out[0]=(x<1024 ? (int)x : (int)x-2048)/1023.0f;
+    out[1]=(y<1024 ? (int)y : (int)y-2048)/1023.0f;
+    out[2]=(z<512 ? (int)z : (int)z-1024)/511.0f;
+    out[3]=1.0f;
+    if(constant)for(unsigned k=0;k<3;k++)if(out[k]<-1.0f)out[k]=-1.0f;
+}
+
+static void check_packed_normals(void) {
+    static uint32_t packed[2048];
+    static float expanded[2048*4];
+    for(unsigned i=0;i<2048;i++) {
+        uint32_t bits=i|((i*1447u&2047u)<<11)|((i*543u&1023u)<<22);
+        packed[i]=bits;
+        uint8_t unaligned[7];
+        memcpy(unaligned+(i%4),&bits,4);
+        for(unsigned stride=0;stride<=4;stride+=4) {
+            VertexAttr attr={.type=6,.size=3,.stride=stride};
+            float actual[4]={0,0,0,1}, expected[4];
+            expected_normal(bits,stride==0,expected);
+            assert(vertex_attr_decode(&attr,unaligned+(i%4),actual));
+            assert(!memcmp(actual,expected,sizeof expected));
+        }
+    }
+
+    s_gpu.inline_active=1;
+    s_gpu.inline_buf=packed;
+    s_gpu.inline_count=2048;
+    s_gpu.attr[3]=(VertexAttr){0,6,3,4};
+    VertexInputs inline_stream;
+    vertex_inputs_prepare(&inline_stream,1u<<3,2047);
+    assert(inline_stream.attr[3].base==(const uint8_t *)packed);
+    vertex_inputs_pack_range(&inline_stream,3,0,2048,expanded,4);
+    for(unsigned i=0;i<2048;i++) {
+        float expected[4];
+        expected_normal(packed[i],0,expected);
+        assert(!memcmp(expanded+i*4,expected,sizeof expected));
+    }
+
+    const unsigned strides[]={1,3,4,8,10,12,28,32};
+    s_gpu.inline_active=0;
+    for(unsigned si=0;si<sizeof strides/sizeof *strides;si++) {
+        unsigned stride=strides[si];
+        for(unsigned align=0;align<4;align++) {
+            unsigned offset=sizeof memory-63*stride-4-align;
+            s_gpu.attr[3]=(VertexAttr){offset,6,1,stride};
+            VertexInputs streams;
+            vertex_inputs_prepare(&streams,1u<<3,63);
+            assert(streams.attr[3].base==memory+offset);
+            for(unsigned first=0;first<=9;first+=9)for(unsigned count=0;count<=64-first;count++) {
+                float out[2+64*9],expected[2+64*9];
+                memset(expected,0x5a,sizeof expected);
+                memcpy(out,expected,sizeof out);
+                for(unsigned i=0;i<count;i++) {
+                    uint32_t bits;
+                    memcpy(&bits,memory+offset+(first+i)*stride,4);
+                    expected_normal(bits,0,expected+1+i*9);
+                }
+                vertex_inputs_pack_range(&streams,3,first,count,out+1,9);
+                assert(!memcmp(out,expected,sizeof out));
+            }
+        }
+    }
+}
+
 #ifdef __EMSCRIPTEN__
 /* Prior per-vertex packing loop, using the unchanged individual fetch path. */
 static void per_vertex_pack_range(uint32_t first,uint32_t count) {
@@ -132,6 +198,7 @@ int main(int argc,char **argv) {
     check_index_ranges();
     for (unsigned i = 0; i < sizeof memory; i++) memory[i] = rng();
     for (unsigned i = 0; i < sizeof inline_memory; i++) inline_memory[i] = rng();
+    check_packed_normals();
     for (unsigned i = 0; i < 16; i++) for (unsigned k = 0; k < 4; k++) s_attr_inline[i][k] = (float)(i + k);
     // A complete float stream is validated once for the actual CPU batch;
     // a stream crossing the mapping boundary must retain per-index fallback.
@@ -242,7 +309,7 @@ int main(int argc,char **argv) {
             }
         }
     }
-    puts("PASS 640000 CPU/GPU vertex fetches and 4097 index ranges, including sparse inputs, all formats and guarded endpoints");
+    puts("PASS CPU/GPU vertex fetches, 4097 index ranges and packed normals with signed endpoints and guarded strides");
 #ifdef __EMSCRIPTEN__
     if(argc>1 && !strcmp(argv[1],"--benchmark"))benchmark_streams();
 #endif
