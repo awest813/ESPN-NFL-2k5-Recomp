@@ -29,6 +29,7 @@ python3 -I "$ROOT/tests/web/test_scripted_input.py" --build-dir "$OUT/scripted-i
 python3 -I "$ROOT/tests/web/test_rgb565_merge.py" --build-dir "$OUT/rgb565-merge"
 python3 -I "$ROOT/tests/web/test_vertex_fetch.py"
 python3 -I "$ROOT/tests/web/test_webgpu_uniforms.py" --build-dir "$OUT/webgpu-uniforms"
+python3 -I "$ROOT/tests/web/test_geometry_upload.py" --build-dir "$OUT/geometry-upload"
 python3 -I "$ROOT/tests/web/test_vp_cache.py"
 python3 -I "$ROOT/tests/web/test_vp_interpreter.py" --build-dir "$OUT/vp-interpreter"
 python3 -I "$ROOT/tests/web/test_vp_interpreter.py" --scalar --build-dir "$OUT/vp-interpreter-scalar"

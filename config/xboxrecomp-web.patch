@@ -32678,10 +32678,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..9869c9b
+index 0000000..ad3a785
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2151 @@
+@@ -0,0 +1,2160 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -34452,22 +34452,29 @@ index 0000000..9869c9b
 +        wgpuQueueWriteBuffer(s_queue, dst->buf, offset, src, size);
 +        return;
 +    }
-+    if (size > dst->uploaded_bytes) {
++    uint32_t known = dst->uploaded_bytes;
++    if (size > known) {
 +        uint8_t *grown = realloc(dst->uploaded, size);
-+        wgpuQueueWriteBuffer(s_queue, dst->buf, 0, src, size);
-+        if (grown) {
-+            dst->uploaded = grown;
-+            memcpy(grown, src, size);
-+            dst->uploaded_bytes = size;
-+        } else {
++        if (!grown) {
++            wgpuQueueWriteBuffer(s_queue, dst->buf, 0, src, size);
 +            dst->uploaded_bytes = 0;
++            return;
 +        }
-+        return;
++        dst->uploaded = grown;
 +    }
++    /* Retain the validated prefix on growth. The newly allocated suffix has
++     * no shadow contents and must be written even if the source is zero. */
++    uint32_t prefix = SDL_min(known, size);
 +    uint32_t first = size, end = 0;
-+    for (uint32_t at = 0; at < size; at += 4096) {
-+        uint32_t bytes = SDL_min(4096u, size - at);
-+        if (sg_bytes_equal(dst->uploaded + at, src + at, bytes)) continue;
++    for (uint32_t at = 0; at < size;) {
++        uint32_t bytes = size - at;
++        if (at < prefix) {
++            bytes = SDL_min(4096u, prefix - at);
++            if (sg_bytes_equal(dst->uploaded + at, src + at, bytes)) {
++                at += bytes;
++                continue;
++            }
++        }
 +        /* Coalesce nearby changes so small gaps don't multiply queue calls. */
 +        if (first < end && at - end >= 32768) {
 +            wgpuQueueWriteBuffer(s_queue, dst->buf, first, src + first, end - first);
@@ -34476,11 +34483,13 @@ index 0000000..9869c9b
 +        }
 +        if (first == size) first = at;
 +        end = at + bytes;
++        at = end;
 +    }
 +    if (first < end) {
 +        wgpuQueueWriteBuffer(s_queue, dst->buf, first, src + first, end - first);
 +        memcpy(dst->uploaded + first, src + first, end - first);
 +    }
++    dst->uploaded_bytes = SDL_max(known, size);
 +}
 +
 +static void replay(Replay *r)
@@ -46450,10 +46459,10 @@ index 0000000..b6c09b3
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..b5efe8d
+index 0000000..0c5f552
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2608 @@
+@@ -0,0 +1,2610 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -48958,7 +48967,7 @@ index 0000000..b5efe8d
 +        SDL_GPUTransferBufferLocation from = {.transfer_buffer = tb};
 +        SDL_GPUBufferRegion to = {.buffer = vb, .size = sizeof vertices};
 +        SDL_UploadToGPUBuffer(cp, &from, &to, false);
-+        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices;
++        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices / 2;
 +        SDL_UploadToGPUBuffer(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
 +        CHECK(SDL_SubmitGPUCommandBuffer(seed), "seed indexed destination versions");
 +        bytes = SDL_MapGPUTransferBuffer(dev, tb, true);
@@ -48966,9 +48975,10 @@ index 0000000..b5efe8d
 +        SDL_GPUCommandBuffer *update = SDL_AcquireGPUCommandBuffer(dev);
 +        cp = SDL_BeginGPUCopyPass(update);
 +        from.offset = 0; to.buffer = vb; to.size = sizeof vertices;
-+        SDL_UploadToGPUBuffer(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
-+        CHECK(SDL_SubmitGPUCommandBuffer(update), "update both separated vertex regions");
++        SDL_UploadToGPUBuffer(cp, &from, &to, false);
 +        from.offset = sizeof vertices; to.buffer = ib; to.size = sizeof indices;
++        SDL_UploadToGPUBuffer(cp, &from, &to, false); SDL_EndGPUCopyPass(cp);
++        CHECK(SDL_SubmitGPUCommandBuffer(update), "update separated vertex regions and extend the index prefix");
 +        SDL_GPUTexture *before = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
 +            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
 +        SDL_GPUTexture *after = make_tex(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
@@ -48985,6 +48995,7 @@ index 0000000..b5efe8d
 +        CHECK(SDL_SubmitGPUCommandBuffer(fresh) && SDL_SubmitGPUCommandBuffer(old), "old and new index bindings survive public handle release");
 +        download(before, 0, W, H, img);
 +        CHECK(px(img, W/2, H/2) == 0xFFFF0000u, "old index backing selects the red vertices");
++        CHECK(px(img, W/4, H*3/4) == 0xFFFF0000u, "the appended indices draw the second red triangle");
 +        download(after, 0, W, H, img);
 +        CHECK(px(img, W/2, H/2) == 0xFF0000FFu, "new index backing selects the blue vertices");
 +        SDL_ReleaseGPUTexture(dev, before); SDL_ReleaseGPUTexture(dev, after);

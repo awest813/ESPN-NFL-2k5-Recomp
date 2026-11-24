@@ -703,7 +703,7 @@ over five windows including entry. Queue calls rose from 2,562 to 2,880.
 The WebGPU backend compares aligned uploads at offset zero against an exact
 copy owned by the destination buffer backing. It uploads changed 4 KiB
 regions, joining them across unchanged gaps smaller than 32 KiB. Growing
-the recorded range sends the full payload. Offset writes and uploads larger
+the recorded range initially sent the full payload. Offset writes and uploads larger
 than 16 MiB discard the copy. Cycling starts with a fresh backing, and an
 allocation failure falls back to a full write. The hardware Chrome pixel
 suite checks two separated changes and verifies that an earlier draw can
@@ -1368,6 +1368,39 @@ calls into WebGPU and include any wait for the browser to accept earlier
 work. The shorter capture stopped during the pregame route and failed on
 audio underruns. It is under
 `build-web-tests/upload-stall/packers-49ers-stadium-submit-attribution`.
+
+### Reusing verified geometry prefixes on upload growth
+
+An upload that grows on an existing WebGPU buffer backing keeps the shadow
+of its verified prefix. It updates changed prefix blocks and writes the new
+suffix. Offset writes, large bypass uploads and allocation failure still
+invalidate the shadow. The scalar and SIMD fixtures check byte ranges and
+the exact resulting contents. A hardware Chrome pixel check draws with
+appended indices and verifies the old backing after a subsequent cycle.
+
+In a paired Wasm replay of 120 uploads growing from 2 MiB in 4 KiB steps,
+unchanged prefixes reduced written data from 281,395,200 to 491,520 bytes
+with the same 120 queue calls. With one changing prefix block per update,
+written data fell to 983,040 bytes and calls increased to 240. Fixed-size
+uploads had identical byte and call counts. The growing-prefix medians
+fell from 34.70 to 8.04 ms with a memory-backed queue, which excludes the
+browser's transfer and queue-wait time.
+
+The retail candidate completed the 36-second opening-drive sample with six
+windows at 27.4–30.0 FPS. The longest interval in that sample took 111.56 ms
+with no pacing time. The worklet missed another 18,304 frames. The largest
+logged pregame submission took 368.20 ms, of which 367.78 ms was transfer
+replay. The capture used flip, pacing and slow-submission timing. Different
+play sequences prevent attributing the retail differences to prefix reuse.
+The local capture is `build-web-tests/upload-stall/packers-49ers-geometry-prefix-retail`.
+
+An isolated Intel Gen-12HP Chrome replay alternated 48 direct writes and
+48 uploads through staging buffers mapped at creation. Readbacks matched
+the input after each replay. At 2,544,544 bytes per upload, the median CPU
+API time went from 48.46 to 17.04 ms and time through the queue fence went
+from 75.70 to 64.07 ms. At 73,584 bytes, time through the fence was nearly
+the same at 20.95 and 21.32 ms. This JavaScript replay excludes the game's
+Wasm bridge and render workload. The staging prototype remains local.
 
 ## Historical measurements
 
