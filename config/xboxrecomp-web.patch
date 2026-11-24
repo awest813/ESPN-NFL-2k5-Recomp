@@ -1130,40 +1130,86 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
  typedef struct {
      uint8_t *pixels;
      size_t bytes; /* of pixels: the texture's footprint in guest RAM */
-@@ -1020,37 +1224,31 @@
+@@ -1007,10 +1211,65 @@ typedef struct {
+ static TextureSnapshot s_texture_snapshot[4];
+ static int s_sampler_stage;
+
++/* Sum a power-of-two mip chain in texels or blocks. Both axes halve until
++ * the smaller reaches one. The larger then halves until both are one. */
++static uint64_t texture_power_of_two_units(uint32_t w, uint32_t h, uint32_t levels)
++{
++    unsigned x = (unsigned)__builtin_ctz(w), y = (unsigned)__builtin_ctz(h);
++    unsigned paired = x < y ? x : y;
++    unsigned remaining = levels - 1;
++    if (paired > remaining) paired = remaining;
++    remaining -= paired;
++    unsigned single = x > y ? x - y : y - x;
++    if (single > remaining) single = remaining;
++    const uint64_t first = (uint64_t)w * h;
++    const uint64_t last_paired = first >> (2 * paired);
++    return (4 * first - last_paired) / 3 + last_paired - (last_paired >> single)
++           + (remaining - single);
++}
++
++static uint64_t texture_snapshot_bytes(int stage, const Texture *texture)
++{
++    uint64_t bpp, blocks;
++    uint32_t format = linear_twin(texture->color);
++    blocks = d3d8_format_dxt_block_bytes(texture->color);
++    if (!blocks && texture->color != 0x0B) {
++        switch (format) {
++            case 0x12: case 0x1E: case 0x3F: case 0x40: case 0x41: bpp = 4; break;
++            case 0x10: case 0x1C: case 0x11: case 0x1D: bpp = 2; break;
++            case 0x13: case 0x1F: bpp = 1; break;
++            default: return 0;
++        }
++        if (!d3d8_format_is_swizzled(texture->color) &&
++            (uint64_t)texture->pitch < (uint64_t)texture->width * bpp) return 0;
++    }
++    if (gpu_stage_is_cube(stage)) {
++        return (uint64_t)gpu_cube_face_bytes(stage, texture) * 6;
++    }
++    if (tex_size_from_format(texture->color)) {
++        uint32_t w = texture->width, h = texture->height;
++        uint32_t levels = texture_mip_levels(stage,texture);
++        if (levels > 1 && !(w & (w - 1)) && !(h & (h - 1))) {
++            if (blocks) {
++                w = (w + 3) / 4;
++                h = (h + 3) / 4;
++                return texture_power_of_two_units(w, h, levels) * blocks;
++            }
++            return texture_power_of_two_units(w, h, levels) * gpu_fmt_bpp(texture->color);
++        }
++        uint64_t bytes = 0;
++        for (uint32_t level = 0; level < levels; level++) {
++            bytes += texture_mip_bytes(texture->color,w,h);
++            w = w > 1 ? w / 2 : 1;
++            h = h > 1 ? h / 2 : 1;
++        }
++        return bytes;
++    }
++    return ((uint64_t)texture->height - 1) * texture->pitch + texture->width * bpp;
++}
++
+ static void snapshot_texture(int stage, const Texture *texture) {
+     TextureSnapshot *snapshot = &s_texture_snapshot[stage];
+-    uint64_t bytes, bpp, blocks;
+-    uint32_t format = linear_twin(texture->color);
+     if (snapshot->owned) free(snapshot->pixels);
+     snapshot->pixels = NULL;
+     snapshot->owned = 0;
+@@ -1019,39 +1278,7 @@ static void snapshot_texture(int stage, const Texture *texture) {
+     if (!texture->valid || !texture->width || !texture->height ||
          texture->width > 65535 || texture->height > 65535)
          return;
-     blocks = d3d8_format_dxt_block_bytes(texture->color);
+-    blocks = d3d8_format_dxt_block_bytes(texture->color);
 -    if (blocks) {
 -        bytes = ((uint64_t) texture->width + 3) / 4 *
 -                (((uint64_t) texture->height + 3) / 4) * blocks;
 -    } else if (texture->color == 0x0B) {
 -        bytes = (uint64_t) swizzle_offset(texture->width - 1, texture->height - 1,
 -                                          texture->width, texture->height) + 1;
-+    if (!blocks && texture->color != 0x0B) {
-+        switch (format) {
-+            case 0x12: case 0x1E: case 0x3F: case 0x40: case 0x41: bpp = 4; break;
-+            case 0x10: case 0x1C: case 0x11: case 0x1D: bpp = 2; break;
-+            case 0x13: case 0x1F: bpp = 1; break;
-+            default: return;
-+        }
-+        if (!d3d8_format_is_swizzled(texture->color) &&
-+            (uint64_t)texture->pitch < (uint64_t)texture->width * bpp) return;
-+    }
-+    if (gpu_stage_is_cube(stage)) {
-+        uint32_t face_bytes = gpu_cube_face_bytes(stage, texture);
-+        if (!face_bytes) return;
-+        bytes = (uint64_t)face_bytes * 6;
-+    } else if (tex_size_from_format(texture->color)) {
-+        uint32_t w = texture->width, h = texture->height;
-+        uint32_t levels = texture_mip_levels(stage,texture);
-+        bytes = 0;
-+        for (uint32_t level = 0; level < levels; level++) {
-+            bytes += texture_mip_bytes(texture->color,w,h);
-+            w = w > 1 ? w / 2 : 1;
-+            h = h > 1 ? h / 2 : 1;
-+        }
-     } else {
+-    } else {
 -        switch (format) {
 -            case 0x12:
 -            case 0x1E:
@@ -1188,10 +1234,11 @@ diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 -            if ((uint64_t) texture->pitch < (uint64_t) texture->width * bpp) return;
 -            bytes = ((uint64_t) texture->height - 1) * texture->pitch + texture->width * bpp;
 -        }
-+        bytes = ((uint64_t)texture->height - 1) * texture->pitch + texture->width * bpp;
-     }
+-    }
++    const uint64_t bytes = texture_snapshot_bytes(stage, texture);
      if (!bytes || bytes > SIZE_MAX || bytes > UINT64_C(0x100000000) - texture->offset) return;
      uintptr_t base = (uintptr_t) xbox_GetMemoryOffset();
+     if (texture->color == 0x0B &&
 @@ -1098,7 +1296,7 @@
  #endif
 

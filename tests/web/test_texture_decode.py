@@ -6,6 +6,9 @@ root=Path(__file__).resolve().parents[2]
 kernel=root/'external/xboxrecomp/src/kernel/sdlgpu'
 text=(kernel/'sdlgpu_texture.inc.c').read_text(encoding='utf-8')
 decoder=text[text.index('static int sg_decode_dxt_image('):text.index('/* Decode all authored levels')]
+executor=(kernel.parent/'nv2a_pb_exec.c').read_text(encoding='utf-8')
+mip_chain=executor[executor.index('static uint64_t texture_power_of_two_units('):
+                   executor.index('static uint64_t texture_snapshot_bytes(')]
 header=(root/'external/xboxrecomp/src/d3d/d3d8_swizzle.h').as_posix()
 harness=r'''
 #include <assert.h>
@@ -19,6 +22,7 @@ harness=r'''
 #endif
 #include "HEADER"
 /* DECODER */
+/* MIP_CHAIN */
 static uint32_t seed=0x2a050d17;
 static uint32_t rng(void) {seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;return seed;}
 static uint32_t rgba(uint32_t c) {return ((c>>16)&255u)|(c&0xff00u)|((c&255u)<<16)|(c&0xff000000u);}
@@ -29,6 +33,22 @@ static void reference(const uint8_t *src,uint32_t fmt,uint32_t w,uint32_t h,uint
 }
 static uint32_t sum(const uint32_t *p,size_t n) {uint32_t s=0;for(size_t i=0;i<n;i++)s=(s^p[i])*16777619u;return s;}
 int main(void) {
+    for (unsigned x=0; x<16; x++) for (unsigned y=0; y<16; y++) {
+        uint32_t w=1u<<x, h=1u<<y;
+        for (unsigned compressed=0; compressed<2; compressed++) {
+            uint32_t units_w=compressed ? (w+3)/4 : w;
+            uint32_t units_h=compressed ? (h+3)/4 : h;
+            uint32_t mw=units_w, mh=units_h;
+            uint64_t reference=0;
+            for (unsigned level=1; level<=15; level++) {
+                reference+=(uint64_t)mw*mh;
+                assert(texture_power_of_two_units(units_w,units_h,level)==reference);
+                mw=mw>1 ? mw/2 : 1;
+                mh=mh>1 ? mh/2 : 1;
+            }
+        }
+    }
+    puts("PASS 7680 rectangular mip footprints, including DXT block tails");
     unsigned cases=0;
     const uint32_t formats[]={0x0c,0x0e,0x0f};
     for(unsigned f=0;f<3;f++) for(unsigned trial=0;trial<300;trial++) {
@@ -83,7 +103,7 @@ int main(void) {
     printf("DXT5 upload benchmark: reference %.2f ms, bulk %.2f ms, %.2fx (checksum %u)\n",old*1000,fast*1000,old/fast,checksum);
     free(image);return 0;
 }
-'''.replace('HEADER',header).replace('/* DECODER */',decoder)
+'''.replace('HEADER',header).replace('/* DECODER */',decoder).replace('/* MIP_CHAIN */',mip_chain)
 out=root/'build-web-tests/texture-decode';out.mkdir(parents=True,exist_ok=True)
 (out/'test.c').write_text(harness,encoding='utf-8')
 subprocess.run([shutil.which('emcc') or 'emcc',str(out/'test.c'),'-O3','-msimd128','-sENVIRONMENT=node','-o',str(out/'test.js')],check=True)

@@ -1136,6 +1136,30 @@ disc-read error dialog before the first-down marker. A subsequent check
 found the original disc import absent from the test profile. That run
 provided no opening-drive timing comparison.
 
+Both runtimes subsequently completed the Packers–49ers sampling route
+using a fresh import of the same image in one Chrome profile. The preceding
+runtime's seven complete post-marker windows averaged 16.2–29.3 FPS, with
+a 287.12 ms worst flip and 103,040 additional missing audio frames. The
+quiet-read runtime's six windows averaged 13.5–29.9 FPS, with a 183.11 ms
+worst flip and 49,792 additional missing audio frames. These games had
+different play sequences. Both dipped below 30 FPS and lost audio.
+
+### Computing rectangular mip footprints
+
+For a power-of-two texture, the snapshot size now sums the mip levels whose
+two axes shrink together, then the levels whose longer axis still shrinks.
+For DXT, this uses the block dimensions and counts the final levels that
+each occupy one block. Irregular sizes, cube faces and pitched rows keep
+their existing calculations. Every draw still checks guest allocation bounds
+and texture contents.
+
+The Wasm regression test covers 7,680 rectangular footprints, including DXT
+block tails. A separate fixture compared the new snapshot calculation with
+the old loop on 481,920 calls, including formats, irregular sizes, mip changes
+and cube states. It found identical footprints. For 500,000 calls with
+varying amounts of repeated state, medians were 8.21–8.84 ms with the loop
+and 3.34–3.64 ms with the new calculation. This measures footprint computation.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
