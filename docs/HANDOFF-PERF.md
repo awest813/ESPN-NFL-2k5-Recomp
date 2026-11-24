@@ -1174,6 +1174,22 @@ copy used earlier in the frame. They count same-frame mismatches and the
 requested spans separately. The match total bounds the bytes that reliable
 write tracking might save. Every current draw still verifies the span.
 
+In retail Quick Game, the fixture now reads the first controller's assignment
+and retries until Team Select confirms neutral. A previous attempt sent the
+direction once and stalled at the human-controlled coin toss. The updated
+fixture confirmed Green Bay at San Francisco and reached first down with
+296.86 seconds on the quarter clock.
+
+The seven complete five-second opening-drive windows averaged 20.1–30.1 FPS.
+The longest flip was 143.98 ms, and the worklet missed 4,224 source frames
+during the 36-second sample. Weighted by frame count, the renderer requested
+124.70 MiB of comparisons per frame and found 115.86 MiB of exact same-frame
+matches (92.9%). Comparisons cost 10.20 ms per frame on average and caught
+31 same-frame mismatches. Texture processing, vertex work and submission
+averaged 14.49, 5.55 and 8.23 ms per frame. The detailed profile adds timing
+overhead. The local capture is under
+`build-web-tests/upload-stall/packers-49ers-same-frame-texture-reuse-verified-neutral`.
+
 A private Wasm fixture with instrumented writers compared 12,000 unchanged
 256 KiB texture checks. Median time was 334.69 ms to compare the bytes and
 0.43 ms to validate the page versions. It also detected 6,144 page mutations

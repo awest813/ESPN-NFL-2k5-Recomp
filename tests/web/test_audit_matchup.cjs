@@ -67,6 +67,31 @@ async function run(){
   await assert.rejects(selectMatchup({home:'10'}, read, async button => {
     if(button === 'rt') index.away = 0;
   }, wait), /Controller changed the away team/);
+
+  const centerOnly = {centerController:true};
+  index.away = 1;
+  const readController = async () => ({...await read(), controllerSide:sides[position]});
+  position = 2;
+  dropDirection = true;
+  let moves = 0;
+  const centered = await selectMatchup(centerOnly, readController, async button => {
+    assert.equal(button, 'left');
+    moves++;
+    await press(button);
+  }, wait);
+  assert.equal(centered.controllerSide, 'neutral');
+  assert.equal(moves, 2, 'retry an ignored centering input');
+  assert.deepEqual(await selectMatchup(centerOnly, readController, assert.fail, wait), centered);
+  position = 0;
+  await assert.rejects(selectMatchup(centerOnly, readController, async button => {
+    assert.equal(button, 'right');
+  }, wait), /Controller did not reach neutral/);
+  assert.deepEqual(await selectMatchup(centerOnly, readController, async button => {
+    assert.equal(button, 'right');
+    await press(button);
+  }, wait), centered);
+  assert.deepEqual(await selectMatchup({home:'25', away:'10', ...centerOnly}, readController, press, wait),
+    centered, 'confirm both clubs and a neutral controller');
 }
 
 checkScrimmage();

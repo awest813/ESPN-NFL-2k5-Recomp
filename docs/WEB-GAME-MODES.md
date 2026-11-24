@@ -121,11 +121,12 @@ python tools/serve-web.py build-web-tests/packers-49ers-site --port 8081
 node tools/audit-web-modes.cjs --profile build-web-render-lab --url "http://127.0.0.1:8081/?env=NFL2K5_FPS_LIMIT=30&env=RECOMP_SDLGPU_FRAME_PROFILE=1" --capture-memory --skip-screenshots --script tests/web/quick-game-packers-49ers.json --out build-web-tests/packers-49ers
 ```
 
-The fixture selects Green Bay at San Francisco with the game's triggers,
-then centers the controller for CPU-vs-CPU play and lets the stadium intro
-run through kickoff. The audit reads the teams
-from guest memory and records their asset codes and roster categories in
-`cases[].matchup`. Its `wait-scrimmage` step waits for first-quarter scrimmage
+The fixture selects Green Bay at San Francisco with the game's triggers.
+It checks the controller assignment in guest memory and retries centering
+if Team Select ignores a directional input. It records the confirmed
+neutral assignment, team asset codes and roster categories in
+`cases[].matchup` before letting the stadium intro run through kickoff.
+Its `wait-scrimmage` step waits for first-quarter scrimmage
 with a valid down and time elapsed on the game clock. The benchmark records
 that timestamp in `cases[].scrimmage` and samples another 36 seconds.
 

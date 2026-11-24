@@ -17,7 +17,9 @@ function readQuickGameTeams(offset){
     }
     throw Error('Invalid team asset code');
   }
-  return {home:team(0),away:team(1)};
+  // The title stores the assignment for the first controller at E5FE88.
+  const controllerSide=['neutral','home','away'][word(0xE5FE88)];
+  return {home:team(0),away:team(1),controllerSide};
 }
 
 // Serialized by Playwright. Uses the match state fields from
@@ -70,6 +72,19 @@ async function selectMatchup(requested,readTeams,press,wait){
       if(result[side].slot===before[side].slot)
         throw Error('No team change on '+side+' from '+before[side].code+' using '+trigger);
     }
+  }
+  if(requested.centerController){
+    for(let attempt=0;attempt<6 && result.controllerSide!=='neutral';attempt++){
+      const side=result.controllerSide;
+      if(side!=='home' && side!=='away')throw Error('Unknown Team Select controller assignment');
+      await press(side==='home'?'left':'right');
+      for(let i=0;i<12;i++){
+        result=await readTeams();
+        if(result.controllerSide!==side)break;
+        await wait(150);
+      }
+    }
+    if(result.controllerSide!=='neutral')throw Error('Controller did not reach neutral on Team Select');
   }
   for(const side of ['home','away']){
     if(requested[side]!==undefined && (result[side].code!==requested[side]||result[side].category!==0))
