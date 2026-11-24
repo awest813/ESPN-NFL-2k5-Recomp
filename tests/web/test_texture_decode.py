@@ -14,6 +14,9 @@ harness=r'''
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
 #include "HEADER"
 /* DECODER */
 static uint32_t seed=0x2a050d17;
