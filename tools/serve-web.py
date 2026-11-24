@@ -33,12 +33,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         '.json': 'application/json',
     }
 
+    def send_head(self):
+        # An A/B run can switch the served directory to an older build.
+        # Its older mtime does not make the previous response valid here.
+        del self.headers['If-Modified-Since']
+        return super().send_head()
+
     def end_headers(self):
         if self.isolation:
             self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
             self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
             self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
-        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Cache-Control', 'no-store')
         super().end_headers()
 
     def log_message(self, fmt, *args):

@@ -134,6 +134,13 @@ async function playAndCheckXbe(page, want, label) {
     {
       const { context, page } = await newPage(browser, 'http://127.0.0.1:18765/');
       check(await page.evaluate(() => self.crossOriginIsolated), 'isolated server: crossOriginIsolated');
+      const current = await page.request.get('http://127.0.0.1:18765/');
+      const checked = await page.request.get('http://127.0.0.1:18765/', {
+        headers: { 'If-Modified-Since': 'Fri, 01 Jan 2100 00:00:00 GMT' },
+      });
+      check(checked.status() === 200 && checked.headers()['cache-control'] === 'no-store' &&
+        (await checked.body()).equals(await current.body()),
+        'preview serves the launcher even with a newer cached timestamp');
       const gpuLayout = await page.evaluate(() => {
         const stage = document.querySelector('#stage');
         const input = document.querySelector('#canvas');
