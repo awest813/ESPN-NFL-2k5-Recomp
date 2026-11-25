@@ -1449,6 +1449,38 @@ startup through the sample. The audit reported audio underruns and no
 WebGPU errors. The capture is in
 `build-web-tests/upload-stall/packers-49ers-stadium-transfer-phases-retail`.
 
+### Reusing mapped geometry staging in the retail renderer
+
+The local candidate uses eight staging slots with capacities rounded to
+64 KiB and capped at 4 MiB each. A geometry write of at least 1 MiB starts
+staging. Subsequent writes may share its encoder. After submission, each
+slot remaps asynchronously. When staging is unavailable, the renderer
+submits any earlier recorded copies and then uses a direct queue write.
+
+Intel Chrome pixel tests confirmed allocation, remapping and reuse, and
+fallback after exhausting all eight slots. The test overwrites a staged
+vertex upload and checks the resulting triangles and both index backings.
+The scalar and SIMD geometry shadow tests also passed. The candidate
+overlay and the fixture are under
+`build-web-tests/verify-vector-width/geometry-pool-retail`.
+
+In two 50-second Packers at 49ers pregame captures with the same Wasm
+package, direct writes averaged 29.40 FPS across nine complete windows
+and pooled staging averaged 29.06 FPS. The number of intervals over
+100 ms increased from two to ten. The longest interval across those
+windows decreased from 475.83 to 409.36 ms. Audio samples at both ends
+of the segment recorded zero new missing frames on the direct run and
+54,144 on the pooled run. Both full audits failed on audio underruns.
+
+A 190-operation submission with 86,784 uniform bytes took 435.45 ms
+in geometry replay in the direct run. The pooled run logged two
+submissions with the same operation count and uniform size, with
+376.67 and 279.78 ms in geometry replay. Another pooled submission
+spent 449.41 ms outside the replay phases currently timed. Chrome
+confirmed pool reuse on the retail path. The runs leave direct writes
+as the default. Captures are under
+`build-web-tests/upload-stall/packers-49ers-stadium-geometry-pool*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
