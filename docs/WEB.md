@@ -136,8 +136,10 @@ pipeline preparation. A session can learn up to six pipeline recipes
 from slow submissions. On the next launch with the same runtime version,
 the renderer can compile those recipes early and use them when the live
 shaders and render state match. The browser keeps the recipes in local
-IndexedDB. If preparation or storage fails, the renderer creates the
-pipeline when it is needed. The feature is experimental and off by default.
+IndexedDB. If preparation reaches its time budget before trying every
+recipe, the next launch starts at the next recipe in the list. Pipelines
+that are needed before preparation finishes use normal creation. The
+feature is experimental and off by default.
 
 **Save data** shows the local save/settings count and offers portable JSON
 backup and restore. Use the game's normal Save/Load menus; finish saving and

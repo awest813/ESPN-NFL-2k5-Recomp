@@ -1881,6 +1881,29 @@ intervals were 1,963.21 ms without preparation and 1,581.01 ms with it.
 The runs leave the benefit of warm preparation unproven. Raw timing and
 GPU evidence are in `build-web-tests/upload-stall/packers-49ers-stadium-uniform-elision-gpu-*`.
 
+### Resuming bounded WebGPU preparation across launches
+
+The opt-in cache saves the next recipe position when preparation runs out
+of time. A matching runtime revision, layout and recipe list can resume
+there on the next launch. Learning writes a new list identity, which
+invalidates progress from the previous list. The hardware browser test
+forces an overrun after one exact pipeline and verifies that a new worker
+prepares the second pipeline. It also verifies the reset on a changed list.
+
+Two retail launches used the same packaged Wasm, Chrome profile and saved
+recipe revision. The first prepared one of six recipes in 2.99 seconds and
+saved the next position. The second started at that position, prepared the
+other five in 1.30 seconds, and saved the start of the list for the next
+launch. The launches reported one and five exact live matches respectively.
+The 1.2-second budget governs when preparations start. An in-flight
+compilation can finish after that budget.
+
+The longest pregame flips were 1,502.24 ms and 1,649.71 ms. Both audits
+failed on audio underruns. The results verify that the cache resumes and
+reuses the prepared pipelines. They do not show a pregame speedup or an
+FPS floor. Captures are under
+`build-web-tests/upload-stall/packers-49ers-stadium-pipeline-budget-*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

@@ -17,8 +17,17 @@ const now = performance.now.bind(performance);
 let clockOffset = 0;
 Object.defineProperty(performance, 'now', {value:() => now() + clockOffset});
 if (mode === 'unavailable') Object.defineProperty(self, 'indexedDB', {value:undefined});
+const limited = ['budget', 'resume', 'reset'].includes(mode);
+if (limited) {
+  const prepare = GPUDevice.prototype.createRenderPipelineAsync;
+  GPUDevice.prototype.createRenderPipelineAsync = async function(desc) {
+    const pipeline = await prepare.call(this, desc);
+    if (desc.label !== 'initial') clockOffset += 1300;
+    return pipeline;
+  };
+}
 const cache = self.NFL2K5PipelineCache;
-const enabled = cache.start(mode === 'unavailable' || mode === 'invalid' ? 'warm' : mode, revision, true);
+const enabled = cache.start(limited || mode === 'unavailable' || mode === 'invalid' ? 'warm' : mode, revision, true);
 
 let device, descriptor;
 onmessage = async ({data}) => {
@@ -65,10 +74,13 @@ onmessage = async ({data}) => {
     const differentLayout = device.createRenderPipeline({...descriptor, layout:secondLayout}) !== pipeline;
     const module = device.createShaderModule({code:fragmentSource.replace('0.25','0.5')});
     const differentShader = device.createRenderPipeline({...descriptor, fragment:{...descriptor.fragment, module}}) !== pipeline;
-    const differentState = device.createRenderPipeline({
+    const otherState = {
       ...descriptor, primitive:{...descriptor.primitive, cullMode:'front'},
-    }) !== pipeline;
-    postMessage({pixel, exact, differentLayout, differentShader, differentState});
+    };
+    const other = device.createRenderPipeline(otherState);
+    const differentState = other !== pipeline;
+    const otherExact = limited && device.createRenderPipeline(otherState) === other;
+    postMessage({pixel, exact, differentLayout, differentShader, differentState, otherExact});
   } catch (error) {
     postMessage({error:String(error)});
   }
@@ -92,7 +104,8 @@ async function run() {
     const context = await browser.newContext();
     const root = 'http://127.0.0.1:' + server.address().port;
     for (const [mode, revision, hit] of [
-      ['learn','a',false], ['1','a',true], ['warm','b',false], ['unavailable','a',false], ['invalid','a',false],
+      ['learn','a',false], ['1','a',true], ['warm','b',false], ['unavailable','a',false],
+      ['budget','a',true], ['resume','a',false], ['budget','a',true], ['reset','a',true], ['invalid','a',false],
     ]) {
       const page = await context.newPage();
       const events = [];
@@ -102,8 +115,8 @@ async function run() {
       });
       try {
         await page.goto(root);
-        if (mode === 'invalid') {
-          await page.evaluate(() => new Promise((resolve,reject) => {
+        if (['budget', 'reset', 'invalid'].includes(mode)) {
+          await page.evaluate(mode => new Promise((resolve,reject) => {
             const request = indexedDB.open('nfl2k5-webgpu-pipelines', 1);
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
@@ -115,11 +128,21 @@ async function run() {
               const row = store.get('recent');
               row.onsuccess = () => {
                 const value = row.result;
-                value.items[0].vertex = 'invalid WGSL';
+                if (mode === 'budget' && value.items.length === 1) {
+                  const first = value.items[0];
+                  const state = JSON.parse(first.state);
+                  state.primitive.cullMode = 'front';
+                  value.items.push({...first, state:JSON.stringify(state)});
+                } else if (mode === 'reset') {
+                  value.generation = crypto.randomUUID();
+                } else if (mode === 'invalid') {
+                  value.items.length = 1;
+                  value.items[0].vertex = 'invalid WGSL';
+                }
                 store.put(value, 'recent');
               };
             };
-          }));
+          }), mode);
         }
         await page.evaluate(({mode,revision}) => {
           const worker = new Worker('/worker.js?mode=' + mode + '&revision=' + revision);
@@ -139,15 +162,17 @@ async function run() {
         await page.waitForFunction(() => responses.length !== 0);
         assert.deepEqual(await page.evaluate(() => responses[0]), {enabled:mode !== 'unavailable'});
         if (mode === 'warm' || mode === '1') await contains(hit ? 'ready' : 'loaded', hit ? 1 : 0);
+        if (['budget', 'resume', 'reset'].includes(mode)) await contains('deferred', 1);
         if (mode === 'invalid') await contains('prepare-failed', undefined);
 
         await page.evaluate(() => pipelineWorker.postMessage('draw'));
         await page.waitForFunction(() => responses.length > 1);
         assert.deepEqual(await page.evaluate(() => responses[1]), {
           pixel:[64,128,191,255], exact:hit, differentLayout:true, differentShader:true, differentState:true,
+          otherExact:mode === 'resume',
         });
         if (mode === 'learn') await contains('stored', 1);
-        assert.equal(events.some(item => item.event === 'hit'), hit);
+        assert.equal(events.some(item => item.event === 'hit'), hit || mode === 'resume');
         console.log('PASS pipeline cache', mode, revision, 'reuse', hit);
       } finally { await page.close(); }
     }

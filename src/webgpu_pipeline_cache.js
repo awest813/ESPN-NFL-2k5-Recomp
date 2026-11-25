@@ -12,6 +12,7 @@
   const PREPARE_BUDGET_MS = 1200;
   const STORE = 'recipes';
   const STORAGE_KEY = 'recent';
+  const PROGRESS_KEY = 'prepare-progress';
 
   const encode = value => JSON.stringify(value, (_, item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
@@ -29,7 +30,8 @@
     return encode(state);
   }
 
-  async function storage(write, value) {
+  async function storage(key, value) {
+    const write = value !== undefined;
     const db = await new Promise((resolve, reject) => {
       const request = indexedDB.open('nfl2k5-webgpu-pipelines', 1);
       request.onupgradeneeded = () => request.result.createObjectStore(STORE);
@@ -41,7 +43,7 @@
       return await new Promise((resolve, reject) => {
         const transaction = db.transaction(STORE, write ? 'readwrite' : 'readonly');
         const store = transaction.objectStore(STORE);
-        const request = write ? store.put(value, STORAGE_KEY) : store.get(STORAGE_KEY);
+        const request = write ? store.put(value, key) : store.get(key);
         transaction.oncomplete = () => resolve(request.result);
         transaction.onabort = () => reject(transaction.error);
       });
@@ -91,7 +93,7 @@
         while (latestRecord) {
           const next = latestRecord;
           latestRecord = undefined;
-          await storage(true, next);
+          await storage(STORAGE_KEY, next);
           report('stored', {count:next.items.length});
         }
       } catch { report('storage-failed', {}); }
@@ -119,18 +121,32 @@
 
     async function warm(current) {
       try {
-        const cache = await storage(false);
+        const cache = await storage(STORAGE_KEY);
         const items = cache?.revision === revision && cache.layout === current.key &&
           Array.isArray(cache.items) ? cache.items.slice(0, MAX_RECIPES).filter(bounded) : [];
         report('loaded', {count:items.length});
+        if (!items.length) return;
+        // Recipe learning and warm progress use separate records so a warm
+        // launch cannot overwrite recipes learned concurrently in another tab.
+        const generation = cache.generation ?? null;
+        const progress = await storage(PROGRESS_KEY).catch(() => null);
+        let index = 0;
+        if (progress?.revision === revision && progress.layout === current.key &&
+            progress.generation === generation && progress.total === items.length &&
+            Number.isInteger(progress.next) && progress.next >= 0 && progress.next < items.length)
+          index = progress.next;
+        const first = index;
         const modules = new Map();
         const module = source => {
           if (!modules.has(source)) modules.set(source, createShader.call(current.device, {code:source}));
           return modules.get(source);
         };
         const start = performance.now();
-        for (const item of items) {
-          if (current.lost || performance.now() - start >= PREPARE_BUDGET_MS) break;
+        let attempted = 0;
+        while (!current.lost && attempted < items.length && performance.now() - start < PREPARE_BUDGET_MS) {
+          const item = items[index];
+          index = (index + 1) % items.length;
+          attempted++;
           try {
             const d = JSON.parse(item.state);
             // Capture errors from this recipe. Pop before waiting so live
@@ -149,6 +165,10 @@
             resident.push({item, pipe, used:false});
             report('ready', {count:resident.length});
           } catch { report('prepare-failed', {}); }
+        }
+        if (!current.lost && index !== first) {
+          await storage(PROGRESS_KEY, {revision, layout:current.key, generation, total:items.length, next:index});
+          report('deferred', {count:items.length - attempted, next:index});
         }
       } catch { report('storage-failed', {}); }
     }
@@ -227,7 +247,7 @@
         .sort((a, b) => b.score - a.score).slice(0, MAX_RECIPES);
       if (ranked.length === selected.length && ranked.every((item, i) => item === selected[i])) return;
       selected = ranked;
-      void save({revision, layout:active.key, items:ranked.map(candidate => candidate.item)});
+      void save({revision, layout:active.key, generation:crypto.randomUUID(), items:ranked.map(candidate => candidate.item)});
     };
     return true;
   }
