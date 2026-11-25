@@ -1506,6 +1506,46 @@ frame pacing difference. Both logged a 190-operation submission that
 spent more than 400 ms in geometry replay. Captures are under
 `build-web-tests/upload-stall/packers-49ers-stadium-uniform-upload-{reuse,control}`.
 
+### Shader compilation behind upload stalls
+
+The retail direct-write build was traced on Intel hardware Chrome. A 996.42 ms
+client token wait overlapped three GPU-process Dawn decoder batches totaling
+about 1,002 ms of elapsed time and 979 ms of thread CPU. During the two longest
+batches, 47 of 57 instruction-pointer samples landed in `dxcompiler.dll`.
+The game logged 1,014.93 ms in texture upload replay for that submission.
+A separate 392.66 ms token wait overlapped another shader compiler batch and
+appeared as a 404.47 ms geometry upload stall.
+
+A second capture marked pipeline creation and first use from the WebGPU
+worker. Shader compiler batches again overlapped waits from uniform and
+geometry queue writes. The first long batch began alongside first use of
+several transformed-triangle pipeline variants and the existing prepared
+line pipeline. The capture also found 334 module creations using 17 distinct
+WGSL sources. Normalizing shader references by exact source left 43 distinct
+descriptors among 718 pipeline requests. This census preserves layout identity,
+vertex attributes, depth/stencil, blend and rasterizer state.
+
+Four fresh-browser replays issued that recorded sequence twice per path.
+Direct creation completed through the final queue fence in 4.31 and 6.34 s.
+Exact descriptor reuse completed in 4.93 and 6.50 s. Reuse avoided 317 shader
+module requests and 675 pipeline requests with zero validation errors. These
+replays cover pipeline creation and queue completion. They have no draws or
+retail frame pacing, and give no evidence of a wall-time gain from deduplication.
+
+Two replays timing the distinct descriptors separately identified three
+transformed-triangle pipelines that first appeared well into pregame. The
+pipeline first used about 6.92 s after the stadium marker took 424–460 ms
+to compile in replay. Its first-use mark falls inside the 399 ms decoder
+batch that delayed geometry upload. Two more first used near 15.80 s took
+183–191 ms and 223–232 ms in isolation. Both first-use marks fall inside
+the 493 ms decoder batch that delayed a uniform write. The already
+prepared line pipeline was the most expensive in cold replay and was
+available at first use in the retail trace.
+
+The traced retail captures are under
+`build-web-tests/upload-stall/packers-49ers-stadium-{gpu-process,pipeline-census}`.
+They still had audio underruns and frame intervals beyond the 30 FPS budget.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
