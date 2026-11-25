@@ -32701,10 +32701,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 000000000000..a31aed5af65f
+index 000000000000..4a322187212d
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2199 @@
+@@ -0,0 +1,2215 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -32812,6 +32812,8 @@ index 000000000000..a31aed5af65f
 +    uint64_t uniform_pushed;
 +    uint64_t uniform_uncached_bytes;
 +    uint32_t uniform_last_hits, uniform_cache_hits;
++    unsigned uniform_stages_recorded;
++    bool render_pass_active;
 +    struct { WgTextureStorage *texture; SDL_GPUSampler *sampler; } bound_samplers[WG_MAX_SAMPLERS];
 +    int has_draw;
 +    int has_download;
@@ -33952,6 +33954,8 @@ index 000000000000..a31aed5af65f
 +{
 +    Op *o = push(c, OP_BEGIN_PASS);
 +    if (!o) return NULL;
++    c->uniform_stages_recorded = 0;
++    c->render_pass_active = true;
 +    memset(c->bound_samplers, 0, sizeof c->bound_samplers);
 +    if (n) {
 +        WgTextureStorage *color = texture_for_write(ct[0].texture, ct[0].cycle && ct[0].load_op != SDL_GPU_LOADOP_LOAD);
@@ -33970,7 +33974,11 @@ index 000000000000..a31aed5af65f
 +    }
 +    return (SDL_GPURenderPass *)c;
 +}
-+void WG_EndGPURenderPass(SDL_GPURenderPass *p) { push(CMD(p), OP_END_PASS); }
++void WG_EndGPURenderPass(SDL_GPURenderPass *p)
++{
++    SDL_GPUCommandBuffer *c = CMD(p);
++    if (push(c, OP_END_PASS)) c->render_pass_active = false;
++}
 +void WG_SetGPUViewport(SDL_GPURenderPass *p, const SDL_GPUViewport *v) { Op *o = push(CMD(p), OP_VIEWPORT); if (o) o->viewport = *v; }
 +void WG_SetGPUScissor(SDL_GPURenderPass *p, const SDL_Rect *r) { Op *o = push(CMD(p), OP_SCISSOR); if (o) o->scissor = *r; }
 +void WG_SetGPUBlendConstants(SDL_GPURenderPass *p, SDL_FColor c) { Op *o = push(CMD(p), OP_BLEND_CONSTANT); if (o) o->blend = c; }
@@ -34049,6 +34057,14 @@ index 000000000000..a31aed5af65f
 +    }
 +    return on;
 +}
++static void record_uniform(SDL_GPUCommandBuffer *c, int fragment, uint32_t offset)
++{
++    Op *o = push(c, OP_UNIFORM);
++    if (!o) return;
++    o->uniform = (typeof(o->uniform)){ fragment, offset };
++    if (c->render_pass_active) c->uniform_stages_recorded |= 1u << fragment;
++}
++
 +static void push_uniform(SDL_GPUCommandBuffer *c, int fragment, const void *data, Uint32 len)
 +{
 +    if (!c || c->failed || !len) return;
@@ -34059,8 +34075,10 @@ index 000000000000..a31aed5af65f
 +    c->uniform_pushed += len;
 +    if (c->last_uniform[fragment].valid && c->last_uniform[fragment].size == len
 +        && wg_uniform_bytes_equal(c->uniforms + c->last_uniform[fragment].offset, data, len)) {
-+        Op *o = push(c, OP_UNIFORM);
-+        if (o) o->uniform = (typeof(o->uniform)){ fragment, c->last_uniform[fragment].offset };
++        /* Replay resets both offsets for each pass. An earlier push in this
++         * pass can serve subsequent draws, including after pipeline changes. */
++        if (!c->render_pass_active || !(c->uniform_stages_recorded & (1u << fragment)))
++            record_uniform(c, fragment, c->last_uniform[fragment].offset);
 +        c->uniform_last_hits++;
 +        return;
 +    }
@@ -34076,8 +34094,7 @@ index 000000000000..a31aed5af65f
 +            c->last_uniform[fragment].offset = found;
 +            c->last_uniform[fragment].size = len;
 +            c->last_uniform[fragment].valid = 1;
-+            Op *o = push(c, OP_UNIFORM);
-+            if (o) o->uniform = (typeof(o->uniform)){ fragment, found };
++            record_uniform(c, fragment, found);
 +            c->uniform_cache_hits++;
 +            return;
 +        }
@@ -34104,8 +34121,7 @@ index 000000000000..a31aed5af65f
 +    c->last_uniform[fragment].size = len;
 +    c->last_uniform[fragment].valid = 1;
 +    if (cacheable) wg_uniform_insert(&c->uniform_cache, key, off, tag);
-+    Op *o = push(c, OP_UNIFORM);
-+    if (o) o->uniform = (typeof(o->uniform)){ fragment, off };
++    record_uniform(c, fragment, off);
 +}
 +void WG_PushGPUVertexUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 0, d, len); }
 +void WG_PushGPUFragmentUniformData(SDL_GPUCommandBuffer *c, Uint32 slot, const void *d, Uint32 len) { (void)slot; push_uniform(c, 1, d, len); }
@@ -46521,10 +46537,10 @@ index 0000000..b6c09b3
 +})().catch((e) => { console.error(e); process.exit(1); });
 diff --git a/tests/sdlgpu_web/test_web.c b/tests/sdlgpu_web/test_web.c
 new file mode 100644
-index 0000000..0c5f552
+index 0000000..46e18e0
 --- /dev/null
 +++ b/tests/sdlgpu_web/test_web.c
-@@ -0,0 +1,2610 @@
+@@ -0,0 +1,2634 @@
 +/* The SDL GPU API on WebGPU (src/kernel/sdlgpu/webgpu/), as the SDL GPU
 + * renderer uses it: its formats (B8G8R8A8 targets with a depth-stencil
 + * attachment, R8G8B8A8 textures with mip chains), its shaders (the generated
@@ -47141,6 +47157,30 @@ index 0000000..0c5f552
 +        uint32_t actual = 0;
 +        download(targets[i], 0, 1, 1, &actual);
 +        CHECK(actual == expected[i], "uniform submission %u exact color %08X (expected %08X)", i, actual, expected[i]);
++        SDL_ReleaseGPUTexture(dev, targets[i]);
++    }
++    /* Repeated data can skip the command within a pass. The next pass still
++     * needs the red offset, because replay starts it at offset zero (green). */
++    SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(dev);
++    const float green[4] = {0,1,0,0}, red[4] = {1,0,0,0};
++    for (unsigned i = 0; i < 2; i++) {
++        targets[i] = make_tex(format.format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, 1, 1, 1);
++        SDL_GPUColorTargetInfo color = { .texture = targets[i], .load_op = SDL_GPU_LOADOP_CLEAR,
++            .store_op = SDL_GPU_STOREOP_STORE };
++        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
++        SDL_BindGPUGraphicsPipeline(pass, pipe);
++        if (i == 0) SDL_PushGPUFragmentUniformData(command, 0, green, sizeof green);
++        for (unsigned draw = 0; draw < 2; draw++) {
++            SDL_PushGPUFragmentUniformData(command, 0, red, sizeof red);
++            SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
++        }
++        SDL_EndGPURenderPass(pass);
++    }
++    CHECK(SDL_SubmitGPUCommandBuffer(command), "retained uniform across two passes");
++    for (unsigned i = 0; i < 2; i++) {
++        uint32_t actual = 0;
++        download(targets[i], 0, 1, 1, &actual);
++        CHECK(actual == 0xFFFF0000, "repeated uniform pass %u exact red (%08X)", i, actual);
 +        SDL_ReleaseGPUTexture(dev, targets[i]);
 +    }
 +    SDL_ReleaseGPUGraphicsPipeline(dev, pipe);

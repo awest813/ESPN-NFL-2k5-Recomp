@@ -27,7 +27,7 @@ def function(signature):
     return text[start:end]
 start=text.index('struct SDL_GPUCommandBuffer {');end=text.index('\n};',start)+3
 production=text[start:end]+'\n'+function('static void cmd_fail(')+'\n'+function('static Op *push(')
-production+='\nstatic atomic_int s_uniform_cache_on=-1;\n'+function('static int uniform_cache_enabled(')+'\n'+function('static void push_uniform(')
+production+='\nstatic atomic_int s_uniform_cache_on=-1;\n'+function('static int uniform_cache_enabled(')+'\n'+function('static void record_uniform(')+'\n'+function('static void push_uniform(')
 legacy=function('static void push_uniform(').replace('static void push_uniform(', 'static void legacy_push_uniform(')
 legacy=legacy.replace('int cacheable = fragment && uniform_cache_enabled();','int cacheable = 0;')
 legacy=legacy.replace('wg_uniform_bytes_equal(c->uniforms + c->last_uniform[fragment].offset, data, len)',
@@ -35,6 +35,7 @@ legacy=legacy.replace('wg_uniform_bytes_equal(c->uniforms + c->last_uniform[frag
 production+='\n'+legacy
 source=r'''
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -172,6 +173,21 @@ static void tests(void){
  }
  for(unsigned i=0;i<64;i++)emit(&c,0,payload[0],16);
  fail_after=0;push_uniform(&c,0,payload[0],16);assert(c.failed && c.n==64);verify(&c);destroy(&c);
+ /* Reuse the last payload across passes, but emit it once per stage per pass. */
+ emit(&c,0,payload[4],32);emit(&c,1,payload[5],32);
+ c.render_pass_active=true;
+ for(unsigned pass=0;pass<3;pass++){
+   c.uniform_stages_recorded=0;
+   emit(&c,0,payload[4],32);emit(&c,1,payload[5],32);
+   unsigned n=c.n, used=c.ubytes;
+   for(unsigned draw=0;draw<7;draw++){
+     push_uniform(&c,0,payload[4],32);push_uniform(&c,1,payload[5],32);
+   }
+   assert(c.n==n && c.ubytes==used);
+   emit(&c,1,payload[6],32);emit(&c,1,payload[5],32);
+ }
+ c.render_pass_active=false;emit(&c,0,payload[4],32);emit(&c,1,payload[5],32);
+ verify(&c);destroy(&c);
  for(unsigned i=0;i<128;i++)assert(!allocations[i].p);
  printf("PASS uniform recording: %u immutable-history checks, both cache modes/stages, all 4096 sizes, forced collisions, moved allocations, padding and allocation failures\n",checks);
 }

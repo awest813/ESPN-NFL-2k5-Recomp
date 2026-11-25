@@ -1788,6 +1788,38 @@ and 15.66 ms in a 207.02 ms interval. Pacing can contribute to individual
 stalls, while the six unpaced intervals point to work or scheduling delays
 elsewhere in the runtime.
 
+### Omitting repeated uniform commands within a render pass
+
+The WebGPU recorder already reused the stored bytes for consecutive identical
+shader uniforms. It now skips the command too when the stage has already
+set that offset in the active render pass. The first push for each stage in
+a new pass still records the offset. The byte comparisons and upload layout
+remain the same.
+
+The Wasm sanitizer fixture verifies both stages, repeated pushes, changes
+within a pass, and the first push after resetting pass state. The Chrome
+hardware suite rendered two passes in the same command buffer and verified
+both readback pixels at the retained nonzero uniform offset. The full suite
+passed with zero WebGPU validation errors. In nine
+alternating recording samples, 300 passes with 128 draws each recorded 600
+uniform operations instead of 76,800 when both stages repeated. When both
+stages changed every eight draws, the count fell to 9,600. When the vertex
+stage changed every draw and the fragment stage changed every eight, it fell
+to 43,200. Both recordings stored identical byte counts for every workload.
+Wall time improved for the two most repetitive sequences and varied on the
+others. The private fixture is under `build-web-tests/uniform-pass-elision`.
+
+The retail package reached first-and-ten at 4:56.3 of Q1. The next seven
+complete five-second windows ran at 15.9–27.3 FPS, with a 156.68 ms worst
+flip. The worklet missed 51,712 additional source frames in the sampled
+36 seconds. The final scanout showed the Favre and Driver player cards with
+legible text. An earlier pregame window had a 2,751.49 ms worst flip with
+zero pacing time and a 2,495.37 ms submission that spent 2,485.96 ms in
+texture upload calls. These are elapsed browser call times. The audit
+failed on audio underruns, and the single retail run cannot establish a
+gameplay speedup. The capture is under
+`build-web-tests/upload-stall/packers-49ers-opening-uniform-pass-elision`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
