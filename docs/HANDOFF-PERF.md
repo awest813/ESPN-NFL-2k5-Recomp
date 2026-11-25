@@ -1546,6 +1546,45 @@ The traced retail captures are under
 `build-web-tests/upload-stall/packers-49ers-stadium-{gpu-process,pipeline-census}`.
 They still had audio underruns and frame intervals beyond the 30 FPS budget.
 
+### Preparing the three pregame triangle pipelines early
+
+The local proof of concept uses the three descriptors identified in the
+previous trace. It compiles them asynchronously on the live device after
+the existing line preparation. It returns a prepared object only when the
+live layout, complete shader sources and pipeline state match. Both browser
+packages use identical Wasm and the same descriptor checks. The control
+skips the extra compilation. The captured shader sources stay local.
+
+All three prepared pipelines matched at first use. In the control, the
+first-use markers preceded Dawn decoder batches of 388.55 and 522.00 ms.
+With early compilation, the largest decoder batch across the pregame
+sample took 236.15 ms. Across nine complete windows the mean increased
+from 29.32 to 29.83 FPS. The longest interval fell from 503.00 to 282.38 ms,
+and new missing audio frames fell from 9,856 to zero. The warm run still
+had startup underruns and pregame windows below 30 FPS. Each arm ran once,
+and the cameras reached the first-use points at different times. The
+match and decoder evidence support the effect on compilation stalls.
+The frame and audio measurements need repetition.
+
+The original census logged the first creation of each target vertex module
+less than 0.74 ms before pipeline creation. The shared fragment module was
+available during the title. A release implementation needs to obtain each
+vertex program earlier or learn the recipes locally. The experiment did
+not add captured shaders to the runtime. Traces are under
+`build-web-tests/upload-stall/packers-49ers-stadium-exact-precompile-{warm,cold}`.
+
+A separate instrumented Wasm build timed the most recent changed word
+of each complete NV2A vertex program. Repeated writes of the same word
+kept the original timestamp. Hashes of the generated WGSL matched all
+three target shaders from the earlier census. Their exact program words
+had been stable in the active NV2A slots for 0.630, 1.175 and 0.275 ms
+at first translation. The maximum across repetitions of the first
+shader was 3.340 ms. Watching the active-slot writes gives much less
+lead time than these pipelines need to compile. The measurement covers
+NV2A program memory and leaves earlier copies in guest RAM unmeasured.
+Probe and capture are under
+`build-web-tests/upload-stall/{guest-program-lead,packers-49ers-stadium-guest-program-lead}`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
