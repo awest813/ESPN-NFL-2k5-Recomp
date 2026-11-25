@@ -1644,6 +1644,45 @@ underruns before pregame. The paired run verifies operation
 through the launcher. The feature remains off by default. Captures are
 under `build-web-tests/upload-stall/packers-49ers-stadium-runtime-pipeline-cache-*`.
 
+### Opening-drive audio and frame timing with warm pipelines
+
+The packaged cache build reached first-and-ten at 4:54.5 of Q1 in
+Packers at 49ers. Across the next 36 seconds, all six complete windows
+fell below 30 FPS (16.7–28.7 FPS), and the worklet missed 171,392 frames.
+The only WebGPU submissions over 100 ms came within eight seconds of
+stadium entry, before the sampled drive. Audio timing captured 33,232
+producer records through the full session without a trace loss report.
+
+During the drive, producer deadlines ran up to 113.77 ms late. The
+largest VP stage took 108.18 ms with zero recorded voice-lock waits.
+The longest DSP span was 55.01 ms, the longest MMIO handoff was
+55.88 ms, and the longest measured wake overshoot was 56.72 ms.
+These elapsed durations include host scheduling. They show that
+opening-drive audio starvation persists after the compilation stalls.
+The capture is `build-web-tests/upload-stall/packers-49ers-warm-stadium-opening-apu`.
+
+### Reducing pipeline cache lookup cost
+
+The warm cache compares shader sources before encoding render state.
+Learning compares the same fields directly and keeps a bounded history
+of candidates without building composite strings containing the shaders.
+
+Seven alternating pairs replayed 22,944 recorded synchronous pipeline
+requests per arm with GPU calls stubbed out. Both warm lookups returned
+4,608 prepared objects. Median time dropped from 2.37 s to 0.38 s, and
+serialized text dropped from 1.54 billion to 14.22 million characters.
+The learning pass replayed the same requests and first uses in a separate
+comparison. Its median fell from 3.63 s to 1.04 s.
+This measures JavaScript lookup work, including instrumentation, with
+no GPU compilation or frame-time claim.
+
+The retail package with the new warm lookup reused all six saved
+recipes. This check used the previous build's cache key explicitly to
+hold the saved recipes fixed while changing the lookup code. The nine
+complete windows averaged 29.56 FPS, the longest interval was 486.13 ms,
+and the worklet missed 2,176 frames during the segment. The capture is
+`build-web-tests/upload-stall/packers-49ers-stadium-pipeline-lookup`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

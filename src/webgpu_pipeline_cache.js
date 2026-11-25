@@ -18,7 +18,16 @@
     return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]));
   });
 
-  const identity = item => JSON.stringify([item.state, item.vertex, item.fragment]);
+  const sameRecipe = (a, b) =>
+    a.vertex === b.vertex && a.fragment === b.fragment && a.state === b.state;
+
+  function pipelineState(desc) {
+    const state = {...desc, vertex:{...desc.vertex}, fragment:{...desc.fragment}};
+    delete state.layout;
+    delete state.vertex.module;
+    delete state.fragment.module;
+    return encode(state);
+  }
 
   async function storage(write, value) {
     const db = await new Promise((resolve, reject) => {
@@ -69,10 +78,10 @@
 
     const shaders = new WeakMap(), groups = new WeakMap(), layouts = new WeakMap();
     const pending = new WeakMap();
-    const resident = new Map(), selected = new Map();
+    const resident = [];
     const recent = [];
 
-    let active, lastSaved = '', saving = false, latestRecord;
+    let active, selected = [], saving = false, latestRecord;
 
     async function save(record) {
       latestRecord = record;
@@ -90,16 +99,22 @@
     }
 
     function recipe(desc) {
-      if (!active || desc.layout !== active.layout || !desc.fragment ||
-          desc.vertex.buffers?.[0]?.stepMode !== 'vertex') return null;
       const vertex = shaders.get(desc.vertex.module), fragment = shaders.get(desc.fragment.module);
       if (!vertex || !fragment) return null;
-      const state = {...desc, vertex:{...desc.vertex}, fragment:{...desc.fragment}};
-      delete state.layout;
-      delete state.vertex.module;
-      delete state.fragment.module;
-      const item = {state:encode(state), vertex, fragment};
+      const item = {state:pipelineState(desc), vertex, fragment};
       return bounded(item) ? item : null;
+    }
+
+    function prepared(desc) {
+      if (!resident.length) return;
+      const vertex = shaders.get(desc.vertex.module), fragment = shaders.get(desc.fragment.module);
+      let state;
+      for (const entry of resident) {
+        if (entry.item.vertex !== vertex || entry.item.fragment !== fragment) continue;
+        // A shader miss does not need a canonical render descriptor.
+        state ??= pipelineState(desc);
+        if (entry.item.state === state) return entry;
+      }
     }
 
     async function warm(current) {
@@ -131,8 +146,8 @@
             const [pipe, validation] = await Promise.all([building, current.device.popErrorScope()]);
             if (validation) { report('prepare-failed', {}); continue; }
             if (current.lost) break;
-            resident.set(identity(item), {pipe, used:false});
-            report('ready', {count:resident.size});
+            resident.push({item, pipe, used:false});
+            report('ready', {count:resident.length});
           } catch { report('prepare-failed', {}); }
         }
       } catch { report('storage-failed', {}); }
@@ -164,19 +179,24 @@
       if (active || !key) return result;
       const current = {device:this, layout:desc.layout, key, since:performance.now(), lost:false};
       active = current;
-      this.lost.then(() => { current.lost = true; resident.clear(); });
+      this.lost.then(() => { current.lost = true; resident.length = 0; });
       if (warming) result.then(() => setTimeout(() => warm(current), 2500), () => {});
       return result;
     };
     deviceApi.createRenderPipeline = function(desc) {
-      const item = active?.device === this && !active.lost && recipe(desc);
-      const entry = item && resident.get(identity(item));
+      if (active?.device !== this || active.lost || desc.layout !== active.layout || !desc.fragment ||
+          desc.vertex.buffers?.[0]?.stepMode !== 'vertex')
+        return create.call(this, desc);
+      const entry = prepared(desc);
       if (entry) {
         if (!entry.used) { entry.used = true; report('hit', {}); }
         return entry.pipe;
       }
       const result = create.call(this, desc);
-      if (item && learning) pending.set(result, item);
+      if (learning) {
+        const item = recipe(desc);
+        if (item) pending.set(result, item);
+      }
       return result;
     };
     passApi.setPipeline = function(pipeline) {
@@ -185,10 +205,10 @@
         pending.delete(pipeline);
         const now = performance.now();
         if (now - active.since >= GRACE_MS) {
-          const key = identity(item);
-          if (!recent.some(entry => entry.key === key)) {
+          const matches = entry => sameRecipe(entry.item, item);
+          if (!recent.some(matches) && !selected.some(matches)) {
             if (recent.length === HISTORY) recent.shift();
-            recent.push({key, item, first:now});
+            recent.push({item, first:now, score:0});
           }
         }
       }
@@ -201,15 +221,12 @@
       for (const candidate of recent) {
         if (candidate.first < begin - 250 || candidate.first > end) continue;
         const score = elapsed / (1 + Math.abs(candidate.first - begin) / 90);
-        const old = selected.get(candidate.key);
-        if (!old || old.score < score) selected.set(candidate.key, {...candidate, score});
+        candidate.score = Math.max(candidate.score, score);
       }
-      const ranked = [...selected.values()].sort((a, b) => b.score - a.score).slice(0, MAX_RECIPES);
-      selected.clear();
-      for (const candidate of ranked) selected.set(candidate.key, candidate);
-      const stamp = JSON.stringify(ranked.map(candidate => candidate.key));
-      if (!ranked.length || stamp === lastSaved) return;
-      lastSaved = stamp;
+      const ranked = [...new Set([...selected, ...recent.filter(item => item.score)])]
+        .sort((a, b) => b.score - a.score).slice(0, MAX_RECIPES);
+      if (ranked.length === selected.length && ranked.every((item, i) => item === selected[i])) return;
+      selected = ranked;
       void save({revision, layout:active.key, items:ranked.map(candidate => candidate.item)});
     };
     return true;
