@@ -1481,6 +1481,31 @@ confirmed pool reuse on the retail path. The runs leave direct writes
 as the default. Captures are under
 `build-web-tests/upload-stall/packers-49ers-stadium-geometry-pool*`.
 
+### Trimming consecutive uniform uploads
+
+The candidate retains the previous uniform payload on the WebGPU worker
+and trims byte-identical 4 KiB blocks from the edges. It issues at most
+one queue write and retains at most 8 MiB plus shader padding. The Wasm
+sanitizer fixture checked exact contents, zero tails and buffer growth.
+The hardware Chrome rendering suite passed with reuse enabled.
+
+During the reported title, menus and loading windows before the stadium
+marker, reuse saved 50,997,504 of 418,473,216 requested bytes (12.19%)
+and skipped 23 queue writes. In nine complete pregame reporting windows,
+all 1,042,600,480 requested bytes were sent across 1,570 submissions.
+Each of those windows reported zero skipped uniform writes. The candidate
+remains local because the savings stopped when the stadium workload began.
+Source and replay fixture are under
+`build-web-tests/verify-vector-width/uniform-upload-retail`.
+
+The same-build control averaged 29.50 FPS with 768 new missing audio
+frames during the sampled pregame. The reuse run averaged 17.22 FPS
+with 813,184 new missing frames. The runs had different stage speeds
+and submission counts, so these samples do not isolate the cause of the
+frame pacing difference. Both logged a 190-operation submission that
+spent more than 400 ms in geometry replay. Captures are under
+`build-web-tests/upload-stall/packers-49ers-stadium-uniform-upload-{reuse,control}`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
