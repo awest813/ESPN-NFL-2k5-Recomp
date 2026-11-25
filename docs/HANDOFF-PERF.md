@@ -1949,6 +1949,41 @@ first use. This was a local compile replay. Retail validation still needs
 to locate a startup window where the warmup can finish without disrupting
 the first menu frames or audio.
 
+### Testing fragment preparation during renderer startup
+
+A local Wasm build tried issuing the triangle fragment warmup when the
+renderer first loaded its shaders. The warmup used the existing
+CPU-transformed vertex shader and released the temporary pipeline through
+the normal asynchronous completion path. The retail draw still chose its
+own exact pipeline. Both arms used the same instrumented game package.
+
+In the warm arm, the asynchronous request preceded the exact pipeline
+request by just 3.01 ms. Chrome queued the exact pipeline's first bind
+475.52 ms after warmup began, while warmup completed 2,731.01 ms after it
+began. The shader initialization point did not give the warmup time to
+finish before first use.
+
+The baseline's nine complete pregame windows ranged from 16.4 to 30.0 FPS,
+with a 1,724.15 ms longest interval. Its worklet missed 24,192 more frames
+between stadium entry and the last sample. The warm arm's eight windows
+ranged from 8.4 to 25.6 FPS, with a 1,958.68 ms longest interval and 750,592
+more missing audio frames. The boot reached the title sooner in the warm
+arm, but the startup intervals were close to five seconds in both.
+Different run conditions prevent attributing the pregame regression to the
+warmup. The startup hook was removed from the runtime after the test.
+The two captures are under
+`build-web-tests/upload-stall/packers-49ers-intro-fragment-{control,warm}`.
+
+Three alternating Chrome pairs repeated the triangle compile replay with
+a separate preparation device. They fully compiled the warmup, destroyed
+that device, requested a fresh device, and recreated the exact draw
+descriptor. Median exact creation time fell from 3,412 ms to 179 ms. The
+warmup took 2,943 ms at the median. On this Intel/Chrome configuration the
+compiler benefit survived device destruction. This opens an earlier
+preparation point during loading. The benchmark did not measure the
+launcher or retail startup. The script and measurements are in
+`build-web-tests/upload-stall/stadium-shader-stage-replay/separate-device*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
