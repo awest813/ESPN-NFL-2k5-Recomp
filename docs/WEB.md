@@ -131,6 +131,14 @@ uses one guest vblank alongside that host deadline to avoid double pacing.
 It limits output rather than guaranteeing a minimum on every scene/device.
 Development `?env=NFL2K5_FPS_LIMIT=0` or `=30` overrides the launcher choice.
 
+On packaged builds, `?env=RECOMP_WEBGPU_PIPELINE_CACHE=1` opts into WebGPU
+pipeline preparation. A session can learn up to six pipeline recipes
+from slow submissions. On the next launch with the same runtime version,
+the renderer can compile those recipes early and use them when the live
+shaders and render state match. The browser keeps the recipes in local
+IndexedDB. If preparation or storage fails, the renderer creates the
+pipeline when it is needed. The feature is experimental and off by default.
+
 **Save data** shows the local save/settings count and offers portable JSON
 backup and restore. Use the game's normal Save/Load menus; finish saving and
 exit to the launcher before managing backups. Restore merges files, replacing

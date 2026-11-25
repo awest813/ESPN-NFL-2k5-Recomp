@@ -173,7 +173,10 @@ else()
       # The page (web/) starts the game when the player presses Play, after
       # the disc is in OPFS: a factory instead of a self-starting script.
       -sMODULARIZE=1 -sEXPORT_NAME=createNFL2K5 -sEXPORTED_RUNTIME_METHODS=ENV
+      "SHELL:--extern-pre-js \"${PROJECT_SOURCE_DIR}/src/webgpu_pipeline_cache.js\""
       -sERROR_ON_UNDEFINED_SYMBOLS=1)
+    set_property(TARGET NFL2K5 APPEND PROPERTY LINK_DEPENDS
+      "${PROJECT_SOURCE_DIR}/src/webgpu_pipeline_cache.js")
     set_target_properties(NFL2K5 PROPERTIES SUFFIX ".js")
     # The page next to the module: build-web/index.html and friends.
     add_custom_target(nfl2k5_web_page ALL

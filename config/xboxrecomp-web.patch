@@ -32678,10 +32678,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 000000000000..a7bbf30750fb
+index 000000000000..a31aed5af65f
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2177 @@
+@@ -0,0 +1,2199 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -32980,6 +32980,17 @@ index 000000000000..a7bbf30750fb
 +}
 +
 +static em_proxying_ctx *s_init_ctx;
++static int s_pipeline_cache;
++
++EM_JS(int, wg_pipeline_cache_start, (const char *mode, const char *revision, int trace), {
++    try {
++        return globalThis['NFL2K5PipelineCache']?.['start'](UTF8ToString(mode), UTF8ToString(revision), trace) ? 1 : 0;
++    } catch (_) { return 0; }
++});
++
++EM_JS(void, wg_pipeline_cache_observe, (double ms), {
++    try { globalThis['NFL2K5PipelineCache']?.['observe'](ms); } catch (_) {}
++});
 +
 +static void on_device(WGPURequestDeviceStatus st, WGPUDevice d, WGPUStringView msg, void *u1, void *u2)
 +{
@@ -32994,6 +33005,11 @@ index 000000000000..a7bbf30750fb
 +    WGPULimits limits = {0};
 +    if (wgpuDeviceGetLimits(d, &limits) == WGPUStatus_Success)
 +        s_max_buffer_size = limits.maxBufferSize;
++    const char *cache_mode = getenv("RECOMP_WEBGPU_PIPELINE_CACHE");
++    const char *revision = getenv("NFL2K5_PIPELINE_CACHE_REVISION");
++    if (cache_mode && revision)
++        s_pipeline_cache = wg_pipeline_cache_start(cache_mode, revision,
++            getenv("RECOMP_WEBGPU_PIPELINE_CACHE_TRACE") != NULL);
 +    create_fixed_objects();
 +
 +    WGPUEmscriptenSurfaceSourceCanvasHTMLSelector sel = {
@@ -34496,7 +34512,8 @@ index 000000000000..a7bbf30750fb
 +{
 +    SDL_GPUCommandBuffer *c = r->c;
 +    SubmitProfile *profile = &r->profile;
-+    if (profile->start) profile->server_start = SDL_GetPerformanceCounter();
++    uint64_t start = (profile->start || s_pipeline_cache) ? SDL_GetPerformanceCounter() : 0;
++    if (profile->start) profile->server_start = start;
 +    uniform_profile(c);
 +    /* Replay is serial on the server. The uniform write is ordered after
 +     * the preceding submissions and before this command buffer's draws. */
@@ -34632,6 +34649,11 @@ index 000000000000..a7bbf30750fb
 +    if (finish_start) {
 +        profile->server_end = SDL_GetPerformanceCounter();
 +        profile->finish = profile->server_end - finish_start;
++    }
++    if (s_pipeline_cache) {
++        uint64_t end = profile->server_end ? profile->server_end : SDL_GetPerformanceCounter();
++        double ms = (end - start) * (1000.0 / SDL_GetPerformanceFrequency());
++        if (ms >= 100.0) wg_pipeline_cache_observe(ms);
 +    }
 +}
 +

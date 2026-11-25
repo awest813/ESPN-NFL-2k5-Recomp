@@ -79,6 +79,7 @@ window.NFL2K5Launch = (() => {
       print, printErr, onAbort, onGameExit, onGpuPresent,
       setStatus: (text) => { if (onProgress) onProgress(text); },
       preRun: [(m) => {
+        if (/^[a-f0-9]{64}$/.test(build || '')) m.ENV.NFL2K5_PIPELINE_CACHE_REVISION = build;
         for (const kv of env) {
           const i = kv.indexOf('=');
           if (i > 0) m.ENV[kv.slice(0, i)] = kv.slice(i + 1);

@@ -1625,6 +1625,25 @@ The local probe, fixture and captures are under
 `test-learned-pipeline-cache.cjs` and
 `packers-49ers-stadium-learned-pipelines-*`.
 
+The packaged runtime now includes an opt-in implementation. The WebGPU
+worker identifies slow replays directly, and the launcher supplies the
+build fingerprint for cache invalidation. It stores a single bounded
+record per origin and stops issuing additional compilations after its
+1.2-second preparation budget. An individual in-flight compile may
+extend beyond that budget. The hardware fixture verifies exact readback
+and fallback for a stale version, a changed shader, layout or render state,
+unavailable storage, and an invalid stored shader.
+
+On the integrated retail build, the first launch saved six recipes from
+slow submissions. The next launch prepared all six in 0.75 s and all
+matched live pregame requests. The longest interval in the complete
+pregame windows fell from 528.36 to 347.64 ms. Average FPS fell from
+29.33 to 28.13, and the warm run missed 125,312 pregame audio frames
+compared with zero in the learning run. The learning run reported audio
+underruns before pregame. The paired run verifies operation
+through the launcher. The feature remains off by default. Captures are
+under `build-web-tests/upload-stall/packers-49ers-stadium-runtime-pipeline-cache-*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
