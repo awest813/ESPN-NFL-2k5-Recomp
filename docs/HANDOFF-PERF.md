@@ -1904,6 +1904,51 @@ reuses the prepared pipelines. They do not show a pregame speedup or an
 FPS floor. Captures are under
 `build-web-tests/upload-stall/packers-49ers-stadium-pipeline-budget-*`.
 
+### Isolating the cost of stadium shader compilation
+
+Four order-rotated rounds in hardware Chrome used recorded retail pipeline
+descriptors with the same layout, attributes and render state. Each compared
+the full pipeline with two diagnostic variants. One kept the original vertex
+shader and supplied a minimal fragment shader. The other kept the original
+fragment shader and supplied a minimal vertex shader. Both stand-ins kept
+the interstage interface. Each arm used a new browser and each descriptor a
+new GPU device. These are elapsed pipeline creation and queue-fence times.
+
+| Recorded pipeline | Full pipeline median | Original vertex median | Original fragment median |
+| --- | ---: | ---: | ---: |
+| First slow triangle (12) | 3,005 ms | 212 ms | 2,890 ms |
+| Instanced line (15) | 3,780 ms | 552 ms | 3,248 ms |
+| Pregame triangle (57) | 560 ms | 573 ms | 10 ms |
+| Pregame triangle (114) | 857 ms | 313 ms | 575 ms |
+
+The first two pipelines spent most of their creation time with the original
+fragment shader. The two pregame triangle variants show different cost
+breakdowns, including substantial vertex work in pipeline 57. These
+diagnostic timings can reflect driver caching and stage linking. They are
+neither additive nor measurements of in-game drawing. The replay sources
+and data are under `build-web-tests/upload-stall/stadium-shader-stage-replay`.
+
+Four alternating pairs then compiled the exact triangle and line pipelines
+with and without a preceding fragment warmup. The warmup used the original
+fragment shader, layout and render state with the corresponding simplified
+vertex shader. Median creation time for the later exact triangle pipeline
+fell from 3,362 ms to 182 ms. For the later exact line pipeline, it fell
+from 5,593 ms to 630 ms. The warmups themselves took median times of 3,578
+ms and 4,270 ms. This shifts most compilation ahead of first use on the
+tested Intel adapter. The test supplies no gameplay timing or evidence of
+a shorter startup.
+
+Three further pairs used the renderer's existing CPU-transformed vertex
+shader and its eight-attribute layout for one triangle warmup. The actual
+draw pipeline kept its generated vertex shader and original layout. Its
+median creation time fell from 3,154 ms to 160 ms. The warmup took 3,136 ms
+at the median. The two later triangle pipelines showed no consistent
+timing change. The warmup can run before the title uploads the generated
+vertex program, which previously became available only shortly before
+first use. This was a local compile replay. Retail validation still needs
+to locate a startup window where the warmup can finish without disrupting
+the first menu frames or audio.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
