@@ -1729,6 +1729,40 @@ play sequence and profiling prevent attributing the retail result to
 the DSP specialization. The capture is
 `build-web-tests/upload-stall/packers-49ers-opening-dsp-x-data-load`.
 
+### Finding retained texture copies
+
+The texture hash memo now inserts at the first empty slot in its bounded
+probe window. A slot stays occupied until the whole table resets, so lookup
+can stop at the first empty slot. A full window still replaces its oldest
+entry. Native sanitizer checks and both Wasm test modes passed the wraparound
+collision case, ring eviction, and same-frame mutations at every byte position.
+Every memo hit still verifies the guest bytes before using its retained hash.
+
+Ten alternating pairs compared the prior and updated binding paths in Wasm
+with 192 aligned textures. Each arm verified 256 MiB of unchanged data per
+sample and produced the same key checksum. At 256-byte textures the median
+fell from 38.40 to 15.91 ms, and at 4 KiB it fell from 8.30 to 7.05 ms.
+At 64 KiB the timings overlapped. This measures synthetic binding loops
+with full comparisons. The local fixture is under
+`build-web-tests/memo-first-vacant`.
+
+Three sequential hardware Chrome runs used the same profile, 30 FPS cap,
+and Packers–49ers CPU-versus-CPU route. Each reached first-and-ten and
+sampled the next 36 seconds. The table uses the six complete five-second
+windows in each sample.
+
+| Run | FPS range | Worst flip | New missing audio frames |
+| --- | ---: | ---: | ---: |
+| First candidate | 15.7–26.1 | 252.61 ms | 448,000 |
+| Previous build | 27.5–30.0 | 212.76 ms | 24,448 |
+| Candidate repeat | 27.9–30.0 | 142.01 ms | 24,576 |
+
+All three audits failed on audio underruns, and the different play sequences
+and spread between runs leave the gameplay speed effect unproven. The repeat
+reached second-and-five at 4:44 with player models, field markings, the
+scorebug and lineup text visible. The local reports and scanout frames are
+under `build-web-tests/upload-stall/packers-49ers-opening-texture-memo-*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high

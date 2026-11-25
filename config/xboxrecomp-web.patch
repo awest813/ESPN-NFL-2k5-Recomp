@@ -4764,20 +4764,20 @@ diff --git a/src/kernel/sdlgpu/sdlgpu_texture.inc.c b/src/kernel/sdlgpu/sdlgpu_t
 -            m->hash = sg_hash(snap->pixels, snap->bytes,
 -                              sg_hash((const uint8_t *)shape, sizeof shape, 0x243F6A8885A308D3ull));
 -            }
-+        /* Search the whole collision window before replacing a cold entry:
-+         * an unchanged image can survive many flips behind another address. */
++        /* Insert at the first empty slot. Occupied slots stay occupied until
++         * a full reset, so a hit can never lie beyond an empty slot. */
 +        uint32_t bucket=sg_hash_memo_bucket(snap->pixels,tx->width,tx->height);
 +        SgHashMemo *m=NULL,*victim=NULL;
 +        for(unsigned probe=0;probe<16;probe++) {
 +            SgHashMemo *candidate=&s_sg_hash_memo[(bucket+probe)&(SG_HASH_MEMO-1u)];
++            if(!candidate->pixels) {victim=candidate;break;}
 +            if(candidate->pixels==snap->pixels && candidate->bytes==snap->bytes &&
 +               memcmp(candidate->shape,shape,sizeof shape)==0) {m=candidate;break;}
-+            if(!victim || !candidate->pixels || (victim->pixels &&
-+               s_sg_frame-candidate->frame>s_sg_frame-victim->frame))victim=candidate;
++            if(!victim ||
++               s_sg_frame-candidate->frame>s_sg_frame-victim->frame)victim=candidate;
 +        }
-+        int identity=m!=NULL;
++        int retained=m && sg_hash_copy_valid(m);
 +        if(!m)m=victim;
-+        int retained=identity && sg_hash_copy_valid(m);
 +        if(retained && !refresh) {
 +            s_sg_stats.texture_compare_bytes+=snap->bytes;
 +            uint64_t started = sg_profile_now();

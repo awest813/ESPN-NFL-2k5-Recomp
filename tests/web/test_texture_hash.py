@@ -1,6 +1,7 @@
 """Exercise the live texture hash memo with aligned Xbox-style allocations."""
 from pathlib import Path
 import argparse
+import os
 import shutil
 import subprocess
 
@@ -116,8 +117,9 @@ int main(void) {
         if(length){b[offset+length-1]^=1;CHECK(!sg_texture_bytes_equal(a+offset,b+offset,length));}
         free(a);free(b);
     }
-    uint8_t *data = aligned_alloc(65536, 64 * 65536);
-    CHECK(data != NULL);
+    uint8_t *allocation = malloc(65 * 65536);
+    CHECK(allocation != NULL);
+    uint8_t *data = (uint8_t *)(((uintptr_t)allocation + 65535u) & ~(uintptr_t)65535u);
     uint64_t keys[64];
     tx[0] = (Texture){32, 32, 0x12, 128};
     TextureSnapshot *s = &s_texture_snapshot[0]; s->bytes = 4096;
@@ -194,11 +196,13 @@ int main(void) {
     s_sg_frame=UINT32_MAX;before=sg_texture_key(0,0);s_sg_frame=0;
     s->pixels[32]^=4;CHECK(sg_texture_key(0,0)!=before);
 #ifdef TEST_PERSISTENT_COPY
-    /* Persistent lookup must find an identity beyond cold colliding entries. */
+    /* Persistent lookup must find identities behind colliding entries,
+     * including when the probe window wraps around the table. */
     tx[0]=(Texture){2,1,0x12,8};s->bytes=8;
+    memset(s_sg_hash_memo,0,sizeof s_sg_hash_memo);
     uint8_t *collisions[17];unsigned found=0;
     for(size_t i=0;i+8<64*65536 && found<17;i+=16)
-        if(sg_hash_memo_bucket(data+i,2,1)==0)collisions[found++]=data+i;
+        if(sg_hash_memo_bucket(data+i,2,1)==SG_HASH_MEMO-1u)collisions[found++]=data+i;
     CHECK(found==17);
     uint64_t collision_keys[17];
     for(unsigned i=0;i<16;i++) {
@@ -247,7 +251,7 @@ int main(void) {
     CHECK(s_sg_stats.texture_same_frame_match_bytes==8);
     puts("PASS reuse counters distinguish same-frame matches and changes from cross-frame checks");
 #endif
-    free(data);
+    free(allocation);
     puts("PASS aligned texture reuse, refresh, new frames, owned snapshots, palette and mip-count changes, every-byte same-frame rewrites, aliases, allocation failure, bounded ring eviction, oversized images, frame/cursor wrap and cross-frame reuse");
     return 0;
 }
@@ -255,7 +259,8 @@ int main(void) {
     build = args.build_dir.resolve()
     build.mkdir(parents=True, exist_ok=True)
     source = build / "test.c"
-    output = build / ("test" if args.native else "test.js")
+    native_executable = "test.exe" if os.name == "nt" else "test"
+    output = build / (native_executable if args.native else "test.js")
     source.write_text(harness.replace("/* LIVE_HASH */", memo + hashing), encoding="utf-8")
     if args.native:
         compiler=shutil.which('clang') or shutil.which('cc')
