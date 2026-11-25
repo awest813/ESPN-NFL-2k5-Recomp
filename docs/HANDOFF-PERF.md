@@ -1585,6 +1585,46 @@ NV2A program memory and leaves earlier copies in guest RAM unmeasured.
 Probe and capture are under
 `build-web-tests/upload-stall/{guest-program-lead,packers-49ers-stadium-guest-program-lead}`.
 
+### Learning pregame pipelines across browser launches
+
+A local browser probe matches slow submissions to recently used
+transformed-triangle pipelines and stores up to eight descriptors in
+IndexedDB. The cache is keyed by runtime revision and layout. On a new
+launch it prepares the saved descriptors asynchronously after the existing
+line preparation. Live requests reuse a prepared object only when the
+shader sources, render state and layout object match. The test packages
+learn from the local game and include no captured shader data.
+
+A hardware Chrome fixture reopened the same profile and read back exactly
+`[64, 128, 191, 255]`. It verified reuse in the same revision and fallback
+for a changed revision, shader, state or layout object.
+
+The first retail run saved six recipes and the next launch compiled all
+six before stadium entry. All six matched live pregame requests. The
+longest GPU-process decoder batch fell from 5.73 s on the learning run to
+2.31 s on the warm run. Complete pregame windows averaged 16.56 and 24.50
+FPS and the worklet missed 529,792 and 301,824 frames during those samples.
+The learning run hit an unusually long stall, and the warm run still had
+an early 2.41 s submission and many late frames. Preparing the six recipes
+also took about 14.34 s in this launch. The pair proves that learning and
+reuse work through the retail path and leaves the performance benefit unproven.
+
+A repeat warm launch again matched all six recipes. Preparation took
+0.26 s. Its nine complete pregame windows averaged 29.94 FPS, with a
+75.27 ms longest interval and zero new missing audio frames. The full audit
+recorded one startup underrun. A subsequent direct-write control used the
+same Wasm and Chrome profile with application recipe preparation disabled.
+It averaged 29.47 FPS, with a 431.90 ms longest interval and 5,760 new
+missing audio frames. The longest pregame decoder batch was 116.03 ms in
+the warm repeat and 410.87 ms in the subsequent control. The fixed-order
+comparison leaves browser-cache and workload variation as possible influences.
+The prototype remains local.
+
+The local probe, fixture and captures are under
+`build-web-tests/upload-stall` as `learned-pipeline-cache.js`,
+`test-learned-pipeline-cache.cjs` and
+`packers-49ers-stadium-learned-pipelines-*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
