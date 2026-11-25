@@ -429,6 +429,43 @@ counts and showed no repeatable frame-time gain. Both candidate runs lost
 more audio. The production queue still uses the reference uniform behavior.
 Private captures are under `build-web-tests/upload-stall/retail-uniform-*`.
 
+### Experiment recording uniform offsets on WebGPU draws
+
+The prototype recorded the selected vertex and fragment uniform offsets on
+each draw so a push needed no separate command. The recorder owned immutable
+uniform bytes. Each render pass started at offset zero, and a later pass
+could explicitly select the same cached bytes again.
+
+An isolated Wasm benchmark recorded and replayed two synthetic sequences
+of 240 passes with 1,024 draws each. Both retained identical uniform bytes
+and replayed the same draw offsets. The measured subset fell from
+737,280 commands to 245,760 in each sequence. Across nine alternating
+pairs, median record and replay time went from 20.67 to 18.18 ms for stable
+uniforms and 26.86 to 23.85 ms for more frequent changes. The benchmark
+excludes encoding and submission to a GPU.
+
+The WebGPU pixel suite verified that a nonzero offset can be selected
+again in a new pass and that a pass with no push starts at zero. The
+Wasm recorder passed both the normal and sanitizer fixtures.
+
+Three sequential retail runs verified Packers at 49ers. Each row covers
+seven complete windows after kickoff entry. Missing frames count the
+increase from the kickoff audio sample through the final sample.
+
+| Build | Five-second FPS averages | Worst flip | Missing audio frames |
+| --- | ---: | ---: | ---: |
+| Per-draw uniform offsets | 21.3–30.0 | 180.61 ms | 170,624 |
+| Preceding renderer | 27.9–30.1 | 71.98 ms | 0 |
+| Per-draw uniform offsets, repeat | 22.3–30.2 | 205.52 ms | 22,144 |
+
+The first candidate ended at the kick meter. The reference and the repeat
+reached first-and-ten under different lighting. The two candidate runs
+had lower minimum averages and longer stalls than the reference. The
+experiment is preserved in the merge history. The production renderer
+uses the later per-pass duplicate command elimination measured below.
+Captures are under
+`build-web-tests/upload-stall/{fixed-matchup-uniform-draw,fixed-matchup-uniform-draw-reference,fixed-matchup-uniform-draw-repeat}`.
+
 In the earlier Dawn trace, the GPU-process thread consumed **1,760.4 ms of
 CPU time during the 1,768.2 ms** it spent handling the 64,192-byte command
 batch. The next two longest batches used 509.4 of 511.4 ms and 440.4 of
