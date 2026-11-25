@@ -1820,6 +1820,30 @@ failed on audio underruns, and the single retail run cannot establish a
 gameplay speedup. The capture is under
 `build-web-tests/upload-stall/packers-49ers-opening-uniform-pass-elision`.
 
+### GPU-process attribution during stadium entry
+
+A new pair of hardware Chrome traces used the same packaged runtime and
+Packers–49ers pregame route. Cache preparation was disabled for the first
+run. A 1,298.97 ms submission reported 1,292.76 ms in texture-upload calls.
+Chrome's command-buffer token wait lasted 1,285.08 ms and overlapped a
+1,322.84 ms GPU-process Dawn decoder batch for 1,283.96 ms. The decoder
+batch used 1,304.85 ms of thread CPU. The first run's instruction sampler
+returned no samples.
+
+The repeat enabled warm preparation and reused a previous test revision
+explicitly to hold the saved recipes fixed. One of six recipes finished
+and matched a live request. It took 2.39 seconds, exhausting the budget for
+starting the other five. The repeat's longest upload-side token wait was
+1,443.54 ms. It
+overlapped three decoder batches, with 1,421.26 ms of combined thread CPU.
+Of 90 instruction-pointer samples in the longest individual batch of that
+run, 65 fell in Intel's shader compiler module and 10 in DXC. The trace
+supports shader compilation as a source of backpressure behind texture
+uploads. Both runs still failed on audio gaps. The largest pregame frame
+intervals were 1,963.21 ms without preparation and 1,581.01 ms with it.
+The runs leave the benefit of warm preparation unproven. Raw timing and
+GPU evidence are in `build-web-tests/upload-stall/packers-49ers-stadium-uniform-elision-gpu-*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
