@@ -174,7 +174,16 @@ int main(int argc,char **argv) {
                     for (unsigned dst = 0; dst < 4; dst++)
                         one(0x4cd8d2u | (dst << 16) | (r << 8), 0);
                 }
-                for(unsigned d=0;d<4;d++)one(0x44d800u | (d<<16) | (r<<8),0);
+                for (unsigned d = 0; d < 4; d++) {
+                    unsigned operands = (d << 16) | (r << 8);
+                    one(0x44d800u | operands, 0);
+                    one(0x44e000u | operands, 0);
+                    initial.registers[DSP_REG_N0 + r] = 3;
+                    one(0x44c800u | operands, 0);
+                    initial.registers[DSP_REG_N0 + r] = 0xfffdu;
+                    one(0x44c800u | operands, 0);
+                    initial.registers[DSP_REG_N0 + r] = 1;
+                }
                 for (unsigned acc = 0; acc < 2; acc++) {
                     unsigned operands = (acc << 16) | (r << 8);
                     one(0x56e000u | operands, 0);

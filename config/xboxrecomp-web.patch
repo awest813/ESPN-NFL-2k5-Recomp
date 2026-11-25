@@ -9876,10 +9876,10 @@ index 0000000..56c5da2
 +}
 diff --git a/src/apu/dsp/dsp_cpu.c b/src/apu/dsp/dsp_cpu.c
 new file mode 100644
-index 0000000..fcdf3f0
+index 000000000000..4652840a9d97
 --- /dev/null
 +++ b/src/apu/dsp/dsp_cpu.c
-@@ -0,0 +1,1518 @@
+@@ -0,0 +1,1541 @@
 +/*
 + * DSP56300 emulator
 + *
@@ -10420,6 +10420,25 @@ index 0000000..fcdf3f0
 +        dsp56k_read_memory(dsp, DSP_SPACE_X, address) & 0xffffffu;
 +}
 +
++/* Standalone X data loads share the general 24-bit memory access. */
++static void execute_pm5_read_x_indirect(dsp_core_t *dsp)
++{
++    unsigned rn = (dsp->cur_inst >> 8) & 7u;
++    unsigned destination = (dsp->cur_inst >> 16) & 7u;
++    dsp->registers[destination] =
++        dsp56k_read_memory(dsp, DSP_SPACE_X, dsp->registers[DSP_REG_R0 + rn]) & 0xffffffu;
++}
++
++static void execute_pm5_read_x_postincrement_n(dsp_core_t *dsp)
++{
++    unsigned rn = (dsp->cur_inst >> 8) & 7u;
++    unsigned destination = (dsp->cur_inst >> 16) & 7u;
++    uint32_t address = dsp->registers[DSP_REG_R0 + rn];
++    emu_update_rn(dsp, rn, dsp->registers[DSP_REG_N0 + rn]);
++    dsp->registers[destination] =
++        dsp56k_read_memory(dsp, DSP_SPACE_X, address) & 0xffffffu;
++}
++
 +/* Read Y:(Rn)+ before the parallel ALU operation. Its input registers
 + * retain their previous values until the memory move commits. */
 +static void execute_pm5_read_y_postinc_alu(dsp_core_t *dsp)
@@ -10499,6 +10518,10 @@ index 0000000..fcdf3f0
 +            return execute_pm5_read_y_postinc_alu;
 +        if ((instruction & 0xfcf8ffu) == 0x44d800u)
 +            return execute_pm5_read_x_postinc;
++        if ((instruction & 0xfcf8ffu) == 0x44e000u)
++            return execute_pm5_read_x_indirect;
++        if ((instruction & 0xfcf8ffu) == 0x44c800u)
++            return execute_pm5_read_x_postincrement_n;
 +        if ((instruction & 0xfef8ffu) == 0x565800u)
 +            return execute_pm5_store_x_postinc_accumulator;
 +        if ((instruction & 0xfef8ffu) == 0x56e000u)

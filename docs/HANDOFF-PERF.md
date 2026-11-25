@@ -1683,6 +1683,52 @@ complete windows averaged 29.56 FPS, the longest interval was 486.13 ms,
 and the worklet missed 2,176 frames during the segment. The capture is
 `build-web-tests/upload-stall/packers-49ers-stadium-pipeline-lookup`.
 
+### Draw preparation during the opening drive
+
+A follow-up capture enabled detailed renderer counters and APU tracing
+with the warm cache. It reached first-and-ten at 4:56.1 in Q1. In the
+36-second sample, six complete windows ranged from 10.5 to 25.4 FPS.
+Frame-weighted texture work took 29.10 ms per frame, including 19.95 ms
+for byte verification. Vertex preparation took 7.93 ms, and submission
+took 16.26 ms. Same-frame matches covered 88.54 MiB per frame. The
+renderer still observed same-frame changes, including three reported
+changes in the 16.1 FPS window, so frame identity alone cannot justify
+skipping verification.
+
+One 2,166.16 ms submission spent 2,163.04 ms in the uniform queue write.
+The earlier opening-drive capture had no submission over 100 ms, and
+the follow-up shows that these stalls can occur during gameplay as well
+as pregame. The follow-up missed another 348,800 worklet frames during
+the sampled drive. Profiling and match progression differ between
+captures. The raw report is under
+`build-web-tests/upload-stall/packers-49ers-opening-cpu-and-apu`.
+
+### Standalone X-memory data-register loads
+
+The DSP dispatcher now uses dedicated handlers for standalone X-memory
+loads from `(Rn)` and `(Rn)+Nn` into X0 through Y1. They use the same
+24-bit memory reads and address update logic as the general dispatcher.
+The captured GP frame executed these forms 734 times in 8,351 instructions.
+The captured EP frame used neither.
+
+Two Wasm replays of seven alternating pairs reproduced the captured state
+and DMA transfers on every iteration. For 1,000 GP frames, the medians
+went from 73.74 to 71.52 ms and from 73.14 to 72.60 ms. EP medians moved
+in opposite directions across the two comparisons. The dispatch fixture
+passed 151,328 exact state checks in Windows and Wasm with UBSan, including
+all destination/address register encodings and positive and negative N
+modifiers. Timings are under `build-web-tests/dsp-x-data-load`.
+
+The rebuilt retail runtime reached first-and-ten at 4:56.2 of Q1 with
+the default cache and audio settings. Six complete windows over the
+following 36 seconds averaged 29.9–30.0 FPS, the longest interval was
+52.87 ms, and the worklet reported zero additional missed audio frames.
+The last frame shows the referee calling a penalty and a legible scorebug.
+The full audit still failed on earlier audio underruns. Changes in the
+play sequence and profiling prevent attributing the retail result to
+the DSP specialization. The capture is
+`build-web-tests/upload-stall/packers-49ers-opening-dsp-x-data-load`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
