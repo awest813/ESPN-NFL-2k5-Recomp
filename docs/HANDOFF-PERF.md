@@ -1763,6 +1763,31 @@ reached second-and-five at 4:44 with player models, field markings, the
 scorebug and lineup text visible. The local reports and scanout frames are
 under `build-web-tests/upload-stall/packers-49ers-opening-texture-memo-*`.
 
+### Testing two alternatives to SDL frame sleeps
+
+A Chrome 157 fixture kept the 30 FPS deadline and compared SDL sleep, a
+dedicated JavaScript timer worker with a notification and timeout fallback,
+and a direct `Atomics.wait` timeout. Three rounds rotated the order of all
+three arms for each of six simulated workloads, recording 135 frames per
+workload and arm. All arms released the stub guest lock during waits. The
+timer worker used its timeout fallback in 100 of 571 waits.
+
+Across the five workloads below the 33.33 ms work budget, 95th-percentile
+frame intervals were 46.36–50.03 ms with SDL, 44.98–58.85 ms with the timer
+worker, and 47.68–49.81 ms with direct waits. The 40 ms workload never used
+the pacer. A separate SDL-versus-worker run had similarly overlapping
+results. Neither alternative consistently reduced frame jitter, so the
+runtime keeps SDL pacing. The private fixture and full browser reports are
+under `build-web-tests/frame-pacing-worker-timer`.
+
+Among the three texture-memo Quick Game runs, eight complete opening-drive
+windows had a worst interval above 100 ms. Six of those intervals recorded
+zero pacing time, including the repeat's 142.01 ms interval and the control's
+212.76 ms interval. The other two recorded 55.29 ms in a 116.31 ms interval
+and 15.66 ms in a 207.02 ms interval. Pacing can contribute to individual
+stalls, while the six unpaced intervals point to work or scheduling delays
+elsewhere in the runtime.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
