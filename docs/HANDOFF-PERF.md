@@ -347,8 +347,10 @@ These draws isolate the binding change. See `build-web-tests/submit-profile/inde
 submission. It also reports the time spent comparing texture bytes.
 `RECOMP_WEBGPU_SUBMIT_PROFILE=1` samples submissions at or above 16 ms and
 separates dispatch, replay, and return. Replay reports uniform preparation,
-transfers, pass encoding and final submission. These are elapsed times on
-the worker and can include browser or OS scheduling delays.
+geometry uploads, texture uploads, encoder flushes before uploads, pass
+encoding, and final submission. All submissions at or above 100 ms are
+logged. These are elapsed times on the worker and can include browser or
+OS scheduling delays.
 
 On the instrumented build, one stadium-intro flush took 3,026.88 ms. The
 backend logged 3,022.99 ms in uniform preparation and 0.25 ms in render pass
@@ -1401,6 +1403,51 @@ API time went from 48.46 to 17.04 ms and time through the queue fence went
 from 75.70 to 64.07 ms. At 73,584 bytes, time through the fence was nearly
 the same at 20.95 and 21.32 ms. This JavaScript replay excludes the game's
 Wasm bridge and render workload. The staging prototype remains local.
+
+### Mapped geometry through the Wasm bridge
+
+On the Intel Chrome adapter, the Emdawn C API benchmark sent 48 uploads
+of 2,544,544 bytes per arm and waited for the queue every eight uploads.
+One-shot mapped staging cut median CPU submission from 59.86 to 32.16 ms,
+while median wall time through the fences rose from 118.15 to 133.78 ms.
+Final readback matched the last upload. At 73,584 bytes per upload, fence
+time was 36.34 ms for direct writes and 36.81 ms for one-shot staging.
+
+A separate three-arm run measured 198.54 ms through the fences for direct
+writes, 216.62 ms for one-shot staging, and 123.23 ms for a pool of eight
+staging buffers remapped after each batch. Median CPU submission was
+91.50, 52.28, and 18.64 ms respectively. The pool test waited for both the
+fence and the remaps, and verified the last upload by readback. The pool remains a
+benchmark with bounded reuse. It has yet to run under the retail renderer.
+Raw results are in `build-web-tests/verify-vector-width/{mapped-bridge,mapped-stage-pool}`.
+
+Two 50-second Packers at 49ers pregame captures used the same instrumented
+runtime and toggled one-shot staging. The direct run's nine complete windows
+ranged from 16.0 to 29.0 FPS, with a 1,396.22 ms longest frame interval.
+The staging run ranged from 23.0 to 30.0 FPS, with a 1,173.46 ms longest
+interval. The slowest submissions spent 1,175.93 ms and 1,028.56 ms in transfer
+replay respectively. That staging submission copied 4,979,120 bytes from
+mapped buffers. Cumulative audio underruns were 241,536 and 13,952 frames
+from startup through the sample. Each path had one retail capture, so the
+frame pacing and audio differences need replication. The pregame stall
+persisted on both paths. The default continues to use direct writes.
+Captures are in `build-web-tests/upload-stall/packers-49ers-stadium-{direct,mapped}-geometry`.
+
+### Identifying which uploads block pregame submissions
+
+The retail direct-write run with the split timings logged a 368.56 ms
+submission 15 seconds into stadium presentation. Geometry replay took
+365.62 ms, texture uploads took 0.19 ms, and encoder flush time rounded to
+0.00 ms. An earlier 310.01 ms submission spent 307.44 ms in the uniform
+queue write. These timings identify where the worker waited. The earlier
+Chrome traces show that calls can block behind work the browser already
+received.
+
+Nine complete pregame windows ranged from 21.0 to 29.9 FPS. The longest
+interval was 442.84 ms, and the audio worklet missed 211,200 frames from
+startup through the sample. The audit reported audio underruns and no
+WebGPU errors. The capture is in
+`build-web-tests/upload-stall/packers-49ers-stadium-transfer-phases-retail`.
 
 ## Historical measurements
 

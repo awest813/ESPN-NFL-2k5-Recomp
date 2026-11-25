@@ -32678,10 +32678,10 @@ diff --git a/src/kernel/sdlgpu/shaders/xf.frag b/src/kernel/sdlgpu/shaders/xf.fr
 +}
 diff --git a/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
 new file mode 100644
-index 0000000..ad3a785
+index 000000000000..a7bbf30750fb
 --- /dev/null
 +++ b/src/kernel/sdlgpu/webgpu/sdl_gpu_webgpu.c
-@@ -0,0 +1,2160 @@
+@@ -0,0 +1,2177 @@
 +/* The SDL GPU renderer on WebGPU: the SDL_GPU subset it uses, on Dawn's
 + * webgpu.h. Design and threading: sdl_gpu_webgpu.h. */
 +#ifdef __EMSCRIPTEN__
@@ -34098,7 +34098,7 @@ index 0000000..ad3a785
 +
 +typedef struct {
 +    uint64_t start, server_start, server_end;
-+    uint64_t uniforms, transfers, passes, finish;
++    uint64_t uniforms, geometry, textures, transfer_flush, passes, finish;
 +    uint64_t uniform_setup, uniform_write, uniform_capacity;
 +    uint32_t uniform_bytes;
 +} SubmitProfile;
@@ -34514,22 +34514,36 @@ index 0000000..ad3a785
 +            uint64_t start = profile->start ? SDL_GetPerformanceCounter() : 0;
 +            /* Queue writes run ahead of the encoder: submit what is encoded
 +             * first so the order SDL promises holds. */
-+            flush_encoder(r);
++            if (r->encoded) {
++                flush_encoder(r);
++                if (start) {
++                    uint64_t after_flush = SDL_GetPerformanceCounter();
++                    profile->transfer_flush += after_flush - start;
++                    start = after_flush;
++                }
++            }
 +            upload_geometry(o->ub.dst, o->ub.dst_off, o->ub.src->mem + o->ub.src_off,
 +                            (o->ub.size + 3u) & ~3u);
-+            if (start) profile->transfers += SDL_GetPerformanceCounter() - start;
++            if (start) profile->geometry += SDL_GetPerformanceCounter() - start;
 +            break;
 +        }
 +        case OP_UPLOAD_TEXTURE: {
 +            uint64_t start = profile->start ? SDL_GetPerformanceCounter() : 0;
-+            flush_encoder(r);
++            if (r->encoded) {
++                flush_encoder(r);
++                if (start) {
++                    uint64_t after_flush = SDL_GetPerformanceCounter();
++                    profile->transfer_flush += after_flush - start;
++                    start = after_flush;
++                }
++            }
 +            WGPUTexelCopyTextureInfo dst = { .texture = o->ut.dst->tex, .mipLevel = o->ut.level,
 +                                             .origin = { o->ut.x, o->ut.y, o->ut.layer }, .aspect = WGPUTextureAspect_All };
 +            WGPUTexelCopyBufferLayout layout = { .offset = 0, .bytesPerRow = o->ut.row_px * 4, .rowsPerImage = o->ut.rows };
 +            WGPUExtent3D ext = { o->ut.w, o->ut.h, 1 };
 +            wgpuQueueWriteTexture(s_queue, &dst, o->ut.src->mem + o->ut.src_off,
 +                                  (size_t)(o->ut.h - 1) * o->ut.row_px * 4 + (size_t)o->ut.w * 4, &layout, &ext);
-+            if (start) profile->transfers += SDL_GetPerformanceCounter() - start;
++            if (start) profile->textures += SDL_GetPerformanceCounter() - start;
 +            break;
 +        }
 +        case OP_DOWNLOAD_TEXTURE: {
@@ -34666,13 +34680,16 @@ index 0000000..ad3a785
 +    if (total < 16.0) return;
 +    static atomic_uint slow_submits;
 +    unsigned count = atomic_fetch_add_explicit(&slow_submits, 1, memory_order_relaxed);
-+    if (count >= 48 && (count % 64u)) return;
++    if (total < 100.0 && count >= 48 && (count % 64u)) return;
 +    fprintf(stderr, "[WebGPU-SUBMIT] %.2fms ops=%u readback=%u | dispatch %.2f replay %.2f return %.2f"
 +                    " | uniforms %.2f transfers %.2f passes %.2f finish %.2f"
++                    " | geometry %.2f textures %.2f transfer flush %.2f"
 +                    " | uniform setup %.2f write %.2f bytes %u capacity %llu\n",
 +            total, r->c->n, r->nrb, (p->server_start - p->start) * ms,
 +            (p->server_end - p->server_start) * ms, (end - p->server_end) * ms,
-+            p->uniforms * ms, p->transfers * ms, p->passes * ms, p->finish * ms,
++            p->uniforms * ms, (p->geometry + p->textures + p->transfer_flush) * ms,
++            p->passes * ms, p->finish * ms, p->geometry * ms, p->textures * ms,
++            p->transfer_flush * ms,
 +            p->uniform_setup * ms, p->uniform_write * ms, p->uniform_bytes,
 +            (unsigned long long)p->uniform_capacity);
 +}
