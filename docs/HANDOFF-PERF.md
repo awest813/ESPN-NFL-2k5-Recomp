@@ -1984,6 +1984,35 @@ preparation point during loading. The benchmark did not measure the
 launcher or retail startup. The script and measurements are in
 `build-web-tests/upload-stall/stadium-shader-stage-replay/separate-device*`.
 
+### Preparing the fragment shader from the launcher
+
+A private launcher prototype prepared the triangle fragment on a separate
+WebGPU device before Play. Both hardware Chrome runs used the same game
+package, 5.5-second launcher dwell, and Packers–49ers route. Warmup took
+3,065 ms and finished 3,477 ms before Play. It released the launcher device
+before starting the game.
+
+The first Dawn decoder batch after the matching triangle pipeline request
+took 2,907.50 ms in the control and 173.85 ms in the warmed run. The interval
+from the request to the first bind still measured 3,124.03 ms and 3,165.38 ms.
+The title transition was observed 24.60 seconds after Play in the control
+and 34.42 seconds after Play in the warmed run. A later startup decoder
+batch still took 2,380.81 ms in the warmed run. Both audits failed on audio
+underruns. The two runs have different schedules, so they establish the
+observed reduction in the first decoder batch and leave any startup benefit
+unproven. Production does not run this launcher prototype. Captures are
+under `build-web-tests/upload-stall/packers-49ers-launcher-fragment-*`.
+
+A separate hardware replay timed exact pipeline creation, the first
+render-pass bind and a queue fence in a dedicated worker. Each of three
+order-rotated rounds used fresh Chrome processes. Main-page warmup lowered
+the worker's median from 3,290 to 2,503 ms with asynchronous creation and
+from 3,137 to 2,431 ms with synchronous creation. This is a smaller gain
+than the prior separate-device test measured within one page. Both APIs
+still spent more than two seconds on the worker path after warmup. The
+replay script and samples are under
+`build-web-tests/upload-stall/stadium-shader-stage-replay/separate-worker*`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
