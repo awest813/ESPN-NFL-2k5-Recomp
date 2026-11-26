@@ -36,6 +36,13 @@ Use **Controls → Test controller** in the launcher to check buttons, triggers,
 - To move progress to another browser or device, use **Saves → Download backup**, then **Saves → Restore backup** in the destination launcher. The backup contains saves and settings. Restore replaces files with matching names and keeps other files.
 - **Remove game files** keeps saves. Clearing the site's browser data removes both saves and imported game files. **Keep storage on this device** asks the browser to retain the site's data.
 
+### NFL 2027 Week 1 roster and franchise
+
+1. Download the [NFL 2027 Week 1 browser backup](mods/saves/NFL2027Week1-Browser.json) and import it with **Saves → Restore backup** in the launcher.
+2. In the game, open **Options → Load/Save → Load**. Choose `NFL27Ros` for the exhibition roster or `NFL27Fra` to open the Week 1 franchise.
+
+Roster and franchise by the NFL2K5 Modding Community, including LostsouL, BAD_AL, egb11, seskid, and djsteveo627.
+
 ## Project status
 
 | Area | What has been verified |
