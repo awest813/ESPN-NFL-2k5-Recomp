@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101820">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ef4939'/%3E%3Ctext x='31' y='43' text-anchor='middle' font-family='system-ui,sans-serif' font-size='28' font-weight='900' font-style='italic' fill='%23ffffff'%3E2K5%3C/text%3E%3C/svg%3E">
   <title>ESPN NFL 2K5 · Web launcher</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -44,7 +45,12 @@
       <section class="hero" aria-labelledby="title">
         <p class="eyebrow">Original Xbox · Browser preview</p>
         <h1 id="title">ESPN NFL <span>2K5</span></h1>
-        <p class="intro">Import your own USA Xbox disc to play. Game files and saves are stored in this browser.</p>
+        <p class="intro">Play your own USA Xbox disc right in the browser with WebGPU graphics and 48 kHz sound. Everything stays private on your device.</p>
+        <ol class="steps" aria-label="Quick start steps">
+          <li id="step-disc" data-state="active"><span class="step-num" aria-hidden="true">1</span><span>Import your USA Xbox disc once</span></li>
+          <li id="step-input"><span class="step-num" aria-hidden="true">2</span><span>Plug in a controller or use keyboard</span></li>
+          <li id="step-play"><span class="step-num" aria-hidden="true">3</span><span>Press <strong>Play game</strong> for kickoff</span></li>
+        </ol>
         <div class="launch-card">
           <div class="launch-heading">
             <strong id="launch-label">Getting ready</strong>
@@ -56,12 +62,12 @@
             <div class="frame-option">
               <label for="fps-limit">Frame rate cap</label>
               <select id="fps-limit" aria-describedby="fps-help">
-                <option value="30">30 FPS lock</option>
+                <option value="30">30 FPS lock (recommended)</option>
                 <option value="0">Uncapped</option>
               </select>
             </div>
           </div>
-          <p id="fps-help" class="note">The 30 FPS lock limits the maximum. Demanding scenes can still run slower.</p>
+          <p id="fps-help" class="note">Locks the game to a steady 30 FPS for smooth audio and pacing. Choose Uncapped for benchmarking.</p>
           <button id="play" class="primary play-button" disabled>Play game</button>
           <button id="reload" hidden>Reload launcher</button>
         </div>
@@ -72,7 +78,7 @@
           <h2>Game files</h2>
           <span id="disc-badge" class="badge">Not imported</span>
         </div>
-        <div id="disc-none"><p>Import an ISO or an extracted game folder. You only need to do this once per browser profile.</p></div>
+        <div id="disc-none"><p>Import your USA Xbox ISO or extracted game folder once per browser profile. Files are stored locally and never uploaded.</p></div>
         <div id="disc-installed" hidden><p id="disc-summary"></p><p id="disc-xbe" class="note"></p></div>
         <div id="drop-zone" class="drop-zone">
           <p>Drop an ISO here or choose your files.</p>
@@ -90,8 +96,16 @@
           <p id="progress-text"></p>
         </div>
         <p id="library-message" role="alert" hidden></p>
+        <details class="help-drawer">
+          <summary>First time? What files do I need?</summary>
+          <ul>
+            <li><strong>Supported disc:</strong> Retail USA <em>ESPN NFL 2K5</em> (<code>.iso</code>, <code>.xiso</code>, or extracted folder containing <code>default.xbe</code> and <code>vc_53450030</code>).</li>
+            <li><strong>Private &amp; local:</strong> Copied directly into this browser's private storage (~6 GB). Nothing is sent over the network.</li>
+            <li><strong>Best browser:</strong> Desktop Chrome or Edge with hardware acceleration enabled for full-speed WebGPU graphics.</li>
+          </ul>
+        </details>
         <div class="library-footer">
-          <p class="note">Allow several GB of storage.</p>
+          <p class="note">Needs ~6 GB of private browser storage. Files never leave your device.</p>
           <button id="remove" class="text-button" disabled>Remove game files</button>
         </div>
       </section>

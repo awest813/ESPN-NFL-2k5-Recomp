@@ -180,7 +180,18 @@ function renderDisc() {
     message = 'This build needs a complete retail USA disc or the supported widescreen-patched version. See Game files for details.';
   } else if (ready) {
     label = 'Ready for kickoff'; badge = state.gpu ? 'WebGPU ready' : 'Software graphics'; status = state.gpu ? 'ready' : 'busy';
-    message = state.gpu ? 'Your game is installed. Launch when you’re ready.' : 'Hardware graphics are unavailable. The software renderer may be very slow.';
+    message = state.gpu ? 'Your game is installed. Press Play game when you’re ready.' : 'Hardware graphics are unavailable. Use Chrome or Edge with hardware acceleration for full speed.';
+  }
+  const stepDisc = $('step-disc'), stepInput = $('step-input'), stepPlay = $('step-play');
+  if (stepDisc && stepInput && stepPlay) {
+    const pads = connectedPads();
+    const hasPad = Array.isArray(pads) && pads.length > 0;
+    stepDisc.dataset.state = valid ? 'done' : 'active';
+    stepDisc.querySelector('.step-num').textContent = valid ? '✓' : '1';
+    stepInput.dataset.state = hasPad ? 'done' : '';
+    stepInput.querySelector('.step-num').textContent = hasPad ? '✓' : '2';
+    stepPlay.dataset.state = state.running ? 'done' : (ready ? 'active' : '');
+    stepPlay.querySelector('.step-num').textContent = state.running ? '✓' : '3';
   }
   $('launch-label').textContent = label;
   $('launch-badge').textContent = badge;
@@ -391,12 +402,16 @@ function connectedPads() {
 }
 function updateControllers() {
   const pads = connectedPads();
+  const statusEl = $('controller-status');
   if (!pads) {
-    $('controller-status').textContent = 'Controller access is blocked by the browser. Keyboard controls remain available.';
+    statusEl.dataset.connected = 'false';
+    statusEl.textContent = 'Controller access is blocked by the browser. Keyboard controls remain available.';
     return;
   }
-  $('controller-status').textContent = pads.length ? 'Connected: ' + pads.map(p => p.id).join(', ') :
+  statusEl.dataset.connected = String(pads.length > 0);
+  statusEl.textContent = pads.length ? 'Connected: ' + pads.map(p => p.id).join(', ') :
     'No controller detected. Press a button on your controller to connect.';
+  if (state.checked) renderDisc();
 }
 let controllerFrame = 0;
 function testControllers() {
