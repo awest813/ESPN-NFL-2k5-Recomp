@@ -14,7 +14,7 @@ harness=r'''
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
-typedef void SDL_GPUGraphicsPipeline,SDL_GPUTexture,SDL_GPUSampler,SgSurface;
+typedef void SDL_GPUGraphicsPipeline,SDL_GPUTexture,SDL_GPUSampler,SgSurface,SgDepthSurface;
 typedef uint8_t Uint8;
 typedef struct {int x,y,w,h;} SDL_Rect;
 typedef struct {float r,g,b,a;} SDL_FColor;

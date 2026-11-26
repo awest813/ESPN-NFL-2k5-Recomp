@@ -28,13 +28,16 @@ typedef struct { int x,y,w,h; } SDL_Rect;
 typedef struct { float r,g,b,a; } SDL_FColor;
 typedef struct { uint32_t x[8],y[8],exclusive; } SgWindowClip;
 typedef struct { int owner; } SgSurface;
+typedef struct { int ready; } SgDepthSurface;
+static SgDepthSurface s_test_depth;
+static SgDepthSurface *sg_depth_current(const SgSurface *s) { (void)s; return &s_test_depth; }
 enum { SG_OWNER_GUEST, SG_OWNER_GPU, SG_QUEUE_MAX_DRAWS=8192, SG_MAX_FRAGMENT_UNIFORM=4096 };
 typedef struct { SDL_GPUTexture *tex; SDL_GPUSampler *sampler;
     void *upload; uint32_t w,h,layers,levels; } SgTextureUse;
 /* TYPES */
 static SgQueue s_sg_queue;
 static struct { uint32_t clip_x,clip_y,clip_w,clip_h,window_clip_x[8],window_clip_y[8];
-    uint32_t window_clip_type,blend_color; } s_gpu;
+    uint32_t window_clip_type,blend,blend_sf,blend_df,blend_color; } s_gpu;
 static struct { uint32_t stencil_ref; } s_vp;
 static struct { uint64_t vertex_upload_bytes,merged_draws; } s_sg_stats;
 static struct { SDL_GPUTexture *white,*white_cube; SDL_GPUSampler *point; } s_sg;

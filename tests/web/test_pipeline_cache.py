@@ -17,14 +17,14 @@ def main():
 #include <stdio.h>
 #include <string.h>
 #define SG_MAX_PIPELINES LIMIT
-typedef struct { uint32_t color, depth, stencil, masks, vs; } SgPipeKey;
+typedef struct { uint32_t color, depth, stencil, masks, vs, fs; } SgPipeKey;
 typedef struct { uint32_t unused; } SDL_GPUGraphicsPipeline;
 typedef struct { SgPipeKey key; SDL_GPUGraphicsPipeline *pipe; } SgPipeline;
 static struct { SgPipeline pipes[SG_MAX_PIPELINES]; unsigned pipe_count; } s_sg;
 static SgPipeKey requested;
 static unsigned created, fail_once;
 static const char *SDL_GetError(void) { return "intentional test failure"; }
-static int sg_pipeline_key(int xf, uint32_t vs, SgPipeKey *key) { *key = requested; key->vs = vs; return 1; }
+static int sg_pipeline_key(int xf, uint32_t vs, uint32_t fs, SgPipeKey *key) { *key = requested; key->vs = vs; key->fs = fs; return 1; }
 static SDL_GPUGraphicsPipeline *sg_pipeline_create(const SgPipeKey *key) {
     if (fail_once) { fail_once = 0; return NULL; }
     return (SDL_GPUGraphicsPipeline *)(uintptr_t)(++created);
@@ -32,8 +32,8 @@ static SDL_GPUGraphicsPipeline *sg_pipeline_create(const SgPipeKey *key) {
 /* LIVE_CACHE */
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 static SDL_GPUGraphicsPipeline *lookup(unsigned i) {
-    requested = (SgPipeKey){i * 3u, i % 16u, i % 7u, i % 256u, 0};
-    return sg_pipeline_current(1, i % 1024u);
+    requested = (SgPipeKey){i * 3u, i % 16u, i % 7u, i % 256u, 0, 0};
+    return sg_pipeline_current(1, i % 1024u, i % 512u);
 }
 int main(void) {
     CHECK(SG_MAX_PIPELINES > 1024);
