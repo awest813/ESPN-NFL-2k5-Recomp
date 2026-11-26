@@ -2013,6 +2013,34 @@ still spent more than two seconds on the worker path after warmup. The
 replay script and samples are under
 `build-web-tests/upload-stall/stadium-shader-stage-replay/separate-worker*`.
 
+### Starting fragment compilation on the game's WebGPU device
+
+A private probe started the triangle warmup as soon as the game's WebGPU
+worker created the draw pipeline layout. It used the game's device and
+actual layout. Both Chrome runs used the same game package. The warmed
+pipeline passed validation and was never bound for game draws.
+
+Warmup started 789 ms after Play and took 3,222 ms. It finished 545 ms
+before the first matching draw pipeline request. The following decoder
+batch took 190.45 ms, compared with 2,820.28 ms in the control. The gap
+between the request and the first bind still took 3,105.14 ms, compared
+with 3,051.39 ms in the control. The title transition was observed at
+27.28 seconds from Play in the warm run and 24.46 seconds in the control.
+Both runs reported audio underruns. These results show a smaller initial
+decoder batch and leave the remaining startup wait unresolved. Captures
+are in `build-web-tests/upload-stall/packers-49ers-device-fragment-*`.
+
+A second pair kept triangle warmup enabled and moved the independent line
+pipeline request 10 seconds later. In both runs, the matching triangle
+pipeline was requested before triangle warmup finished. With immediate
+line preparation, the triangle request-to-first-bind interval was
+3,052.05 ms. With deferred line preparation, it was 3,058.31 ms and line
+preparation started 6,949 ms after that bind. The title appeared 19.66 and
+19.64 seconds after Play, respectively. Both runs reported audio underruns.
+The line pipeline is therefore unnecessary for reproducing the three-second
+first-bind interval. Both probes used local instrumentation. Captures are
+in `build-web-tests/upload-stall/packers-49ers-device-line-{immediate,deferred}`.
+
 ## Historical measurements
 
 The goal: gameplay at a locked 60 FPS (the original Xbox runs at 60), including at high
