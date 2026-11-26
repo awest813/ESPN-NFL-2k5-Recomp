@@ -1,13 +1,10 @@
-﻿# Benchmarks
+# October 2026 Windows benchmarks
+
+**Historical record.** The comparable runs use the RTX 2060 SUPER and record windowed frame-time statistics by render scale. Use the performance log for newer native and browser measurements.
+
+[Current guide](HANDOFF-PERF.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Produced by tools\bench.ps1. GPU ms is the span between a frame's first and last GPU timestamp (it includes GPU idle time when the frame is CPU-bound). CPU ms is all of the process's threads per presented frame. 60 FPS is the ceiling: the game simulates at most 60 frames a second and the clock is never sped up.
-
-### 2026-10-09 03:15 -- base (build\Release\NFL2K5.exe)
-
-GPU: NVIDIA GeForce RTX 2060 SUPER; CPU: Intel(R) Xeon(R) W-2235 CPU @ 3.80GHz. CPU-vs-CPU quick game, 120 s of play per scale, first 30 s skipped.
-
-| Scale | Avg FPS | 1% low | 0.1% low | Frame ms avg / worst | GPU ms/frame | CPU ms/frame (process) | Working set / private / VRAM MB |
-|---|---|---|---|---|---|---|---|
 
 ### 2026-10-09 03:15 -- baseline before perf work (old GPU timing; gpu_ms not reliable in this run)
 

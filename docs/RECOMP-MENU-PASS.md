@@ -1,4 +1,8 @@
-# Recompiled game boot pass — September 8, 2026
+# September 8, 2026 native boot and menu capture
+
+**Historical record.** This capture records what the recompiled build displayed during its early boot checks. Use the project status for later gameplay coverage.
+
+[Current guide](../PROJECT_STATUS.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Active path is the original translated game, build/Release/NFL2K5.exe. The separate reconstruction viewer is paused and currently has three unresolved references added by another edit (scan_hitx_blocks, load_texture_by_index, get_total_texture_count). Do not confuse its build with the recompiled game.
 

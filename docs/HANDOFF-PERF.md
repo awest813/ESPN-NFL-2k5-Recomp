@@ -1,4 +1,14 @@
-# Performance handoff (2026-10-03)
+# Performance verification log
+
+Start with the November native and browser checkpoints. The browser remains below the 30 FPS target in some scenes and still reports audio underruns. The section on stadium stalls includes the same-device shader results. The final section preserves the October measurements.
+
+- [Native verification](#current-native-verification-checkpoint-2026-11-20)
+- [Packers at 49ers benchmark](#packers-at-49ers-browser-benchmark-2026-11-23)
+- [Stadium stall measurements](#measuring-individual-stadium-stalls)
+- [Shader warmup results](#starting-fragment-compilation-on-the-games-webgpu-device)
+- [Historical measurements](#historical-measurements)
+
+[Related guide](WEB-GAME-MODES.md) · [Documentation index](../PROJECT_STATUS.md)
 
 ## Current native verification checkpoint (2026-11-20)
 

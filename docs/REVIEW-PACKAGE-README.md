@@ -1,4 +1,8 @@
-# ESPN NFL 2K5 PC Recompilation — Review Package
+# Native review package and issue triage
+
+**Historical record.** This briefing describes the review build and its reported audio and rendering issues. Compare those symptoms with the current performance work before treating them as active regressions.
+
+[Current guide](HANDOFF-PERF.md) · [Documentation index](../PROJECT_STATUS.md)
 
 ## Purpose
 

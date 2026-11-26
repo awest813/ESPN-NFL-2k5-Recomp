@@ -1,4 +1,8 @@
-# Verified setup, 2026-09-07
+# September 7, 2026 build environment record
+
+**Historical record.** This is the original toolchain snapshot from before retail execution. The current Windows build guide uses checkout-relative commands.
+
+[Current guide](../README.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Workspace: E:\NFL2K5-PC
 Git: 2.55.0.windows.3 (existing C: installation)

@@ -1,27 +1,17 @@
 # Scorebug Studio
 
-Open `index.html` in a browser. It works offline and installs nothing.
+Open [`index.html`](index.html) in a browser to use the offline editor. On Windows, run `.\tools\open-scorebug-studio.ps1` from the repo root to open it with the repository's presentation templates.
 
-Choose a CBS-style, ESPN-style, FOX-style, NBC-style, Netflix-style, or custom
-starting point. Change the colours, network label, font, placement, and size;
-drag the preview to position it; then use **Download presentation.json**.
+## Create or edit a package
 
-To begin with an existing package, use **Load an existing presentation.json**.
-The editor keeps the full imported JSON in its own panel. Use **Download
-imported JSON** for a lossless round trip, or edit that panel directly when a
-package contains advanced layers, images, music, video, or animations that the
-basic visual controls do not expose.
+1. Choose a starting look and adjust the colors, label, typography, placement, and size.
+2. Drag the preview to position the scorebug, then select **Download presentation.json**.
+3. To edit an existing package, choose **Load an existing presentation.json**. The imported JSON panel exposes advanced layers, media, and animations. Use **Download imported JSON** to save edits from that panel.
 
-To install any JSON package into the game, double-click `Install Scorebug
-JSON.cmd` in the project folder. It creates `mods\presentations\<package
-name>\` itself, installs the selected file as `presentation.json`, and copies
-nearby `images`, `music`, and `video` folders when present.
+## Install and test on Windows
 
-Create a folder under `mods\presentations\` with your package name and put the
-downloaded file in that folder. Start the game, then choose it at **Coach Match
-Up > Presentation**.
+Run `.\tools\install-scorebug-json.ps1 -Path "C:\path\to\presentation.json"` from the repo root. It copies the manifest and nearby `images`, `music`, and `video` folders into the new package. For a manual install, put the manifest in `mods/presentations/<package name>/presentation.json`.
 
-The editor exports the same package format that the current renderer reads. It
-does not contain network logos, theme music, or video: creators can add their
-own permitted files to the package later, while the exported scorebug works on
-its own.
+Restart the game and choose the package from **Coach Match Up → Presentation**. Check it at kickoff, scrimmage, and score changes. Add any permitted media your design calls for.
+
+[Windows mods](../../mods/README.md) · [Authoring reference](../../docs/SCOREBUG-AUTHORING-GUIDE.md)

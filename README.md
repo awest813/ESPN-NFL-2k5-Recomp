@@ -5,7 +5,7 @@
 
 This community project recompiles the USA Xbox release of **ESPN NFL 2K5** for Windows and the web. The Windows build uses Direct3D 11. The browser preview uses WebAssembly and WebGPU. Both require game files from your own USA Xbox disc.
 
-**[Play in your browser](https://awest813.github.io/ESPN-NFL-2k5-Recomp/)** · [Build for Windows](#build-for-windows) · [Project status](#project-status)
+**[Play in your browser](https://awest813.github.io/ESPN-NFL-2k5-Recomp/)** · [Build for Windows](#build-for-windows) · [Project status](#project-status) · [Documentation index](PROJECT_STATUS.md)
 
 ## Get on the field
 
@@ -38,8 +38,10 @@ Use **Controls → Test controller** in the launcher to check buttons, triggers,
 
 ### NFL 2027 Week 1 roster and franchise
 
+The browser backup contains both verified saves. In testing, a roster-loaded Jets at 49ers game reached the opening kickoff.
+
 1. Download the [NFL 2027 Week 1 browser backup](mods/saves/NFL2027Week1-Browser.json) and import it with **Saves → Restore backup** in the launcher.
-2. In the game, open **Options → Load/Save → Load**. Choose `NFL27Ros` for the exhibition roster or `NFL27Fra` to open the Week 1 franchise.
+2. In the game, open **Options → Load/Save → Load**. Choose `NFL27Ros` before opening **Quick Game**, or choose `NFL27Fra` to open the Week 1 franchise.
 
 Roster and franchise by the NFL2K5 Modding Community, including LostsouL, BAD_AL, egb11, seskid, and djsteveo627.
 
@@ -51,6 +53,8 @@ Roster and franchise by the NFL2K5 Modding Community, including LostsouL, BAD_AL
 | Rendering | Retail checks cover stadium flyovers, intro titles, players, and selected sideline scenes. Reference comparisons for more stadiums and staff models are pending. See the [stadium fidelity notes](docs/WEB-STADIUM-FIDELITY.md). |
 | Performance and audio | **30 FPS lock** is the default maximum. Select **Uncapped** in the launcher or in-game toolbar to lift it. Heavy scenes can still dip below 30 FPS, and recent startup captures recorded audio underruns. See the [performance measurements](docs/HANDOFF-PERF.md). |
 | Online play | Xbox Live matchmaking is unavailable in the browser. |
+
+See the [documentation index](PROJECT_STATUS.md) for platform guides, tests, and historical records.
 
 ## Build for Windows
 

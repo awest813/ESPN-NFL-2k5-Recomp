@@ -1,4 +1,8 @@
-﻿# ESPN NFL 2K5 Native PC Recompilation — Status Report
+# Early Windows compatibility status report
+
+**Historical record.** This report covers a development build that stalled before menus. Later Windows links and browser gameplay captures are recorded in the performance log.
+
+[Current guide](HANDOFF-PERF.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Updated: 2026-09-08
 

@@ -1,4 +1,13 @@
-# Broadcast presentation system
+# Windows broadcast presentation runtime
+
+Use the package layout and API sections to author or debug scorebugs, overlays, and broadcast events. The opening inventory explains how the Windows layer evolved.
+
+[Related guide](SCOREBUG-AUTHORING-GUIDE.md) · [Documentation index](../PROJECT_STATUS.md)
+
+- [Architecture](#2-architecture)
+- [Package layout](#3-package-layout)
+- [Presentation API](#4-presentation-api-v1)
+- [Test switches](#5-testing-switches)
 
 Status: HTML presentation host introduced 2026-09-30. The JSON presentation
 renderer (CBS, FOX and the imported packages) is unchanged and still the path

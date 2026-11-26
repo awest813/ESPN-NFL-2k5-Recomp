@@ -1,4 +1,8 @@
-# Archive discovery checkpoint
+# Retail archive discovery
+
+**Historical record.** This checkpoint records the first bank-table and HITX/P8 decode. Use it to compare the reported offsets with `tools/asset_index.c` and the viewer's decoder.
+
+[Current guide](NATIVE-REBUILD.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Native C tool: tools/asset_index.c. Build with tools/build.ps1; run build/Release/NFL2K5_AssetIndex.exe. It reads the existing extraction and writes analysis/archive-index.csv. Originals are opened read-only.
 

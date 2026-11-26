@@ -1,9 +1,13 @@
-These checks require Linux and use real mapped pages, protected pages and unmapped
-addresses. They do not emulate Linux on macOS and do not validate rendering.
+# Linux guest-memory regression tests
 
-    cmake -S tests/guest_memory_posix -B /tmp/guest-memory-check
-    cmake --build /tmp/guest-memory-check
-    ctest --test-dir /tmp/guest-memory-check --output-on-failure
+These Linux tests exercise the runtime's checked guest-memory copies with real mapped pages, protected pages, and unmapped addresses. Run them from the repo root.
 
-Failed copies may have transferred a prefix. Rendering callers must discard
-failed input and handle failed output without assuming transactional writes.
+```bash
+cmake -S tests/guest_memory_posix -B build/guest-memory-posix
+cmake --build build/guest-memory-posix
+ctest --test-dir build/guest-memory-posix --output-on-failure
+```
+
+A failed copy may have transferred a prefix. Rendering callers must discard failed input and handle partial output. The tests cover memory boundaries independently of the rendering backends.
+
+[Linux build](../../docs/LINUX.md) · [Runtime architecture](../../docs/architecture.md)

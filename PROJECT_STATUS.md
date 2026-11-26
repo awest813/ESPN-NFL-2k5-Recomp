@@ -1,4 +1,48 @@
-﻿This is an existing NFL 2K5 Xbox native recompilation project.
+# Project status and documentation index
+
+Updated November 25, 2026.
+
+| Platform | Verified coverage and limits |
+| --- | --- |
+| Browser | Retail Quick Game has reached kickoff and scrimmage on Chrome with WebGPU. Tested paths include representative Franchise and Tournament saves, Practice, Situation, First Person Football, the Ice Bowl challenge, and The Crib. Xbox Live matchmaking is unavailable. |
+| Browser saves | Both NFL 2027 Week 1 Xbox saves load through the launcher backup and the game's Load menu. A roster-loaded Jets at 49ers game reached kickoff. |
+| Browser performance | The default 30 FPS lock caps output. Sustained 30 FPS and uninterrupted audio remain open. Same-device shader warmup reduced one compilation batch while the roughly three-second first-bind delay persisted. |
+| Windows | The native build uses D3D11. The project has linked the optimized retail executable and runs native runtime and DSP tests. Use the dated benchmark and retail evidence when evaluating changes. |
+| Linux | Native build support is experimental. Use the Linux guide for dependencies and launch instructions. Retail play coverage is primarily documented for the browser. |
+
+## Play and manage saves
+
+- [Quick start and controls](README.md#get-on-the-field)
+- [NFL 2027 Week 1 browser saves](README.md#nfl-2027-week-1-roster-and-franchise)
+- [Native save library and imports](docs/SAVE-LIBRARY.md)
+- [Original disc layout](original/README.md)
+- [Windows installer](installer/README.md)
+
+## Build and work on the runtime
+
+- [Windows build](README.md#build-for-windows), [Linux build](docs/LINUX.md), and [browser build and GitHub Pages](docs/WEB.md)
+- [Source layout and runtime architecture](docs/architecture.md)
+- [Native DSP tests](tests/native-dsp/README.md) and [Linux guest-memory tests](tests/guest_memory_posix/README.md)
+- [Browser game-mode audit](docs/WEB-GAME-MODES.md), [WebGPU stability](docs/WEBGPU-AUDIT.md), and [stadium fidelity](docs/WEB-STADIUM-FIDELITY.md)
+- [Performance log](docs/HANDOFF-PERF.md), [native benchmarks](docs/BENCHMARKS.md), and [Xbox limits](docs/XBOX-LIMITATION-AUDIT.md)
+
+## Customize the Windows build
+
+- [Mods](mods/README.md), [Team Creator](tools/team-creator/README.md), and [local music](docs/LOCAL-MUSIC.md)
+- [Scorebug Studio](tools/scorebug-studio/README.md), [authoring guide](docs/SCOREBUG-AUTHORING-GUIDE.md), and [presentation API](docs/PRESENTATION-SYSTEM.md)
+- [ESPN graphics trigger map](docs/ESPN-GRAPHICS-TRIGGER-MAP.md) and [FOX package reference ledger](<mods/presentations/NFL on FOX/REFERENCE.md>)
+
+## Historical records
+
+- [Initial setup](docs/setup-status.md), [September progress notes](docs/PROGRESS.md), and [early Windows status](docs/NATIVE_PORT_STATUS.md)
+- [Reconstruction viewer](docs/NATIVE-REBUILD.md), [archive discovery](docs/ARCHIVE-FINDINGS.md), and [xemu reference workflow](docs/PLAY-NOW.md)
+- [Original browser plan](docs/WEB-PORT-PLAN.md) and [mod-pack work log](docs/HANDOFF-MODS.md)
+
+## Native development log
+
+The following chronology preserves checkpoints, disproven hypotheses, and verification from the original bring-up. The platform table above reflects the latest status documented here.
+
+This is an existing NFL 2K5 Xbox native recompilation project.
 
 Do NOT start over or recreate anything.
 

@@ -1,4 +1,8 @@
-# Recompiled NFL 2K5 progress log
+# September 2026 native bring-up log
+
+**Historical record.** Chronological notes track the first startup, scheduler, input, and presentation work. For a source checkout today, begin with the Windows build in the root README.
+
+[Current guide](../README.md) Â· [Documentation index](../PROJECT_STATUS.md)
 
 ## Latest pass: memory copy and I/O completion
 
@@ -72,7 +76,7 @@ The native build now resolves the previously missing XPP timer initialization ta
 
 The remaining XPP target `004DA7E0` is a real controller-device registration routine, not a safe return-zero candidate. Its verified XBE entry point, plus short callback `00016856`, were added to `analysis/seed_functions.json`. `tools/analyze.ps1` now passes this seed file into disassembly so the normal recompiler can emit both routines. Full seeded analysis/recompilation is in progress; do not build from `src/recomp/gen` until it completes. No visible menu, controller navigation, or gameplay has been verified.
 
-## 2026-09-08 — scheduler and startup handoff trace
+## 2026-09-08 â€” scheduler and startup handoff trace
 
 Seeded recompilation completed and the native x64 executable builds. A clean bounded run no longer reports unresolved guest indirect calls. It reaches the game's real startup scheduler (`00074BF0`): the frame callback is registered, the first display mode is selected, and the NV2A executor consumes the initial clear command. It still submits no `BEGIN_END` geometry, so the menu renderer has not yet been reached.
 
@@ -82,7 +86,7 @@ The current trace also exposes a title request for the largest contiguous physic
 
 The next active target is the post-video startup handoff: native traces show repeated file/save initialization and completion behavior following the frame registration. The next pass will inspect the exact event/file completion object and the worker state that must complete before the front-end begins submitting menu commands. No visible menu pixels, playable input, or gameplay has been verified.
 
-## 2026-09-08 — Direct3D 11 framebuffer presenter
+## 2026-09-08 â€” Direct3D 11 framebuffer presenter
 
 Replaced the native framebuffer window's GDI blit path with a Direct3D 11 swap-chain presenter. It uploads the converted Xbox scanout buffer as BGRA8, copies it to the D3D11 backbuffer, and presents at the display cadence. The game executable rebuilds successfully and the non-game validation checks pass. This makes the visible native window use DX11, but it cannot invent menu pixels: the current game state still clears the framebuffer and submits no menu geometry.
 

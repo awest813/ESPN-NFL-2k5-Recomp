@@ -1,4 +1,13 @@
-# Stadium and staff rendering checks
+# Stadium, staff, and pregame rendering verification
+
+The baseline and follow-ups record stadium flyovers, intro titles, player and staff geometry, and the corresponding runtime changes. Several later entries investigate shared rendering and audio timing. Exact Xbox reference comparisons remain open.
+
+[Related guide](HANDOFF-PERF.md) · [Documentation index](../PROJECT_STATUS.md)
+
+- [Evidence and reproduction](#local-evidence)
+- [Widescreen verification](#widescreen-stopping-point--november-15-2026)
+- [Transfer buffers and Xbox reference setup](#transfer-buffer-versions-and-emulator-reference-setup)
+- [Audio timing diagnostics](#exact-audio-submission-and-playback-clock-diagnostics)
 
 Original-Xbox scene/audio matching, complete game-mode fidelity and a sustained
 30 FPS floor remain unfinished. The web launcher now selects executable GP/EP

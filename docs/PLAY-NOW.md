@@ -1,11 +1,9 @@
-# Play NFL 2K5 with xemu
+# Play the recompilation or capture an Xbox reference
 
-Use the desktop shortcut **Play NFL 2K5**, or double-click `E:\NFL2K5-PC\Play NFL 2K5.cmd`.
+For browser play, import your USA Xbox disc and start the game in the [browser launcher](https://awest813.github.io/ESPN-NFL-2k5-Recomp/). See the quick start for controls and save restore. The Windows build reads the same disc layout locally. [Quick start](../README.md#get-on-the-field) · [Windows build](../README.md#build-for-windows)
 
-This launches the existing xemu installation using the original disc image at `E:\NFL2K5-PC\original\NFL2K5.xiso.iso`. The separate configuration is `config/xemu-play.toml`; the normal xemu configuration remains unchanged. Vulkan and 1x resolution are selected to prioritize performance. Existing controller bindings and Xbox hard disk saves are retained.
+## Run an xemu reference session
 
-Verified September 7, 2026: disc boots through the intro and reaches the NFL 2K5 main menu. A complete match has not yet been verified.
+Use your existing xemu installation, your disc image, and your configured firmware and hard drive. A dedicated reference configuration makes it easier to reproduce captures with the same renderer and resolution. Capture the matchup, stadium, camera, and game clock alongside each image or audio sample.
 
-This is Xbox emulation. The native recompilation remains a separate unfinished development build; see CHECKPOINT.md. No additional game or firmware files were downloaded.
-
-Compatibility reference: https://xemu.app/titles/53450030/
+The September 7, 2026 reference session used Vulkan at 1× and verified startup through the main menu. Its machine-specific shortcut and drive paths were part of that local setup. The stadium audit documents later reference setup and the outstanding comparison work. [Stadium and staff audit](WEB-STADIUM-FIDELITY.md) · [xemu title reference](https://xemu.app/titles/53450030/)

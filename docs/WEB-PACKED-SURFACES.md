@@ -1,4 +1,8 @@
-# Packed render-target audit checkpoint
+# Packed render-target investigation
+
+**Historical record.** The evidence traces RGB565/ARGB1555 surface ownership and lists the hardware cases used to evaluate candidate fixes.
+
+[Current guide](WEB-STADIUM-FIDELITY.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Recorded November 20, 2026 against `bbcab2d`.
 

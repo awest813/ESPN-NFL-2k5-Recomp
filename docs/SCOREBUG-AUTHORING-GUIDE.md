@@ -1,4 +1,13 @@
-# How to make a scorebug for NFL2K5-PC (guide for ChatGPT and other authors)
+# Author a Windows broadcast scorebug
+
+Begin with the canvas, data fields, and events. Then test the package in the game using the checklist. Use Scorebug Studio for simple layouts.
+
+[Related guide](../tools/scorebug-studio/README.md) · [Documentation index](../PROJECT_STATUS.md)
+
+- [Package contents](#2-what-to-deliver)
+- [Live state](#4-live-data-state)
+- [Events and animations](#5-events-for-animations)
+- [In-game testing](#9-testing-in-the-game)
 
 This explains how to build a broadcast scorebug (or any broadcast graphic) as
 an **HTML presentation package**. The game supplies live football data and

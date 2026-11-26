@@ -1,4 +1,8 @@
-# Xbox Limitation Audit
+# Xbox-to-PC limits and implementation notes
+
+This audit records the native limits chosen by the title and the Windows runtime. Check its detail sections before changing guest resource counts or exposing new settings.
+
+[Related guide](architecture.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Capacity limits NFL 2K5 inherited from the original Xbox, and the ones this port's
 own runtime added, with what is known about each and what has been done.

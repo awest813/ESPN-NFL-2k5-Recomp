@@ -1,4 +1,8 @@
-# WebGPU stability audit
+# WebGPU stability and resource lifetime
+
+Use this audit to find the fixes and tests for command replay, resource ownership, and device failures. See the stadium log for later retail scenes.
+
+[Related guide](WEB-STADIUM-FIDELITY.md) · [Documentation index](../PROJECT_STATUS.md)
 
 2026-11-08. The renderer's SDL GPU subset was checked with hardware WebGPU
 on Windows and CI's Playwright 1.63.0 / Chromium 153 / SwiftShader on Linux.

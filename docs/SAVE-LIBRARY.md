@@ -1,6 +1,14 @@
-# NFL 2K5 PC save library
+# Native save library and browser backups
 
-The native game still reads and writes the Xbox title layout under:
+## Browser saves
+
+In the launcher, use **Saves → Download backup** or **Saves → Restore backup** after exiting the game. This data belongs to the exact browser origin and profile. A backup includes supported save and settings files and replaces files with matching paths on restore.
+
+For the supplied community roster and franchise, download the [NFL 2027 Week 1 browser backup](../mods/saves/NFL2027Week1-Browser.json). Its Xbox payloads use signatures verified with the browser runtime. In game, open **Options → Load/Save → Load** and select `NFL27Ros` or `NFL27Fra`. [Launch and verify](WEB.md#playing-in-a-browser)
+
+## Native save storage
+
+The native game reads and writes the Xbox title layout under:
 
 `saves/UDATA/53450030/<12-digit container>/`
 
@@ -20,7 +28,7 @@ The game synchronizes both trees every 2.5 seconds while it is running and at
 the beginning of the next launch. Files are copied through a temporary file
 and replaced atomically.
 
-## Importing saves
+## Importing native saves
 
 Put a save in `saves/import/` and launch the game. Supported inputs are:
 
@@ -44,7 +52,7 @@ Settings and VIP files are Xbox-specific and can be imported as complete
 extracted Xbox folders. PS2-to-Xbox conversion currently applies to roster and
 franchise payloads.
 
-## 2026 roster CSV
+## Historical 2026 roster CSV conversion
 
 `tools/convert-roster-csv.py` converts the supplied 2026 roster table into
 NFL2K5Tool input. It preserves the CSV's stable player-slot order, maps all 32

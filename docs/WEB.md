@@ -1,16 +1,13 @@
-# WebAssembly build (experimental)
+# Build, play, and deploy the browser port
 
-Milestone M1 of [WEB-PORT-PLAN.md](WEB-PORT-PLAN.md) is done: the game
-**compiles and links** with Emscripten. Two of the M2 runtime pieces are in:
-the guest address space ([below](#guest-address-space)) and APU/AC97
-register routing without faults ([below](#audio-registers-without-faults)),
-the page itself, with game files in the browser's private file system
-([below](#playing-in-a-browser)), and video, input and sound in the browser
-([below](#video-input-and-sound)), and the hardware renderer on WebGPU
-([below](#hardware-rendering-webgpu)). In Chrome on Windows, the retail disc
-imports into OPFS and runs through kickoff returns and offensive plays.
-The November 7 gameplay sample averaged 37.2 FPS, with heavier views still
-dipping below 30; see [measurements](WEB-RENDERING-NOTES.md#gameplay-verification).
+The browser preview runs the translated game through Emscripten and WebGPU. On desktop Chrome, retail tests reached kickoff and scrimmage, restored roster and franchise saves, and exercised several mode-specific flows. Sustained 30 FPS and continuous retail audio remain open.
+
+- [Play and import saves](#playing-in-a-browser)
+- [Build and test locally](#build)
+- [Deploy to GitHub Pages](#github-pages-deployment)
+- [WebGPU renderer](#hardware-rendering-webgpu)
+- [Guest memory and audio registers](#guest-address-space)
+- [Game-mode audit](WEB-GAME-MODES.md) and [current performance measurements](HANDOFF-PERF.md)
 
 ## Result (2026-11-06, emsdk 7.0.0, 4-core container)
 
@@ -28,8 +25,7 @@ under Node.
 
 ## Build
 
-You need emsdk (verified with **7.0.0**), cmake, ninja, git, curl and
-python3:
+Use a recursive checkout of the fork's `main` branch. Install CMake, Ninja, Git, curl, Python 3, and Node.js. Activate Emscripten **7.0.0**, the version used by CI:
 
     git clone https://github.com/emscripten-core/emsdk.git
     emsdk/emsdk install 7.0.0 && emsdk/emsdk activate 7.0.0
@@ -84,12 +80,9 @@ plus the following:
 
 ### GitHub Pages deployment
 
-The `Deploy web game to Pages` workflow builds and tests the complete runtime
-on pushes to `main`, then publishes the allowlisted `dist-pages/` artifact.
+The **Deploy web game to Pages** workflow builds and tests the complete runtime on pushes to `main` that touch its configured paths. It also supports manual runs. The publish job uploads the allowlisted `dist-pages/` artifact and smoke-tests the resulting URL.
 `node tools/prepare-pages.mjs` creates that artifact from a local build too.
-Only launcher files and the recompiled runtime are published; game discs,
-browser libraries and saves stay local. The deployed project lives at
-`https://awest813.github.io/ESPN-NFL-2k5-Recomp/`.
+The Pages package distributes launcher files and the recompiled runtime. Each player supplies their local disc and keeps their own save data. [Open the deployed launcher](https://awest813.github.io/ESPN-NFL-2k5-Recomp/)
 
 Pages does not provide the COOP/COEP headers the game needs, so the launcher
 installs its project-scoped isolation service worker and reloads once.
@@ -102,7 +95,7 @@ separate from localhost; download a save backup to move existing saves.
     tools/build-web.sh                 # build-web/: index.html, app.js, NFL2K5.js/.wasm, ...
     python3 tools/serve-web.py         # http://127.0.0.1:8080/
 
-Open the page, import your disc, and press Play. The browser skips the startup
+Open the page, import your disc, and select **Play game**. The browser skips the startup
 movie. Click the game to focus it. The default keyboard bindings include
 Enter for Start, Z for A, X for B, and the arrow keys for the D-pad.
 
@@ -122,13 +115,13 @@ static-host service worker.
 If the browser denies fullscreen during SDL startup, the launcher logs the
 denial under **Diagnostics** and the game can continue in its window.
 
-The launcher's **Frame rate** choice defaults to **30 FPS lock** and also
+The launcher's **Frame rate cap** choice defaults to **30 FPS lock** and also
 offers **Uncapped**. It persists locally and can switch during a game without
 restarting the runtime. Older runtimes keep the choice fixed until reload.
 The cap paces completed GPU frames with fractional deadlines, releasing the
 guest lock during waits so audio and input can continue. The web frame loop
 uses one guest vblank alongside that host deadline to avoid double pacing.
-It limits output rather than guaranteeing a minimum on every scene/device.
+The cap sets a maximum. Heavy scenes can still fall below 30 FPS.
 Development `?env=NFL2K5_FPS_LIMIT=0` or `=30` overrides the launcher choice.
 
 On packaged builds, `?env=RECOMP_WEBGPU_PIPELINE_CACHE=1` opts into WebGPU
@@ -141,7 +134,7 @@ recipe, the next launch starts at the next recipe in the list. Pipelines
 that are needed before preparation finishes use normal creation. The
 feature is experimental and off by default.
 
-**Save data** shows the local save/settings count and offers portable JSON
+**Saves** shows the local save/settings count and offers portable JSON
 backup and restore. Use the game's normal Save/Load menus; finish saving and
 exit to the launcher before managing backups. Restore merges files, replacing
 matching names and keeping unrelated files. Backups include `saves/` plus
@@ -152,6 +145,8 @@ A durable journal retains originals until commit and rolls back interrupted
 restores on the next visit. Recovery failure blocks launching until resolved.
 Web Locks prevent another launcher tab from importing, restoring or launching
 against storage while a game session is alive (where the browser supports them).
+The [NFL 2027 Week 1 backup](../mods/saves/NFL2027Week1-Browser.json) restores the browser-ready roster and franchise. In game, load the relevant save through **Options → Load/Save → Load**.
+
 The controller tester shows live buttons, triggers and axes without starting
 the game. Browser-denied controller access leaves keyboard controls available.
 
@@ -547,7 +542,7 @@ Once the fork carries the changes, delete the patch and its step in
 
 ## Known gaps (M2 and later)
 
-These compile today but are inert or wrong at run time:
+The following limitations still apply to the browser preview:
 
 - **Aliasing.** There are no RAM mirrors and no tiled alias for *runtime*
   code that adds the memory offset to such an address by hand; generated
@@ -557,19 +552,16 @@ These compile today but are inert or wrong at run time:
   reference captures across gameplay and presentation sequences.
 - **Local music conversion.** The browser cannot launch FFmpeg, so conversion
   of user-supplied music is unavailable.
-- **Audio latency** is the native build's: about 128 ms queued, which is
-  generous for a browser. It hasn't been tuned against real game load.
+- **Audio continuity.** AudioWorklet playback and guest DSP execution are in place. Retail startup and gameplay captures still show underruns. See the [performance log](HANDOFF-PERF.md) for dated measurements.
 - **Not tried on the web yet:** pointer lock for "mouse as
   controller", rumble, and a remapping of F1/F2 away from browser
   shortcuts. Keys still work while the canvas has focus.
 - **Storage.** The import needs room for the whole disc. The page asks for
   persistent storage; if the browser declines, it may clear the disc (and
-  saves) under storage pressure. Download backups from **Save data**; these
+  saves) under storage pressure. Download backups from **Saves**; these
   remain useful even if the browser clears its own storage. Storage belongs to
   the exact site origin, including the port; another origin has its own library.
-- **Running twice.** The game's exit is not reported to the page (the
-  runtime stays alive for its threads), so after a run ends, reload to run
-  again.
+- **Restarting.** Use **Exit to launcher** to reload the page and reset the running game. Save through the in-game menu before exiting.
 - **Presentation packages, FMV, mod-pack overlays, Discord.** These are off,
   as on Linux. Mod packs also run through `x86_interp`, whose memory accesses
   are not routed to the APU.

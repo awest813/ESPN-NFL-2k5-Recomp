@@ -1,4 +1,8 @@
-# NFL 2K5 native C reconstruction handoff
+# Native reconstruction and asset-decoding handoff
+
+**Historical record.** This snapshot describes the separate reconstruction viewer, the first legal-screen decode, and follow-up asset work.
+
+[Current guide](NATIVE-REBUILD.md) · [Documentation index](../PROJECT_STATUS.md)
 
 ## Goal
 

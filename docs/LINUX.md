@@ -1,85 +1,42 @@
-# Native Linux build (experimental)
+# Build and run on Linux
 
-The game builds and links natively on Linux with GCC and SDL3. It has not
-been played end to end yet; expect the same rough edges as early Windows
-builds, plus the Linux gaps listed below.
+The Linux target builds a native executable using GCC and SDL3. CI builds the Linux runtime and tests native components. Full retail play on Linux remains experimental.
 
 ## Build
 
-Arch / CachyOS:
+Install Git, a C/C++ compiler, CMake, Ninja, Python 3, curl, the SDL3 development package, OpenSSL development headers, and libepoxy. For SDL3 GPU rendering, install a Vulkan driver and `glslangValidator`. Install glslang development libraries as well to build the shader translation path.
 
-    sudo pacman -S --needed base-devel git cmake ninja python sdl3 openssl libepoxy
-    git clone --recursive https://github.com/BeyondTomrrow/2K5Remade.git
-    cd 2K5Remade
+```bash
+git clone --branch main --recurse-submodules https://github.com/awest813/ESPN-NFL-2k5-Recomp.git
+cd ESPN-NFL-2k5-Recomp
+git -c core.whitespace=cr-at-eol apply --ignore-space-change --directory=external/xboxrecomp config/xboxrecomp-web.patch
+mkdir -p external/xemu-src/util/miniz
+for file in miniz.c miniz.h; do
+  curl -fL -o "external/xemu-src/util/miniz/$file" "https://raw.githubusercontent.com/xemu-project/xemu/master/util/miniz/$file"
+done
 
-miniz comes from xemu's source tree (external/ is gitignored):
+cmake -S . -B build-linux-game -G Ninja -DCMAKE_BUILD_TYPE=Release -DNFL2K5_BUILD_GAME=ON
+cmake --build build-linux-game --parallel 4
+```
 
-    mkdir -p external/xemu-src/util/miniz
-    for f in miniz.c miniz.h; do
-      curl -fL -o external/xemu-src/util/miniz/$f \
-        https://raw.githubusercontent.com/xemu-project/xemu/master/util/miniz/$f
-    done
+Use `-DCMAKE_PREFIX_PATH=/path/to/sdl3-sdk` if SDL3 is installed outside the usual search paths. The checked-in generated C is about 220 MB. Lower the parallel job count if the compiler runs out of memory. `NFL2K5_LINUX_OPT` defaults to `2` and can be set to `0` for debugging.
 
-Then:
+## Launch
 
-    cmake -B build-linux-game -G Ninja -DCMAKE_BUILD_TYPE=Release -DNFL2K5_BUILD_GAME=ON
-    cmake --build build-linux-game
+Put the extracted USA Xbox disc under `original/disc/` with `default.xbe` and `vc_53450030/` at its root. [Disc layout](../original/README.md)
 
-The generated code is about 220 MB of C; expect several minutes. The game
-target builds at -O2 by default (`NFL2K5_LINUX_OPT`; 0 for debugging, 1 if
-an -O2 build misbehaves). The largest generated files need about 2 GB of RAM
-each to compile, so if a parallel build runs out of memory, limit the jobs:
-`cmake --build build-linux-game -j6`.
+```bash
+bash tools/run-linux.sh
+RECOMP_SDLGPU=1 bash tools/run-linux.sh
+```
 
-The four `NFL2K5_FORCE_UNBLOCK_*` options that `tools/build.ps1` enables for
-Windows (AUDIO_LOCK, 33660_DRAIN, NETPOLL, STATE9_READY) default to ON on Linux.
-Without them the game sits on a black screen (the main thread waits forever
-in XNetStartup's network poll). A build directory configured before they
-defaulted on keeps them OFF in its cache; reconfigure it with
+The second command enables the SDL3 GPU route when built. `SDL_VIDEO_DRIVER=wayland` or `SDL_VIDEO_DRIVER=x11` selects a video backend. The wrapper raises the stack limit and uses `build-linux-game/NFL2K5` by default. Set `NFL2K5_EXE` to run a different build. Logs go to the terminal.
 
-    cmake -B build-linux-game -DNFL2K5_FORCE_UNBLOCK_AUDIO_LOCK=ON \
-      -DNFL2K5_FORCE_UNBLOCK_33660_DRAIN=ON -DNFL2K5_FORCE_UNBLOCK_NETPOLL=ON \
-      -DNFL2K5_FORCE_UNBLOCK_STATE9_READY=ON
+## Compatibility and debugging
 
-## Hardware rendering (in progress)
+- The four `NFL2K5_FORCE_UNBLOCK_*` switches default to ON. Check the CMake cache if an older build still waits in XNetStartup. The switches end in `AUDIO_LOCK`, `33660_DRAIN`, `NETPOLL`, and `STATE9_READY`.
+- The POSIX compatibility layer supplies the Win32 calls used by common game code. [Platform source](../src/platform/posix)
+- Windows broadcast packages, the Windows exception reporter, and DDS override support are platform-specific. Linux retains the original presentation. Treat Windows mod-pack instructions as Windows-specific.
+- Use `-DNFL2K5_BUILD_GAME=OFF` for a runtime-only compile. Native component tests can run with local disc data absent. [Guest-memory tests](../tests/guest_memory_posix/README.md) · [DSP tests](../tests/native-dsp/README.md)
 
-`RECOMP_SDLGPU=1 tools/run-linux.sh` turns on the SDL3 GPU renderer
-(Vulkan). It currently draws the 2D layers (menus, HUD, text) and leaves 3D
-to the software rasterizer; design and status in
-`external/xboxrecomp/docs/sdl-gpu-renderer.md`. Building it needs
-`glslang` (`sudo pacman -S glslang`); without it the build still works and
-the renderer reports itself unavailable.
-
-## Game files
-
-Put your extracted disc in `original/` (it must contain `default.xbe` and
-`vc_53450030`). Same layout as the Windows build.
-
-## Run
-
-    tools/run-linux.sh
-
-Logs go to the terminal. `SDL_VIDEO_DRIVER=wayland` or `=x11` forces a
-video backend if the default misbehaves.
-
-## Not on Linux yet
-
-- Broadcast presentation packages (FOX/CBS/NBC scorebugs, player cards,
-  broadcast music). The renderer is Direct2D/Media Foundation/XAudio2;
-  Linux keeps the original ESPN presentation. `src/platform/posix/presentation_stub.cpp`
-- Mod pack disc overlays (`xboxrecomp/src/kernel/kernel_overlay.c`)
-- DDS replacement textures (PNG/JPEG/BMP/TGA work)
-- Interpreter fault report on crash (Windows VEH diagnostic)
-- `analysis/` is not needed to build; without it the mod-pack
-  interpreter ranges are empty, which retail does not use
-
-## How the port is structured
-
-- `src/platform/posix/windows.h` is only on the Linux include path. It routes
-  `#include <windows.h>` to xboxrecomp's portable NT types and Win32 compat.
-- `src/platform/posix/win32_game_compat.*` adds the Win32 calls the game
-  uses that xboxrecomp does not (directory search, attributes, copy/move,
-  secure CRT, a few intrinsics). Paths are accepted with backslashes and
-  converted, so game code builds paths the same way on both platforms.
-- Windows-specific code paths are `#ifdef _WIN32`; Windows builds are
-  unchanged.
+[Project status](../PROJECT_STATUS.md)

@@ -1,4 +1,8 @@
-# NFL 2K5 native bring-up
+# Original retail XBE and native boot diagnostics
+
+**Historical record.** This record preserves the XBE identity, the early guest memory fixes, and the original coverage measurement. Its commands describe the initial workspace.
+
+[Current guide](architecture.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Input: North American retail ESPN NFL 2K5, title ID 0x53450030,
 entry 0x00016BD1, XDK 5849, 11,948,032-byte XBE.

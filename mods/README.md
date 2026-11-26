@@ -1,6 +1,12 @@
-# Mods
+# Community saves and Windows mods
 
-Everything here is read by the game at startup.
+## Browser roster and franchise
+
+Download the [NFL 2027 Week 1 browser backup](saves/NFL2027Week1-Browser.json). In the launcher, open **Saves → Restore backup**, then load `NFL27Ros` or `NFL27Fra` through **Options → Load/Save → Load** in the game. This backup is a separate import from the Windows mod folders. [Game and save setup](../README.md#nfl-2027-week-1-roster-and-franchise)
+
+## Windows mod folders
+
+The Windows game scans installed team and presentation folders. Use the native installer for supported `.2k5patch` packs, then select the pack under **Options → Mod Packs**. Install individual team and presentation packages using their instructions. [Windows installer](../installer/README.md)
 
 ## Make a scorebug without editing JSON
 
@@ -13,13 +19,11 @@ and downloads a game-ready `presentation.json`. Create a folder in
 The editor produces this existing format, so advanced creators can still edit
 the JSON later to add their own layers, images, music, video, and animations.
 
-To install a JSON package made elsewhere, double-click `Install Scorebug
-JSON.cmd` in the project root. It asks for the JSON file and creates the
-correct presentation-package folder automatically.
+To install a JSON package made elsewhere, run `.\tools\install-scorebug-json.ps1` from PowerShell or pass the file with `-Path`. The script creates the presentation-package folder. [Scorebug Studio guide](../tools/scorebug-studio/README.md)
 
-## teams/<ABBR>/
+## Team folders
 
-One folder per team, named by the game's team code (SF, DAL, KC, ...).
+Use one `mods/teams/<ABBR>/` folder per team. Existing teams use codes such as SF, DAL, and KC. [Build a team](../tools/team-creator/README.md)
 
 - `team.json` - city, name, colours (`primary`, `secondary`, `text` as `#RRGGBB`),
   and `aliases` (other codes that mean this team).
@@ -27,7 +31,7 @@ One folder per team, named by the game's team code (SF, DAL, KC, ...).
   roughly square). Missing logos are simply left out.
 - `uniforms/`, `menu/` - reserved for uniform and menu art (not read yet).
 
-## presentations/<Name>/
+## Presentation packages
 
 A broadcast package: `presentation.json` plus its `images/` and `music/`.
 Pick it in game: Quick Game > Coach Match Up > Presentation (under VIP).

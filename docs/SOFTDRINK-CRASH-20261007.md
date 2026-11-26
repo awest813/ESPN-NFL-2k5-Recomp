@@ -1,4 +1,8 @@
-# SoftDrink v0.4 crash investigation, 2026-10-07
+# SOFTDRINK 2K28 v0.4 crash investigation
+
+**Historical record.** The investigation covers the October 7 crash evidence, the proposed fixes, and the limits of validation for that pack.
+
+[Current guide](SOFTDRINK-v0.4-REVIEW.md) · [Documentation index](../PROJECT_STATUS.md)
 
 User reports: Play Now goes black after Berman, MyCareer goes black on selection, demo/situation cycle through stadium views, and faces have missing triangles. None of those are yet verified fixed by this investigation.
 

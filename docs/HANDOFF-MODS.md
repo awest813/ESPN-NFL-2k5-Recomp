@@ -1,4 +1,8 @@
-# Mod pack support: handoff (2026-10-03)
+# October 2026 mod-pack implementation log
+
+**Historical record.** The entries trace format-3 source-copy overlays, the historical SOFTDRINK test packs, and regressions found in the selector. Use the current mods guide for installation.
+
+[Current guide](../mods/README.md) · [Documentation index](../PROJECT_STATUS.md)
 
 The goal is **easiest for the player**. They drop a 2K5 Mod Studio `.2k5patch` into `mods\`,
 turn it on in an in-game **Extras** screen (Features menu), restart, and it plays. There are

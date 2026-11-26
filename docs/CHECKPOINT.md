@@ -1,4 +1,8 @@
-# Native development checkpoint — September 7, 2026
+# September 7 native development checkpoint
+
+**Historical record.** This records the first native boot stop and the artifacts available on that date. Use the root README for a fresh checkout.
+
+[Current guide](../README.md) · [Documentation index](../PROJECT_STATUS.md)
 
 The native build exists at build/Release/NFL2K5.exe and executes translated game initialization. It is NOT playable: no game window or completed renderer. DX12/Vulkan and DLSS are not implemented. Do not repeat the full analysis/recompilation to resume debugging.
 

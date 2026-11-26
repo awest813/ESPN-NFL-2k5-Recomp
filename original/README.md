@@ -1,3 +1,14 @@
-Place your legally extracted original Xbox ESPN NFL 2K5 default.xbe here.
-Keep the complete extracted disc directory structure here for later runtime asset loading.
-No game executable or assets are supplied, downloaded, or tracked by this project.
+# Original Xbox game files
+
+Extract the full USA Xbox disc into `original/disc/`. Keep the disc's folder structure intact.
+
+```text
+original/
+└── disc/
+    ├── default.xbe
+    └── vc_53450030/
+```
+
+The native runtime reads local game files from this layout. For browser play, import the ISO/XISO or its extracted folder through **Game files** in the launcher. Your local game files stay out of Git.
+
+[Windows build](../README.md#build-for-windows) · [Browser quick start](../README.md#get-on-the-field) · [Linux build](../docs/LINUX.md)

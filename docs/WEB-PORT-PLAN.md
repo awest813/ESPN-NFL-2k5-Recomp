@@ -1,4 +1,8 @@
-# Web port: audit and plan
+# Original browser port plan
+
+**Historical record.** The original feasibility audit explains platform risks and milestone criteria. The browser build guide tracks what shipped from that plan.
+
+[Current guide](WEB.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Status: plan only, no web code exists yet. Audited 2026-11-06 against
 `4ee0613` (this repo) and xboxrecomp `9a31daa` (`nfl2k5-port`).

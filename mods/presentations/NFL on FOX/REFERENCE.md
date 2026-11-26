@@ -1,4 +1,8 @@
-﻿# NFL on FOX reference ledger
+# NFL on FOX presentation reference ledger
+
+This ledger records which aspects of the package were compared with stills, captures, and local media. Use the presentation guide for the runtime format.
+
+[Related guide](../../../docs/PRESENTATION-SYSTEM.md) · [Documentation index](../../../PROJECT_STATUS.md)
 
 The package treats supplied media as specifications. Measurements are in source pixels before normalization.
 

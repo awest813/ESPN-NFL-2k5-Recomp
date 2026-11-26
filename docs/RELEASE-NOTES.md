@@ -1,4 +1,8 @@
-# ESPN NFL 2K5 Native PC — 0.1.0 Preview
+# Windows 0.1.0 preview release notes
+
+**Historical record.** These notes describe the packaged preview and its installation flow. The current installer guide describes how to build a new package.
+
+[Current guide](../installer/README.md) · [Documentation index](../PROJECT_STATUS.md)
 
 This is a preview build of the native Windows recompilation. It requires game
 files extracted from a legally owned Xbox copy of ESPN NFL 2K5. The installer
@@ -14,8 +18,7 @@ Run `NFL2K5-PC-Setup.exe`, choose any installation folder, then either:
   `ESPN NFL 2K5` folder there and extracts the disc.
 
 Setup optionally accepts a supported 2K5 Mod Studio `.2k5patch`. It verifies
-the clean source and all rebuilt files, then installs a native executable
-matched to the patched XBE. The mod can be switched from **Features > Mod
+the clean source and all rebuilt files, then registers the supported pack for the installed runtime. The mod can be switched from **Features > Mod
 Packs**, while the original game stays available.
 
 The selected game-data folder is linked into the installation and is not

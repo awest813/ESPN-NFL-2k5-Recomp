@@ -1,6 +1,8 @@
-# Installer build
+# Build and use the Windows installer
 
-`NFL2K5-PC.iss` builds a Windows x64 installer with Inno Setup 7.
+Use a completed [Windows Release build](../README.md#build-for-windows), then compile [`NFL2K5-PC.iss`](NFL2K5-PC.iss) with Inno Setup 7.
+
+## Install game files
 
 It packages the native executable, presentation packages, `mods\README.md`,
 the default `nfl2k5_video.ini`, music-folder instructions, and documentation.
@@ -18,11 +20,9 @@ remove that link without touching its target.
 Setup can also import a supported 2K5 Mod Studio `.2k5patch`. The standalone
 importer validates the clean retail source files required by that patch,
 reconstructs its disc overlay, and verifies every changed file. The installed
-game executable runs the selected patch directly, so no separate code pack or
-developer build path is downloaded. After setup, turn a pack on in
-`Extras > Mods`. Original ESPN NFL 2K5 remains installed separately.
+game executable runs the selected patch directly. After setup, enable the installed pack through **Options → Mod Packs**. The retail disc remains available as its own entry. [Mod guide](../mods/README.md)
 
-Build after a Release game build:
+## Compile and package
 
 ```powershell
 & "C:\Program Files\Inno Setup 7\ISCC.exe" .\installer\NFL2K5-PC.iss

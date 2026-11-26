@@ -1,4 +1,12 @@
-# Local Music / Crib Jukebox
+# Add local music on Windows
+
+1. In the folder that contains `original/`, create a playlist folder such as `Music/Practice/`.
+2. Put MP3, WAV, OGG, or WMA files you have permission to use into that folder.
+3. Start the Windows game. Select the playlist from **The Crib → Jukebox** or use its tracks in **Stadium Music**.
+
+The Windows runtime converts tracks for the game's WMA player and stores the conversion cache under its save root. See [native save locations](../README.md#build-for-windows).
+
+## Implementation and original design
 
 Status (2026-10-01): **phase 1 works.** `Music/<folder>` shows up as a soundtrack in
 Create Clip / Stadium Music and the Crib Jukebox and plays through the game's own
@@ -12,16 +20,7 @@ window. Songs are converted with Media Foundation, the Extended Content
 Description object is stripped (the XDK parser rejects it), and the cache lives
 in `saves/Soundtracks/cache`. Next: cover art (phase 2), FEATURES > SOUNDTRACK (phase 3).
 
-Goal: the user drops folders of music into `<GameRoot>/Music/` (FOLDER = PLAYLIST,
-no import step, no config) and they show up in the game's **real** music UI,
-played by one shared player. Test library: `Music/Sam Spence & Da Riffs/`
-(19 MP3s, copied from the dev PC and verified by SHA-256; `/Music/*` is
-gitignored). Nothing in source or config may reference the original
-download location.
-
-`<GameRoot>` is the folder that holds `original\` (see `nfl2k5_root()` in
-`src/main.c`: the exe's folder if it has `original\`, else `NFL2K5_ROOT`, else
-the project root). On this PC: `E:\NFL2K5-PC`.
+Both game screens use the same playlist and playback state. The runtime honors `NFL2K5_ROOT` when set, then resolves its project or installation root. User music and converted audio stay local.
 
 ## What the game already has (default.xbe)
 

@@ -1,4 +1,8 @@
-# NFL2K5-PC handoff (for another AI assistant)
+# September 2026 native runtime handoff
+
+**Historical record.** This handoff traces the guest bootstrap, translated code, renderer, and fixes known at the time. Current source layout and build paths are in the architecture guide.
+
+[Current guide](architecture.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Written 2026-09-24 (updated late that night) so another assistant (ChatGPT or similar) can rejoin the
 project. Read this first, then the tail of `PROJECT_STATUS.md` (the session

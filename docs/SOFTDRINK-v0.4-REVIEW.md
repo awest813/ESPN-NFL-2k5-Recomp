@@ -1,5 +1,9 @@
 # SOFTDRINK 2K28 v0.4 review build
 
+**Historical record.** Use this dated checklist when reproducing the v0.4 test environment. Use the mods guide for current installation paths.
+
+[Current guide](../mods/README.md) · [Documentation index](../PROJECT_STATUS.md)
+
 Built: 2026-10-07
 
 This package is for technical review of the native Windows build that runs the SOFTDRINK 2K28 v0.4 XBE. It does not include ESPN NFL 2K5 game files, the SOFTDRINK patch, or an ISO.

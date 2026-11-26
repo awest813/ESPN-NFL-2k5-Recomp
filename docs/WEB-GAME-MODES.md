@@ -1,4 +1,16 @@
-# Retail browser game-mode audit
+# Retail browser gameplay and save audit
+
+Use the coverage table to distinguish exercised paths from untested settings. The later entries retain verified mode-specific runs, failure classifications, and capture conditions.
+
+[Related guide](WEB-STADIUM-FIDELITY.md) · [Documentation index](../PROJECT_STATUS.md)
+
+## NFL 2027 Week 1 save verification
+
+On November 25, 2026, Chrome restored the [browser backup](../mods/saves/NFL2027Week1-Browser.json). The game confirmed both loads from **Options → Load/Save → Load**. `NFL27Ros` carried into a Jets at 49ers Quick Game through the opening kickoff. `NFL27Fra` opened at the 49ers' Coach's Desk in Week 1. The original Xbox signatures appeared in the load list but failed at selection. The packaged backup uses the runtime signatures and preserves both save payloads.
+
+This check covered the launcher restore, the in-game load, and the opening state for each save. Use the table below for wider mode coverage.
+
+## Baseline audit scope
 
 Audit started 2026-11-08 using the USA retail disc, Chrome 156 on Windows,
 hardware WebGPU and the default 30 FPS cap. The local development build uses

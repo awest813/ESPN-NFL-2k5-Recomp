@@ -1,15 +1,23 @@
-# Architecture and milestones
+# Runtime architecture
 
-Original XBE -> analysis/function discovery -> generated C -> Xbox compatibility layer -> native NFL2K5.exe.
+ESPN NFL 2K5 Recomp builds the translated Xbox game into a host executable or WebAssembly module. The runtime verifies and opens the player's retail disc files locally. The repository carries the C translation, compatibility code, build tools, and community add-ons.
 
-Keep generated code in src/recomp/gen and manual Xbox overrides in src/xbox. Preserve upstream in external/xboxrecomp; record its revision before changes.
+## From Xbox code to a game session
 
-The eventual renderer must expose an API-neutral interface for resources, pipelines, draws, synchronization, presentation, and resize. Implement separate DirectX 12 and Vulkan backends in src/renderer. Xbox D3D8/NV2A translation should feed this interface; guest/game code must not depend directly on either host API. Shader translation and resource semantics require explicit work and validation.
+| Layer | Location | Responsibility |
+| --- | --- | --- |
+| Guest translation | [`src/recomp/gen/`](../src/recomp/gen) | Checked-in C chunks store the translated retail game and dispatch metadata. |
+| Persistent fixes | [`tools/apply-gen-patches.py`](../tools/apply-gen-patches.py), [`src/recomp_manual.c`](../src/recomp_manual.c) | Preserve verified control-flow and runtime corrections across rebuilds. |
+| Boot and platform integration | [`src/main.c`](../src/main.c), [`config/game.cmake`](../config/game.cmake), [`src/platform/`](../src/platform) | Verify disc identity, select the host, initialize guest memory, and start the game. |
+| Xbox runtime | [`external/xboxrecomp/`](../external/xboxrecomp), [published patch](../config/xboxrecomp-web.patch) | Implement Xbox kernel, file, input, graphics, APU, and scheduling behavior on the host. |
+| Browser launcher | [`web/`](../web) | Check browser capabilities, import disc files into OPFS, restore backups, start the worker-based runtime, and show controls and diagnostics. |
 
-Upstream currently provides a D3D11 compatibility path. Compiling it validates dependencies only; it does not implement the requested modern renderer. A temporary upstream path may help CPU/runtime bring-up, but the long-term architecture is DX12 plus Vulkan.
+## Platform rendering and storage
 
-Reserve src/upscaling/streamline for later integration. Do not add Streamline/DLSS until the renderer provides suitable color, depth, motion vectors, exposure, jitter, and resource lifecycle integration. Backend-specific support must be verified then.
+- Windows uses the native D3D11 path. Source and installed builds resolve their user data as described in the [Windows guide](../README.md#build-for-windows).
+- Linux builds the POSIX runtime and can enable its SDL3 GPU path. [Linux build and launch](LINUX.md)
+- The browser uses Emscripten workers, WasmFS, and WebGPU. The launcher and Wasm runtime share origin-private disc and save files. Use the web guide for the memory map, APU register dispatch, and hosting architecture. [Browser implementation](WEB.md)
 
-Milestones: (1) runtime libraries and native toolchain check; (2) inspect the user XBE and record hash, title, imports, entry point, and unsupported code; (3) generate C and review dispatch/ABI/runtime initialization; (4) build an actual NFL2K5.exe, debug first guest execution; (5) graphics/audio/input/filesystem bring-up; (6) DX12 and Vulkan; (7) optional upscaling. None of the later milestones is implied by a successful library build.
+Native build instructions use the checked-in retail C. The local analysis pipeline is useful when regenerating code or inspecting a different executable. Regeneration decisions must preserve the reviewed retail integration and its range-table inputs. [Early XBE and boot notes](bringup.md)
 
-Vulkan SDK and Ghidra/JDK are deferred until their corresponding renderer/deeper-analysis milestones. Git, Python, Capstone, MSVC, CMake, Ninja and Windows SDK cover the initial pipeline. No proprietary Xbox SDK is required or downloaded.
+[Project status and documentation index](../PROJECT_STATUS.md)

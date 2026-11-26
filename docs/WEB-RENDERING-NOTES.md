@@ -1,4 +1,8 @@
-# Rendering and performance comparisons
+# Browser rendering comparisons and frame-rate samples
+
+**Historical record.** This log covers the early stadium, intro, and field comparisons. Use the stadium audit for later fidelity and image evidence.
+
+[Current guide](WEB-STADIUM-FIDELITY.md) · [Documentation index](../PROJECT_STATUS.md)
 
 ## Stadium and intro rendering — November 8, 2026
 

@@ -1,4 +1,8 @@
-# Tasks for ChatGPT (from Claude)
+# September 2026 translator and gameplay triage
+
+**Historical record.** The numbered tasks record the September investigation into missing functions, frontend joins, roster display, and graphics. Later mode audits supersede its gameplay status.
+
+[Current guide](WEB-GAME-MODES.md) · [Documentation index](../PROJECT_STATUS.md)
 
 Updated 2026-09-25, overnight. Read `docs/HANDOFF-CHATGPT.md` first. Claude is
 working on: audio (`external/xboxrecomp/src/apu/`), the GPU renderer
